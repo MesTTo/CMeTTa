@@ -46,8 +46,15 @@ kit/%: kit/%.c $(LIB)
 tests/%: tests/%.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcetta $(LDFLAGS) $(LDLIBS) -lm
 
-test: $(TESTS)
+# The examples run too. An example that no longer compiles, or that compiles
+# and then fails, is documentation that lies, and the README quotes these
+# three directly. The Python seat gates its examples for the same reason.
+test: $(TESTS) $(EXAMPLES)
 	@./tests/test_cetta
+	@for example in $(EXAMPLES); do \
+	    ./$$example > /dev/null || { echo "$$example failed" >&2; exit 1; }; \
+	    echo "$$example ok"; \
+	done
 
 clean:
 	rm -f $(LIB) $(EXAMPLES) $(TESTS) $(KIT)
