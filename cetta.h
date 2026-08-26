@@ -17,8 +17,10 @@
  *   - building and reading atoms starts no engine: cetta_sym(), cetta_expr()
  *     and the accessors are pure C on C memory, the same split the Python
  *     binding guarantees for its own term builders
+ *     [tested: tests/test_cetta.c, test_atoms_need_no_engine; commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]
  *   - cetta_eval() computes one answer per cetta_answers_step(), so a caller
  *     that stops pulling leaves the rest of an infinite stream uncomputed
+ *     [tested: tests/test_cetta.c, test_eval_is_lazy; commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]
  *
  * Owns resources: one Prolog runtime per process, released by cetta_close();
  *   one engine per open cetta_answers_t from cetta_eval(), released by
@@ -399,7 +401,9 @@ typedef struct cetta_limits {
    deltas are added up, so a cursor stops once it has spent what it was given,
    however many steps that took. Measured 2026-08-27 on an endless generator:
    budgets of 1,000 / 5,000 / 20,000 / 100,000 stopped after spending 1,004 /
-   5,004 / 20,004 / 100,004.
+   5,004 / 20,004 / 100,004
+   [tested: tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
+   commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0].
 
    The WALL bound applies per step, so time spent between steps, while the
    caller is doing something else, does not count against it.

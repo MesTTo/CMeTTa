@@ -5,7 +5,9 @@
 % Assumes:
 %   - every engine predicate called here carries a seam:kind/2 in
 %     engine/ext_points.pl, service or host_service [tested:
-%     tests/prolog/static_checks.pl, a_host_binding_calls_only_published_surface]
+%     tests/prolog/static_checks.pl, a_host_binding_calls_only_published_surface,
+%     which reports "every one of 3 host bindings" with this file's row present;
+%     commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]
 %   - '$cetta_dispatch'/3 and '$cetta_object'/1 are foreign predicates the C
 %     half registers before consulting the engine. This file LOADS without
 %     them, because the static gate consults it directly with no C host in the
@@ -179,6 +181,9 @@ petta_c_answer_parts(Term, Term, [], Text) :-
 %     budget    500 -> fired          budget  5,000 -> no bound after 20,001
 %     budget  1,000 -> fired          budget 10,000 -> no bound after 20,001
 %     budget  2,000 -> fired          budget 20,000 -> no bound after 20,001
+%
+% [measured 2026-08-27; the replacement meter below is tested by
+% tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so; commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]
 %
 % A cumulative budget cannot behave that way: 20,000 would stop LATER than
 % 2,000, never not at all. The limiter's counter does not carry across

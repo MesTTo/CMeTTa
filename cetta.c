@@ -643,7 +643,9 @@ static void decode_ctx_free(decode_ctx *ctx)
    this binding does not return: a C loop pulling answers stays inside one call
    for thousands of conversions. Without the pair, SWI dies with
    "FATAL ERROR: Too many stacked strings" once the ring fills
-   [measured 2026-08-27, draining a bounded endless generator]. Releasing from
+   [measured 2026-08-27, draining a bounded endless generator; tested:
+   tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
+   commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]. Releasing from
    the mark is safe because the text is copied out before the release. */
 static char *term_text(term_t t, int cvt, size_t *len_out)
 { char *copy = NULL;
@@ -864,7 +866,9 @@ static cetta_atom_t *decode(term_t t, decode_ctx *ctx)
      carry PL_BLOB_TEXT, so a native value asked about that way is neither an
      atom nor anything else and falls off the end
      [measured 2026-08-27: a cetta_object reached the refusal branch and the
-     dispatcher answered "No permission to read argument `<counter>'"].
+     dispatcher answered "No permission to read argument `<counter>'";
+     tested: tests/test_cetta.c, test_a_c_value_crosses_by_reference;
+     commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0].
      The PL_BLOB_TEXT mask is the other half: without it an ordinary symbol
      reads as a native value instead. */
   { void *blob;
