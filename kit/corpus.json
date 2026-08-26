@@ -1,0 +1,33 @@
+{
+  "purpose": "Programs both the C binding and the Python host run, so the two live seats can be required to answer the same things. This file records the cases and answers none of them: the C driver supplies one side and metta.MeTTa() the other, in the same moment, which is a comparison a written-down expectation cannot make.",
+  "programs": [
+    { "source": "!(+ 1 2)", "why": "an integer" },
+    { "source": "!(+ 1.5 2.25)", "why": "a float, and the layout its writer chooses" },
+    { "source": "!(* 2.0 1)", "why": "a float that is a whole number, which must not print as an integer" },
+    { "source": "!(* 9223372036854775807 4)", "why": "past signed i64, where C has no scalar type" },
+    { "source": "!(- 0 9223372036854775808)", "why": "past signed i64 downward" },
+    { "source": "!(== 2 2.0)", "why": "the engine tells 2 from 2.0 apart, so both seats must" },
+    { "source": "!(superpose (a b c))", "why": "three answers in one group; multiplicity is not negotiable" },
+    { "source": "!(superpose (1 1 2))", "why": "a repeated answer stays repeated" },
+    { "source": "!(empty)", "why": "no answers at all, which is not an error" },
+    { "source": "!(quote (f (g 1) \"two\" True))", "why": "a nested expression carrying every scalar kind" },
+    { "source": "!()", "why": "unit, the empty expression" },
+    { "source": "!(quote \"\")", "why": "the empty string, which is not unit" },
+    { "source": "!(quote sym)", "why": "a bare symbol" },
+    { "source": "!(quote \"sym\")", "why": "the string spelling the same name; a different atom" },
+    { "source": "!(quote True)", "why": "the boolean" },
+    { "source": "!(quote (quote $x))", "why": "a free variable keeps the name its source gave it" },
+    { "source": "!(quote (f $x $x))", "why": "one name twice is one variable" },
+    { "source": "!(quote (f $x $y))", "why": "two names are two variables" },
+    { "source": "(= (twice $x) (* 2 $x))\n!(twice 21)", "why": "a definition and a call, two forms and one group" },
+    { "source": "!(twice 3)\n!(twice 4)", "why": "two ! forms are two groups, in source order" },
+    { "source": "!(car-atom (a b c))", "why": "a stdlib head" },
+    { "source": "!(Error boom reason)", "why": "a failure kept as a value is an ordinary answer" },
+    { "source": "!(new-space)", "allocated": "&petta-space-\\d+", "why": "an executable space reference. Its NAME is allocated from a per-process counter, so the two seats cannot agree on the text: a fresh C process is on its first space while the Python host has already made some. The pattern is compared instead, and the kind, which is the part this case exists for." },
+    { "source": "!(quote &not-a-space)", "why": "an ampersand name that is no space stays a symbol" },
+    { "source": "!(if True 1 2)", "why": "a conditional" },
+    { "source": "!(collapse (superpose (1 2)))", "why": "a collected group as one answer" },
+    { "source": "!(get-type 1)", "why": "a type answer" },
+    { "source": "!(let $x 5 (+ $x 1))", "why": "a binding form" }
+  ]
+}
