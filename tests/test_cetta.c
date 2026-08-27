@@ -592,7 +592,7 @@ static void test_a_bound_stops_a_runaway_and_says_so(cetta_t *m)
      bought 4,000 rows of each at this budget, a ratio of exactly 1.0. A budget
      built into the engine goal buys what the answers really cost: 1,233 rows
      of (from) against 9 of (slow), 137x apart
-     [measured 2026-08-27: ai-tmp/cb_cetta_probe.c both ways; commit=WORKTREE].
+     [measured 2026-08-27: ai-tmp/cb_cetta_probe.c both ways; commit=6da1b0dacc500fc7691a66722ba58f52ab2df081].
      The 10x threshold sits an order of magnitude above the meter this replaces
      and an order below what was measured. */
   cheap = rows_before_the_bound(m, "from", &cheap_status,

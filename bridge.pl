@@ -21,7 +21,7 @@
 %     spent that many, cumulatively across pulls, because the budget is built
 %     into the engine goal by metta_host_inference_budget/3 [tested:
 %     tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
-%     commit=WORKTREE]
+%     commit=6da1b0dacc500fc7691a66722ba58f52ab2df081]
 %   - petta_c_close/1 is idempotent
 %   - no answer is encoded, tagged, or stringified on the way out: the C half
 %     receives the engine's own term. This seat is in-process with the engine
@@ -197,7 +197,7 @@ petta_c_answer_parts(Term, Term, [], Text) :-
 % loop. Replayed against a workload costing about 402 inferences per answer,
 % the meter reported 1,001 spent under a 1,000 budget while the engine had
 % really spent 201,507, and 100,002 under 100,000 against 20,150,410
-% [measured 2026-08-27: ai-tmp/proto_cetta_design.pl; commit=WORKTREE].
+% [measured 2026-08-27: ai-tmp/proto_cetta_design.pl; commit=6da1b0dacc500fc7691a66722ba58f52ab2df081].
 %
 % The sweep recorded here as evidence, 1,000 stopping at 1,004 and 100,000 at
 % 100,004, is what that looks like from inside: a constant four-inference
