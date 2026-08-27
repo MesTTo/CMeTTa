@@ -6,7 +6,7 @@
     { "source": "!(* 2.0 1)", "why": "a float that is a whole number, which must not print as an integer" },
     { "source": "!(* 9223372036854775807 4)", "why": "past signed i64, where C has no scalar type" },
     { "source": "!(- 0 9223372036854775808)", "why": "past signed i64 downward" },
-    { "source": "!(== 2 2.0)", "why": "the engine tells 2 from 2.0 apart, so both seats must" },
+    { "source": "!(== 2 2.0)", "why": "numeric equality is by VALUE across the integer and float constructors, so this answers True; a seat that compared representations would say False" },
     { "source": "!(superpose (a b c))", "why": "three answers in one group; multiplicity is not negotiable" },
     { "source": "!(superpose (1 1 2))", "why": "a repeated answer stays repeated" },
     { "source": "!(empty)", "why": "no answers at all, which is not an error" },

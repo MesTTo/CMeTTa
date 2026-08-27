@@ -35,8 +35,12 @@
  *     the caller owns. Every accessor returns a borrowed pointer valid only
  *     while its parent lives. There are no other rules to remember.
  *   - a MeTTa Number splits into CETTA_INT and CETTA_FLOAT here, because C
- *     has two types where the wire codec has one tag, and MeTTa tells 2 from
- *     2.0 apart. Values outside int64 and rationals get their own kinds
+ *     has two types where the wire codec has one tag, and 2 and 2.0 are two
+ *     ATOMS: a stored (f 2.0) does not match the pattern (f 2), and each
+ *     prints as itself [measured 2026-08-27]. Equality is the other question
+ *     and compares by VALUE, so (== 2 2.0) answers True; a seat that folded
+ *     the two kinds together on the strength of that would lose the match and
+ *     the printed text. Values outside int64 and rationals get their own kinds
  *     rather than being rounded into one that fits; see cetta_kind_t.
  *   - the last error is thread-local and read with cetta_errmsg(), the shape
  *     dlerror() and strerror() already established for C, so a function that
