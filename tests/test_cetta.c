@@ -299,6 +299,13 @@ static void test_spaces_store_and_query(cetta_t *m)
   cetta_space_free(kb);
 }
 
+/* The answer to `!(id x)`, whose whole form comes back because (id x) is
+   irreducible here, so the argument is its last child. */
+static const cetta_atom_t *carried_argument(const cetta_atom_t *got)
+{ return cetta_kind(got) == CETTA_EXPR ? cetta_child(got, cetta_len(got) - 1)
+                                       : got;
+}
+
 static void test_a_user_space_decodes_as_a_space(cetta_t *m)
 { cetta_answers_t *answers;
   CASE("a space the engine made decodes as CETTA_SPACE, not a symbol");
@@ -308,15 +315,24 @@ static void test_a_user_space_decodes_as_a_space(cetta_t *m)
   CHECK(cetta_name(cetta_answers_atom(answers))[0] == '&');
   cetta_answers_free(answers);
 
+  /* The ampersand alone decides nothing: `p` is a species and this name is
+     no space, which is what the engine's own get-metatype answers for it.
+     CODEC.md states the rule. */
   CASE("an ampersand name that is no space stays a symbol");
   CHECK(cetta_run(m, "!(id &not-a-space)\n", &answers) == CETTA_OK);
-  if ( cetta_answers_step(answers) == CETTA_ROW )
-  { const cetta_atom_t *got = cetta_answers_atom(answers);
-    /* (id x) is irreducible here, so the answer is the whole form. */
-    const cetta_atom_t *arg = cetta_kind(got) == CETTA_EXPR
-                            ? cetta_child(got, cetta_len(got) - 1) : got;
-    CHECK(cetta_kind(arg) == CETTA_SYMBOL);
-  }
+  CHECK(cetta_answers_step(answers) == CETTA_ROW);
+  CHECK(cetta_kind(carried_argument(cetta_answers_atom(answers)))
+        == CETTA_SYMBOL);
+  cetta_answers_free(answers);
+
+  /* A State cell wears the same &-handle spelling a space does and is not
+     one. The wider is-space/2 test calls it a space; this seat asks the
+     species question instead and gets the symbol its own text spells. */
+  CASE("a State cell is not decoded as a space");
+  CHECK(cetta_run(m, "!(new-state 5)\n", &answers) == CETTA_OK);
+  CHECK(cetta_answers_step(answers) == CETTA_ROW);
+  CHECK(cetta_kind(cetta_answers_atom(answers)) == CETTA_SYMBOL);
+  CHECK(strncmp(cetta_name(cetta_answers_atom(answers)), "&state-#", 8) == 0);
   cetta_answers_free(answers);
 }
 

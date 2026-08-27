@@ -618,24 +618,6 @@ static PL_blob_t cetta_object_blob =
  * Moving values across
  * ================================================================== */
 
-/* The names in force while decoding one answer: the engine's Name-Var pairs,
-   plus the space set, fetched at most once and only if an ampersand-prefixed
-   atom actually turns up. */
-typedef struct decode_ctx
-{ term_t   names;        /* a list of Name=Var, or 0 */
-  char   **spaces;
-  size_t   nspaces;
-  bool     spaces_loaded;
-} decode_ctx;
-
-static void decode_ctx_free(decode_ctx *ctx)
-{ size_t i;
-  for (i = 0; i < ctx->nspaces; i++) free(ctx->spaces[i]);
-  free(ctx->spaces);
-  ctx->spaces = NULL;
-  ctx->nspaces = 0;
-}
-
 /* A copy of the text behind a term, in UTF-8. SWI's own buffer is reused by
    the next conversion, so it is copied here and never held. */
 /* The MARK/RELEASE pair is not optional here. PL_get_nchars() puts its result
@@ -666,60 +648,48 @@ static char *term_text(term_t t, int cvt, size_t *len_out)
 
 static cetta_status_t call_bridge(const char *name, int arity, term_t av);
 
-static bool load_space_names(decode_ctx *ctx)
-{ fid_t f;
-  term_t av, head, tail;
-  size_t n = 0, cap = 8;
-  char **names;
+/* Whether this atom is a space, asked of the engine and of the term itself:
+   no text conversion, and no list of names to rebuild per answer.
+   petta_c_space_operand/1 is petta_space_operand/1, the test the engine's own
+   metatype_of/2 consults, so this seat, the Python seat and get-metatype
+   classify one atom alike. Asking the engine per atom is a question only an
+   in-process seat can afford, and it is the reason this seat exists.
 
-  ctx->spaces_loaded = true;
-  if ( !(names = malloc(cap * sizeof(*names))) ) return false;
+   The predicate is a test over a bound atom and cannot throw, so a plain
+   call is enough; a failure is the answer "no" rather than an error.
 
+   The handle is resolved once. PL_predicate() interns the name and walks the
+   module's procedure table on every call, and this runs once per decoded
+   atom: caching it takes the question from 3,358 to 2,208 instructions per
+   atom [measured 2026-08-27, perf stat -e instructions:u, minimum of three
+   runs of kit/driver over 500 programs answering 40 symbols each:
+   3,018,075,923 asking nothing, 3,085,234,884 resolving per call,
+   3,062,228,470 resolving once, so 1,150 saved of 3,358 and +1.46% over
+   asking nothing on a workload that is nothing but symbol decoding]. A static
+   is safe because this binding is one runtime per process by construction
+   (PL_initialise is process-wide, see cetta.h's "Fails when") and a
+   predicate_t stays valid for the life of that process. */
+static bool is_space(term_t t)
+{ static predicate_t space_operand = NULL;
+  fid_t f;
+  int rc;
+
+  if ( !space_operand )
+    space_operand = PL_predicate("petta_c_space_operand", 1, "user");
   f = PL_open_foreign_frame();
-  av = PL_new_term_refs(1);
-  if ( call_bridge("petta_c_space_names", 1, av) != CETTA_OK )
-  { PL_discard_foreign_frame(f);
-    free(names);
-    return false;
-  }
-  head = PL_new_term_ref();
-  tail = PL_copy_term_ref(av);
-  while ( PL_get_list(tail, head, tail) )
-  { char *text = term_text(head, CVT_ATOM | CVT_STRING, NULL);
-    if ( !text ) continue;
-    if ( n == cap )
-    { char **grown = realloc(names, (cap *= 2) * sizeof(*names));
-      if ( !grown ) { free(text); break; }
-      names = grown;
-    }
-    names[n++] = text;
-  }
+  rc = PL_call_predicate(NULL, PL_Q_NORMAL, space_operand, t);
   PL_discard_foreign_frame(f);
-  ctx->spaces = names;
-  ctx->nspaces = n;
-  return true;
-}
-
-/* An ampersand prefix is necessary but not sufficient: `&bar` reads as an
-   ordinary atom and is no space [measured 2026-08-27]. So the engine is
-   asked, which is a question only an in-process seat can afford. */
-static bool is_space_name(decode_ctx *ctx, const char *text)
-{ size_t i;
-  if ( !text || text[0] != '&' ) return false;
-  if ( !ctx->spaces_loaded && !load_space_names(ctx) ) return false;
-  for (i = 0; i < ctx->nspaces; i++)
-    if ( strcmp(ctx->spaces[i], text) == 0 ) return true;
-  return false;
+  return rc == TRUE;
 }
 
 /* The source name of a variable, from the engine's Name=Var pairs. */
-static char *variable_name(decode_ctx *ctx, term_t var)
+static char *variable_name(term_t names, term_t var)
 { term_t head, tail, pair;
-  if ( !ctx->names ) return term_text(var, CVT_WRITE, NULL);
+  if ( !names ) return term_text(var, CVT_WRITE, NULL);
 
   head = PL_new_term_ref();
   pair = PL_new_term_ref();
-  tail = PL_copy_term_ref(ctx->names);
+  tail = PL_copy_term_ref(names);
   while ( PL_get_list(tail, head, tail) )
   { term_t nm = PL_new_term_ref();
     term_t vr = PL_new_term_ref();
@@ -736,9 +706,9 @@ static char *variable_name(decode_ctx *ctx, term_t var)
   return term_text(var, CVT_WRITE, NULL);
 }
 
-static cetta_atom_t *decode(term_t t, decode_ctx *ctx);
+static cetta_atom_t *decode(term_t t, term_t names);
 
-static cetta_atom_t *decode_list(term_t t, decode_ctx *ctx)
+static cetta_atom_t *decode_list(term_t t, term_t names)
 { cetta_atom_t **kids = NULL;
   size_t n = 0, cap = 4;
   term_t head = PL_new_term_ref();
@@ -749,7 +719,7 @@ static cetta_atom_t *decode_list(term_t t, decode_ctx *ctx)
     return NULL;
   }
   while ( PL_get_list(tail, head, tail) )
-  { cetta_atom_t *kid = decode(head, ctx);
+  { cetta_atom_t *kid = decode(head, names);
     if ( !kid )
     { size_t i;
       for (i = 0; i < n; i++) cetta_release(kids[i]);
@@ -828,9 +798,9 @@ static cetta_atom_t *decode_number(term_t t)
   return NULL;
 }
 
-static cetta_atom_t *decode(term_t t, decode_ctx *ctx)
+static cetta_atom_t *decode(term_t t, term_t names)
 { if ( PL_is_variable(t) )
-  { char *name = variable_name(ctx, t);
+  { char *name = variable_name(names, t);
     cetta_atom_t *a;
     if ( !name )
     { err_set(CETTA_NOMEM, "out of memory naming a variable");
@@ -843,7 +813,7 @@ static cetta_atom_t *decode(term_t t, decode_ctx *ctx)
 
   /* Before the atom test: [] is a list in SWI 7 and later, and the empty
      expression is unit rather than a name. */
-  if ( PL_get_nil(t) || PL_is_list(t) ) return decode_list(t, ctx);
+  if ( PL_get_nil(t) || PL_is_list(t) ) return decode_list(t, names);
 
   if ( PL_is_integer(t) || PL_is_float(t) || PL_is_rational(t) )
     return decode_number(t);
@@ -909,7 +879,7 @@ static cetta_atom_t *decode(term_t t, decode_ctx *ctx)
       free(text);
       return a;
     }
-    a = atom_text(is_space_name(ctx, text) ? CETTA_SPACE : CETTA_SYMBOL,
+    a = atom_text(is_space(t) ? CETTA_SPACE : CETTA_SYMBOL,
                   text, len);
     free(text);
     return a;
@@ -1218,7 +1188,6 @@ static foreign_t run_call(const char *name, cetta_op_fn fn, void *user,
                           term_t args, term_t result)
 { struct cetta_call call;
   cetta_atom_t **decoded = NULL;
-  decode_ctx ctx = {0};
   size_t n = 0, cap = 4, i;
   term_t head = PL_new_term_ref();
   term_t tail = PL_copy_term_ref(args);
@@ -1230,7 +1199,7 @@ static foreign_t run_call(const char *name, cetta_op_fn fn, void *user,
     return PL_resource_error("memory");
 
   while ( PL_get_list(tail, head, tail) )
-  { cetta_atom_t *a = decode(head, &ctx);
+  { cetta_atom_t *a = decode(head, 0);
     if ( !a )
     { rc = PL_permission_error("read", "argument", head);
       goto done;
@@ -1282,7 +1251,6 @@ done:
   cetta_release(call.result);
   for (i = 0; i < n; i++) cetta_release(decoded[i]);
   free(decoded);
-  decode_ctx_free(&ctx);
   return rc;
 }
 
@@ -1506,7 +1474,6 @@ cetta_status_t cetta_parse(cetta_t *runtime, const char *source,
 { fid_t f;
   term_t av;
   cetta_status_t status;
-  decode_ctx ctx = {0};
 
   (void)runtime;
   err_clear();
@@ -1521,10 +1488,8 @@ cetta_status_t cetta_parse(cetta_t *runtime, const char *source,
   }
   status = call_bridge("petta_c_read", 3, av);
   if ( status == CETTA_OK )
-  { ctx.names = av + 2;
-    *out = decode(av + 1, &ctx);
+  { *out = decode(av + 1, av + 2);
     if ( !*out ) status = CETTA_UNSUPPORTED;
-    decode_ctx_free(&ctx);
   }
   PL_discard_foreign_frame(f);
   return status;
@@ -1708,16 +1673,13 @@ static cetta_status_t collect_groups(term_t groups, cetta_answers_t *out)
     while ( PL_get_list(atail, answer, atail) )
     { fid_t f = PL_open_foreign_frame();
       term_t av = PL_new_term_refs(4);
-      decode_ctx ctx = {0};
       cetta_atom_t *atom = NULL;
       char *text = NULL;
 
       if ( PL_unify(av, answer) &&
            call_bridge("petta_c_answer_parts", 4, av) == CETTA_OK )
-      { ctx.names = av + 2;
-        atom = decode(av + 1, &ctx);
+      { atom = decode(av + 1, av + 2);
         text = term_text(av + 3, CVT_ATOM | CVT_STRING, NULL);
-        decode_ctx_free(&ctx);
       }
       PL_discard_foreign_frame(f);
 
@@ -1906,13 +1868,10 @@ cetta_status_t cetta_answers_step(cetta_answers_t *answers)
   }
 
   { term_t parts = PL_new_term_refs(4);
-    decode_ctx ctx = {0};
     if ( PL_unify(parts, head) &&
          call_bridge("petta_c_answer_parts", 4, parts) == CETTA_OK )
-    { ctx.names = parts + 2;
-      answers->current = decode(parts + 1, &ctx);
+    { answers->current = decode(parts + 1, parts + 2);
       answers->current_text = term_text(parts + 3, CVT_ATOM | CVT_STRING, NULL);
-      decode_ctx_free(&ctx);
     }
   }
   PL_discard_foreign_frame(f);
