@@ -15,8 +15,13 @@
 %   - the C half runs each call inside its own PL_open_foreign_frame, so a
 %     term handed out here stays valid exactly as long as that frame
 % Guarantees:
-%   - petta_c_next/2 computes at most one answer per call, so a host that
+%   - petta_c_next/3 computes at most one answer per call, so a host that
 %     stops pulling leaves the rest of an infinite stream uncomputed
+%   - a cursor opened with a positive Inferences stops once its ENGINE has
+%     spent that many, cumulatively across pulls, because the budget is built
+%     into the engine goal by metta_host_inference_budget/3 [tested:
+%     tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
+%     commit=WORKTREE]
 %   - petta_c_close/1 is idempotent
 %   - no answer is encoded, tagged, or stringified on the way out: the C half
 %     receives the engine's own term. This seat is in-process with the engine
@@ -36,7 +41,7 @@
 
 :- use_module(library(time), [call_with_time_limit/2]).
 
-:- dynamic petta_c_cursor/4.
+:- dynamic petta_c_cursor/2.
 :- dynamic petta_c_op_spec/3.
 :- dynamic petta_c_captured/1.
 
@@ -127,23 +132,39 @@ petta_c_timed(Goal, Seconds, Timed) :-
                   time_limit_exceeded,
                   throw(error(cetta_limit(seconds, Seconds), _))).
 
+% The inference bound raises the ENGINE's reserved limit envelope rather than a
+% second ball of this seat's own. The cursor door below reaches that envelope
+% anyway, because the budget it installs is the engine's, and one bound wearing
+% two ball shapes depending on which door produced it is a second name for one
+% thing. The wall bound keeps its own ball because it IS this seat's: it is
+% applied per pull, which is a policy the engine does not have.
 petta_c_counted(Goal, Inferences) :- Inferences =< 0, !, call(Goal).
 petta_c_counted(Goal, Inferences) :-
     call_with_inference_limit(Goal, Inferences, Result),
     (   Result == inference_limit_exceeded
-    ->  throw(error(cetta_limit(inferences, Inferences), _))
+    ->  throw(error(metta_control_signal(inference_limit, Inferences),
+                    context(petta, inference_limit)))
     ;   true
     ).
 
 % The C half asks whether a ball it caught is a bound rather than a fault, so
-% a caller can tell "I stopped it" from "it broke".
+% a caller can tell "I stopped it" from "it broke". Both sources answer here:
+% this seat's own wall ball, and the engine's reserved envelope, which arrives
+% from a cursor budget and from a program's own (pragma! max-inferences N)
+% alike. Before the envelope was listed, a program that spent its own pragma
+% budget reached a C caller as CETTA_ERROR, a fault.
 petta_c_limit_ball(error(cetta_limit(Kind, Bound), _), Kind, Bound).
+petta_c_limit_ball(error(metta_control_signal(Signal, Bound), _), Kind, Bound) :-
+    petta_c_limit_kind(Signal, Kind).
 
+petta_c_limit_kind(inference_limit, inferences).
+petta_c_limit_kind(time_limit, seconds).
+
+% Only the wall ball is rendered here; engine/metta/registration.pl renders the
+% reserved envelope, so the sentence does not exist twice.
 :- multifile prolog:error_message//1.
 prolog:error_message(cetta_limit(seconds, Bound)) -->
     [ 'the evaluation passed its ~w second bound and was stopped'-[Bound] ].
-prolog:error_message(cetta_limit(inferences, Bound)) -->
-    [ 'the evaluation passed its ~w inference bound and was stopped'-[Bound] ].
 
 % One answer, split into the three things the C half reads: the term, the
 % source names of its free variables, and the engine's own rendering.
@@ -168,78 +189,69 @@ petta_c_answer_parts(Term, Term, [], Text) :-
 % with_metta_module/2 runs INSIDE the engine. An engine has its own stack, so
 % the module in force outside it is not in force within.
 %
-% An inference bound on a CURSOR is metered here, by this file, rather than by
-% call_with_inference_limit/3 inside the engine goal. That is not the obvious
-% choice and it is not the one the Python seat made, so here is the
-% measurement that forced it.
+% An inference bound on a CURSOR goes INSIDE the engine goal, which is what
+% metta_host_inference_budget/3 builds. This file used to meter it here
+% instead, with statistics/2 either side of each engine_next/2 and the deltas
+% accumulated on the cursor, and that does not work: an engine counts its own
+% inferences and this thread cannot see them, so those deltas are the pull
+% loop. Replayed against a workload costing about 402 inferences per answer,
+% the meter reported 1,001 spent under a 1,000 budget while the engine had
+% really spent 201,507, and 100,002 under 100,000 against 20,150,410
+% [measured 2026-08-27: ai-tmp/proto_cetta_design.pl; commit=WORKTREE].
 %
-% Wrapping the engine's goal in call_with_inference_limit/3 gives a bound that
-% fires only if the FIRST resume exceeds it. Sweeping budgets over an endless
-% generator, 2026-08-27, one cursor per budget, pulling until it stopped or
-% 20,001 answers had arrived:
+% The sweep recorded here as evidence, 1,000 stopping at 1,004 and 100,000 at
+% 100,004, is what that looks like from inside: a constant four-inference
+% overshoot at every scale is a fixed charge per pull, so the reported total
+% tracks the budget by construction whatever the engine is doing. It was a
+% correct measurement of the wrong counter.
 %
-%     budget    500 -> fired          budget  5,000 -> no bound after 20,001
-%     budget  1,000 -> fired          budget 10,000 -> no bound after 20,001
-%     budget  2,000 -> fired          budget 20,000 -> no bound after 20,001
+% The earlier sweep in the same note is sound and still worth keeping: an
+% engine goal wrapped in call_with_inference_limit/3 ALONE fired at budgets of
+% 500, 1,000 and 2,000 and never fired at 5,000, 10,000 or 20,000 over the same
+% endless generator. A cumulative budget cannot behave that way. The reason is
+% not that the limiter fails to cross engine_next/2, which is what this note
+% concluded; it is that SWI bounds inferences per SOLUTION of the goal, so a
+% generator answering cheaply forever is re-armed at every answer and never
+% reaches it. The published wrapper keeps that limiter, because it is the only
+% one of the two bounds that stops a resume which never yields at all, and adds
+% the cumulative check the per-solution contract cannot express.
 %
-% [measured 2026-08-27; the replacement meter below is tested by
-% tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so; commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]
-%
-% A cumulative budget cannot behave that way: 20,000 would stop LATER than
-% 2,000, never not at all. The limiter's counter does not carry across
-% engine_next/2, so past the first resume the cursor is unbounded.
-% bindings/python/metta/shim.pl's note above petta_py_cursor_bounded reads it
-% the other way ("spans every resume, the cumulative-budget reading"); that
-% claim does not reproduce here and is filed in ai-cetta-c-constraints.md.
-%
-% So the meter is explicit: statistics/2 before and after each pull, the
-% deltas accumulated on the cursor, and the bound checked against the total.
-% It is exact, it is genuinely cumulative, and it costs two statistics/2 calls
-% per answer. The wall bound stays per pull, so time between pulls, while the
-% host is doing something else, cannot count against it.
+% The wall bound stays per pull, so time between pulls, while the host is doing
+% something else, cannot count against it.
 petta_c_open_eval(Goal, Space, Inferences, Id) :-
     space_module(Space, Module),
-    engine_create(Out, with_metta_module(Module, eval(Goal, Out)), Engine),
-    petta_c_new_cursor(Engine, Inferences, Id).
+    metta_host_inference_budget(with_metta_module(Module, eval(Goal, Out)),
+                                Inferences, Bounded),
+    engine_create(Out, Bounded, Engine),
+    petta_c_new_cursor(Engine, Id).
 
 % Stored atoms unifying a pattern, which is the primitive door. The language's
 % own (match ...) with its template is reached through petta_c_open_eval/4.
 petta_c_open_match(Pattern, Space, Inferences, Id) :-
-    engine_create(Pattern, metta_host_stored(Space, Pattern), Engine),
-    petta_c_new_cursor(Engine, Inferences, Id).
+    metta_host_inference_budget(metta_host_stored(Space, Pattern),
+                                Inferences, Bounded),
+    engine_create(Pattern, Bounded, Engine),
+    petta_c_new_cursor(Engine, Id).
 
-petta_c_new_cursor(Engine, Inferences, Id) :-
-    (   aggregate_all(max(N), petta_c_cursor(N, _, _, _), Highest)
+petta_c_new_cursor(Engine, Id) :-
+    (   aggregate_all(max(N), petta_c_cursor(N, _), Highest)
     ->  Id is Highest + 1
     ;   Id = 1
     ),
-    assertz(petta_c_cursor(Id, Engine, Inferences, 0)).
+    assertz(petta_c_cursor(Id, Engine)).
 
 % [] is exhaustion and [Answer] is one answer, so the C half needs no
 % sentinel. A closed cursor is a caller bug rather than an empty stream, so it
-% raises.
+% raises. The budget needs nothing here: it rides in the engine goal, so a
+% spent cursor raises out of engine_next/2 on the pull that spends it, and an
+% unbounded cursor carries no wrapper and pays nothing.
 petta_c_next(Id, Seconds, Answer) :-
-    (   petta_c_cursor(Id, Engine, Budget, Spent0)
+    (   petta_c_cursor(Id, Engine)
     ->  true
     ;   throw(error(existence_error(cetta_cursor, Id),
                     context(petta_c_next/3, 'this cursor is closed')))
     ),
-    %The meter is only wound when there is a budget to meter against. An
-    %unbounded cursor, which is the default and the common case, pays nothing
-    %for the feature: no statistics/2 pair and no dynamic write per answer.
-    (   Budget > 0
-    ->  statistics(inferences, Before),
-        petta_c_pull(Engine, Seconds, Answer),
-        statistics(inferences, After),
-        Spent is Spent0 + (After - Before),
-        retractall(petta_c_cursor(Id, _, _, _)),
-        assertz(petta_c_cursor(Id, Engine, Budget, Spent)),
-        (   Spent > Budget
-        ->  throw(error(cetta_limit(inferences, Budget), _))
-        ;   true
-        )
-    ;   petta_c_pull(Engine, Seconds, Answer)
-    ).
+    petta_c_pull(Engine, Seconds, Answer).
 
 petta_c_pull(Engine, Seconds, Answer) :-
     petta_c_timed(engine_next(Engine, Term), Seconds, Pull),
@@ -248,13 +260,10 @@ petta_c_pull(Engine, Seconds, Answer) :-
     ;   Answer = []
     ).
 
-% What a cursor has spent so far, so a host can read its own meter.
-petta_c_cursor_spent(Id, Spent) :- petta_c_cursor(Id, _, _, Spent).
-
 % Idempotent: a host that closes after exhaustion, and again from
 % cetta_answers_free(), finds nothing the second time and is at peace.
 petta_c_close(Id) :-
-    (   retract(petta_c_cursor(Id, Engine, _, _))
+    (   retract(petta_c_cursor(Id, Engine))
     ->  catch(engine_destroy(Engine), error(existence_error(_, _), _), true)
     ;   true
     ).
