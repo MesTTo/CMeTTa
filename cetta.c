@@ -585,7 +585,7 @@ static bool         g_open = false;
 struct cetta_space
 { cetta_t *runtime;
   char    *name;
-  bool     borrowed;   /* &self and &petta live with the runtime */
+  bool     borrowed;   /* &self and &metta live with the runtime */
 };
 
 static cetta_space_t g_self, g_catalog;
@@ -650,7 +650,7 @@ static cetta_status_t call_bridge(const char *name, int arity, term_t av);
 
 /* Whether this atom is a space, asked of the engine and of the term itself:
    no text conversion, and no list of names to rebuild per answer.
-   petta_c_space_operand/1 is petta_space_operand/1, the test the engine's own
+   petta_c_space_operand/1 is metta_space_operand/1, the test the engine's own
    metatype_of/2 consults, so this seat, the Python seat and get-metatype
    classify one atom alike. Asking the engine per atom is a question only an
    in-process seat can afford, and it is the reason this seat exists.
@@ -1320,7 +1320,7 @@ static bool goal(const char *text)
 }
 
 static char *default_path(void)
-{ const char *env = getenv("PETTA_PATH");
+{ const char *env = getenv("METTA_PATH");
   return strdup(env && *env ? env : CETTA_ENGINE_PATH);
 }
 
@@ -1398,7 +1398,7 @@ cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out)
   { cetta_status_t refused =
       err_set(CETTA_ERROR,
               "the engine would not load from %s; set config.path or "
-              "PETTA_PATH to the tree holding engine/, lib/ and "
+              "METTA_PATH to the tree holding engine/, lib/ and "
               "backends/", path);
     free(path); free(buf);
     return refused;
@@ -1414,7 +1414,7 @@ cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out)
   g_self.name = (char *)"&self";
   g_self.borrowed = true;
   g_catalog.runtime = &g_runtime;
-  g_catalog.name = (char *)"&petta";
+  g_catalog.name = (char *)"&metta";
   g_catalog.borrowed = true;
 
   cetta_set_verbose(&g_runtime, config->verbose);
@@ -1543,7 +1543,7 @@ cetta_status_t cetta_space_open(cetta_t *runtime, const char *name,
                    "a space is named with a leading ampersand; %s is not",
                    name ? name : "NULL");
   if ( strcmp(name, "&self") == 0 )  { *out = &g_self;    return CETTA_OK; }
-  if ( strcmp(name, "&petta") == 0 ) { *out = &g_catalog; return CETTA_OK; }
+  if ( strcmp(name, "&metta") == 0 ) { *out = &g_catalog; return CETTA_OK; }
 
   if ( !(s = calloc(1, sizeof(*s))) )
     return err_set(CETTA_NOMEM, "out of memory opening a space");

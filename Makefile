@@ -5,7 +5,7 @@
 # Guarantees: `make` produces libcetta.so plus the examples; `make test` runs
 #   the C suite and exits nonzero on the first failure.
 # Decides: the engine tree is baked in as CETTA_ENGINE_PATH so a linked program
-#   boots with no environment set, and $PETTA_PATH still overrides it at run
+#   boots with no environment set, and $METTA_PATH still overrides it at run
 #   time. A checkout that moves needs a rebuild, which is the same bargain
 #   setup.py makes when it copies the runtime into the Python wheel.
 
