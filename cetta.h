@@ -5,7 +5,7 @@
  * Assumes:
  *   - SWI-Prolog 10 with its development headers, threads enabled
  *     [source: /usr/lib/swi-prolog/include/SWI-Prolog.h, PLVERSION 100113]
- *   - the engine tree (engine/, lib/, backends/) is reachable, either at the
+ *   - the engine tree (engine/, lib/, extensions/) is reachable, either at the
  *     path given to cetta_open() or at $METTA_PATH
  *   - the process has not already called PL_initialise(); see cetta_open()
  *
@@ -235,7 +235,7 @@ CETTA_API void *cetta_object_value(const cetta_atom_t *atom);
 typedef struct cetta cetta_t;
 
 typedef struct cetta_config {
-  /* The engine tree holding engine/, lib/ and backends/. NULL takes
+  /* The engine tree holding engine/, lib/ and extensions/. NULL takes
      $METTA_PATH, then the tree this library was built beside. */
   const char *path;
   /* Prolog stack limit in bytes. 0 takes the engine's own default. */
