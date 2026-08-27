@@ -1,5 +1,6 @@
 /* Purpose: run every program in kit/corpus.json through the C binding and
- *   print what it answered as JSON, so bindings/python/tests/test_c_binding.py
+ *   print what it answered as JSON, so
+ *   bindings/python/tests/ch21_another_language_at_the_seam/test_c_binding.py
  *   can hold the two live seats to the same answers.
  * Assumes: the corpus path arrives as argv[1]; nothing else is read.
  * Guarantees: prints one JSON object on stdout and exits 0, or names the

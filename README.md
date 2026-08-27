@@ -220,8 +220,9 @@ neither.
 | `tests/` | the C suite, run by `make test` and by `check.sh` |
 | `kit/` | the corpus and driver the cross-seat parity test uses |
 
-`bindings/python/tests/test_c_binding.py` runs both this seat and the Python
-host over `kit/corpus.json` and requires the same answers.
+`bindings/python/tests/ch21_another_language_at_the_seam/test_c_binding.py`
+runs both this seat and the Python host over `kit/corpus.json` and requires the
+same answers.
 
 Constraints and issues found while building this are recorded in
 `ai-cetta-c-constraints.md` at the repository root.

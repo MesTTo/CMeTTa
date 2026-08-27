@@ -716,7 +716,7 @@ static void test_verbosity_reaches_the_engines_own_door(cetta_t *m)
 
      Whether the engine then keeps its diagnostics off this process's stdout
      is asserted where a test can see a file descriptor after the process has
-     flushed it: bindings/python/tests/test_c_binding.py's
+     flushed it: bindings/python/tests/ch21_another_language_at_the_seam/test_c_binding.py's
      test_the_c_binding_suite_passes reads THIS binary's streams. */
   CASE("cetta_set_verbose reaches the engine's published verbosity door");
   was = cetta_set_verbose(m, true);
