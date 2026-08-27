@@ -623,6 +623,28 @@ static void test_the_counters_measure_engine_work(cetta_t *m)
   }
 }
 
+static void test_verbosity_reaches_the_engines_own_door(cetta_t *m)
+{ bool was;
+
+  /* cetta_set_verbose() records the new setting only when the Prolog call
+     came back CETTA_OK, so a round trip that reports back what was just set
+     is proof the call ran. It is worth its own case because the predicate it
+     reaches moved: bridge.pl used to define petta_c_set_silent/1 in `user`,
+     and this now calls engine/filereader.pl's metta_host_set_silent/1, which
+     reaches `user` by EXPORT rather than by being defined there (C2). If that
+     import ever stopped resolving, call_bridge would fail and the reads below
+     would keep answering the old value.
+
+     Whether the engine then keeps its diagnostics off this process's stdout
+     is asserted where a test can see a file descriptor after the process has
+     flushed it: bindings/python/tests/test_c_binding.py's
+     test_the_c_binding_suite_passes reads THIS binary's streams. */
+  CASE("cetta_set_verbose reaches the engine's published verbosity door");
+  was = cetta_set_verbose(m, true);
+  CHECK(cetta_set_verbose(m, false) == true);
+  CHECK(cetta_set_verbose(m, was) == false);
+}
+
 static void test_reopening_is_the_same_runtime(cetta_t *m)
 { cetta_t *again = NULL;
   CASE("a second open hands back the one runtime this process has");
@@ -660,6 +682,7 @@ int main(void)
   test_variable_identity_survives_the_round_trip(m);
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_the_counters_measure_engine_work(m);
+  test_verbosity_reaches_the_engines_own_door(m);
   test_reopening_is_the_same_runtime(m);
 
   printf("%d checks, %d failures\n", checks, failures);
