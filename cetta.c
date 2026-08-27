@@ -4,7 +4,7 @@
  *
  * Assumes:
  *   - SWI-Prolog 10 with threads [source: PLVERSION 100113]
- *   - bindings/cetta/bridge.pl is loaded by bindings/cetta/decider.pl, which
+ *   - extensions/cetta/bridge.pl is loaded by extensions/cetta/extension.pl, which
  *     the engine globs at boot, and which finds this file because cetta_open()
  *     registers '$cetta_present'/0 BEFORE it consults engine/metta.pl
  *   - a term handed out by the bridge is valid only inside the foreign frame
@@ -1355,9 +1355,9 @@ cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out)
     return err_set(CETTA_ERROR, "SWI-Prolog would not initialise");
   }
 
-  /* Registered BEFORE the consult, because engine/metta.pl globs
-     bindings/ * /decider.pl while it loads and this seat's decider asks
-     whether '$cetta_present'/0 exists. */
+  /* Registered BEFORE the consult, because engine/metta.pl reads
+     extensions/ * /extension.pl while it loads and this seat's control file
+     declares needs(predicate('$cetta_present'/0)). */
   PL_register_foreign("$cetta_present", 0,
                       as_pl_function((cetta_anyfn)pl_cetta_present), 0);
   PL_register_foreign("$cetta_dispatch", 3,
@@ -1384,11 +1384,11 @@ cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out)
     }
   }
 
-  /* `backends` opts the engine into globbing backends/ * /decider.pl, and
-     `silent` is how a host with no command line asks for quiet, because
+  /* `extensions` opts the engine into reading extensions/ * /extension.pl,
+     and `silent` is how a host with no command line asks for quiet, because
      engine/filereader.pl reads argv at load time [C2]. */
-  if ( !goal(config->verbose ? "set_prolog_flag(argv, [backends])"
-                             : "set_prolog_flag(argv, [silent, backends])") )
+  if ( !goal(config->verbose ? "set_prolog_flag(argv, [extensions])"
+                             : "set_prolog_flag(argv, [silent, extensions])") )
   { free(path); free(buf);
     return err_set(CETTA_ERROR, "the engine refused its argv");
   }
@@ -1399,7 +1399,7 @@ cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out)
       err_set(CETTA_ERROR,
               "the engine would not load from %s; set config.path or "
               "METTA_PATH to the tree holding engine/, lib/ and "
-              "backends/", path);
+              "extensions/", path);
     free(path); free(buf);
     return refused;
   }

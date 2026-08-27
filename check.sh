@@ -15,7 +15,7 @@
 
 # The C binding, the seam's third consumer and the only one that is IN the
 # engine's process. A C main() calls PL_initialise, registers its foreign
-# predicates, and consults the engine; bindings/cetta/decider.pl sees
+# predicates, and consults the engine; extensions/cetta/extension.pl sees
 # '$cetta_present'/0 and loads the bridge beside it. Because there is no
 # language boundary to cross, this seat reads engine terms directly and has no
 # wire codec, so the codec kit cannot gate it; what gates it instead is its own
@@ -27,7 +27,7 @@
 # the tree, so a missing step is named and skipped, the same shape the C
 # extension example and the Node lane take.
 check_c_binding() {
-    binding="$HERE/bindings/cetta"
+    binding="$HERE/extensions/cetta"
     [ -d "$binding" ] || return 0
     if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
         echo "note: no C compiler found, the C binding suite will not run" >&2

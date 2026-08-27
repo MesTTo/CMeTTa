@@ -27,17 +27,29 @@ them.
 
 ## Where this seat sits
 
-`bindings/` holds one folder per driver of the engine, and this is the C one,
-beside `python` and `node`. It is not the vendored CeTTa C substrate, which is
-a different track: `bindings/` is who DRIVES the engine, `backends/` is what
-the engine CONSULTS.
+`extensions/` holds one folder per seat, and this is the C one, beside
+`python`, `node` and `mork`. It is not the vendored CeTTa C substrate, which is
+a different track.
 
-What makes this seat different from the other two is that it is IN the engine's
-process. Python reaches the engine through janus and Node through a WebAssembly
-build, so both have a language boundary to cross and both encode every term
-into the tagged arrays `CODEC.md` describes. C has no boundary: it reads
-`term_t` directly with `PL_get_*`. There is no wire codec here, and that is the
-reason the seat exists.
+There is one kind of folder because there is one mechanism: a seat declares
+itself in an `extension.pl` the engine reads, and its `entry/2` rows say who
+loads what. `entry(engine, File)` is a file the ENGINE consults at boot, and
+`entry(host, File)` is one the seat's own runtime consults; the engine records
+it and never loads it. Those are ROLES rather than categories, and a seat may
+hold both, which is what this seat does: `bridge.pl` is one file playing both
+parts, consulted by the engine when the `$cetta_present` marker is there and
+also the transport the C host's calls arrive through. The Python seat holds
+both in two files, the Node seat only host, MORK only engine. Direction of
+control does not sort them either: the Node transport declares `atom-added`
+and `atom-removed`, which is the engine calling IT, and the Python seat is
+host, provider and target at once.
+
+What makes this seat different from the other host seats is that it is IN the
+engine's process. Python reaches the engine through janus and Node through a
+WebAssembly build, so both have a language boundary to cross and both encode
+every term into the tagged arrays `CODEC.md` describes. C has no boundary: it
+reads `term_t` directly with `PL_get_*`. There is no wire codec here, and that
+is the reason the seat exists.
 
 ## The ownership law
 
@@ -215,12 +227,12 @@ neither.
 | `cetta.h` | the public API, and the only file a consumer includes |
 | `cetta.c` | the C half: boot, term conversion, cursors, ops |
 | `bridge.pl` | the Prolog half, calling published engine surface only |
-| `decider.pl` | the seat declaration the engine globs at boot |
+| `extension.pl` | the control file the engine reads at boot, and never runs |
 | `examples/` | `hello`, `ops`, `stream` |
 | `tests/` | the C suite, run by `make test` and by `check.sh` |
 | `kit/` | the corpus and driver the cross-seat parity test uses |
 
-`bindings/python/tests/ch21_another_language_at_the_seam/test_c_binding.py`
+`extensions/python/tests/ch21_another_language_at_the_seam/test_c_binding.py`
 runs both this seat and the Python host over `kit/corpus.json` and requires the
 same answers.
 
