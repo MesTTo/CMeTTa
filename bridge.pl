@@ -27,8 +27,10 @@
 %     tier owns is refused rather than clobbered
 % Owns: one SWI engine per open cursor, released by petta_c_close/1, which the
 %   C half calls from cetta_answers_free().
-% Decides: verbosity is set here rather than inherited from argv, because
-%   filereader.pl reads the CLI at load time and an embedded host has none.
+% Decides: verbosity is set explicitly at boot rather than inherited from argv,
+%   because filereader.pl reads the CLI at load time and an embedded host has
+%   none. The setting itself is the engine's metta_host_set_silent/1, not a
+%   copy here: this seat filed the duplication as C2 and the engine took it.
 % Open Obligations:
 %   To Do: None
 %   Hacks: None
@@ -39,15 +41,6 @@
 :- dynamic petta_c_cursor/4.
 :- dynamic petta_c_op_spec/3.
 :- dynamic petta_c_captured/1.
-
-%%%%%%%%%% Verbosity %%%%%%%%%%
-%
-% engine/filereader.pl decides silent/1 from the CLI argv at load time. A C
-% host has no CLI, so this is the door. retractall first: two contradictory
-% silent/1 clauses would leave the engine on whichever is first.
-petta_c_set_silent(Silent) :-
-    retractall(silent(_)),
-    assertz(silent(Silent)).
 
 %%%%%%%%%% Rendering an exception %%%%%%%%%%
 %

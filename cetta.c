@@ -1472,8 +1472,13 @@ bool cetta_set_verbose(cetta_t *runtime, bool verbose)
 { bool was = runtime->verbose;
   fid_t f = PL_open_foreign_frame();
   term_t av = PL_new_term_refs(1);
+  /* The engine's own door, not a bridge predicate: bridge.pl carried a
+     private copy of the engine's retract-then-assert until C2 was taken
+     engine-side as metta_host_set_silent/1. filereader.pl exports it, so
+     it resolves in `user` the way every other engine predicate this file
+     reaches does. */
   if ( PL_put_atom_chars(av, verbose ? "false" : "true") &&
-       call_bridge("petta_c_set_silent", 1, av) == CETTA_OK )
+       call_bridge("metta_host_set_silent", 1, av) == CETTA_OK )
     runtime->verbose = verbose;
   PL_discard_foreign_frame(f);
   return was;
