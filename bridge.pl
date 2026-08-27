@@ -290,11 +290,18 @@ petta_c_stats([Inferences, CpuTime, GcCount, GcFreed, GcTimeMs, TableBytes]) :-
     statistics(garbage_collection, [GcCount, GcFreed, GcTimeMs|_]),
     statistics(table_space_used, TableBytes).
 
-% Which names are executable spaces RIGHT NOW. The C half asks this before it
-% calls an ampersand-prefixed atom a space reference, because the prefix alone
-% does not decide: `&bar` reads as an ordinary atom and is no space at all
-% [measured 2026-08-27, and C5 in ai-cetta-c-constraints.md has the probe].
-petta_c_space_names(Names) :- metta_space_names(Names).
+% Whether this atom is a space, asked of every atom the C half decodes and of
+% the atom itself. petta_space_operand/1 is the test the engine's own species
+% classifier consults (engine/metta/types.pl, metatype_of/2), and the wire
+% codec's `p` tag asks the same one, so this seat, the Python seat and
+% get-metatype classify an atom alike. CODEC.md's "The question p asks"
+% section states the rule and its price.
+%
+% It used to be metta_space_names/1, the same set as a sorted LIST: the C half
+% rebuilt two findalls, an append and a sort for every answer it decoded and
+% then scanned the strings. This is one indexed lookup and nothing to go
+% stale.
+petta_c_space_operand(Name) :- petta_space_operand(Name).
 
 % A rational's two halves as integers, so the C half can carry an exact ratio
 % without linking GMP or parsing the 1r3 spelling itself.

@@ -24,7 +24,7 @@
     { "source": "!(car-atom (a b c))", "why": "a stdlib head" },
     { "source": "!(Error boom reason)", "why": "a failure kept as a value is an ordinary answer" },
     { "source": "!(new-space)", "allocated": "&petta-space-\\d+", "why": "an executable space reference. Its NAME is allocated from a per-process counter, so the two seats cannot agree on the text: a fresh C process is on its first space while the Python host has already made some. The pattern is compared instead, and the kind, which is the part this case exists for." },
-    { "source": "!(quote &not-a-space)", "why": "an ampersand name that is no space stays a symbol" },
+    { "source": "!(quote &not-a-space)", "why": "the ampersand alone does not make a space: nothing created one under this name, so both seats must answer Symbol, which is what the engine's own get-metatype answers for it" },
     { "source": "!(if True 1 2)", "why": "a conditional" },
     { "source": "!(collapse (superpose (1 2)))", "why": "a collected group as one answer" },
     { "source": "!(get-type 1)", "why": "a type answer" },
