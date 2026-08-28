@@ -58,7 +58,7 @@ TESTS     := tests/test_cetta
 KIT       := kit/driver
 BENCH     := benchmarks/cases
 
-.PHONY: all test bench examples kit clean
+.PHONY: all test bench examples kit surface docs clean
 
 kit: $(KIT)
 
@@ -86,9 +86,6 @@ benchmarks/%: benchmarks/%.c $(LIB)
 tests/%: tests/%.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcetta $(LDFLAGS) $(LDLIBS) -lm
 
-# The examples run too. An example that no longer compiles, or that compiles
-# and then fails, is documentation that lies, and the README quotes these
-# three directly. The Python seat gates its examples for the same reason.
 # Every MT_API declaration must have a definition in the library. A header and
 # an implementation drift apart silently: an edit that removes a function
 # leaves its declaration behind, and nothing notices until a consumer that
@@ -103,7 +100,32 @@ surface: $(LIB)
 	  sys.exit('declared but not defined: '+', '.join(miss)) if miss else \
 	  print(f'surface: {len(d)} declarations, all defined')"
 
-test: $(TESTS) $(EXAMPLES) surface
+# Every mt_/MT_ name the prose uses must EXIST in the header. The docs are the
+# only consumer of this surface that no compiler reads, so a door that is
+# renamed or retired leaves them describing an API nobody can call: the struct
+# rewrite retired mt_each_cursor, mt_answer_text and mt_group and left all
+# three in README.md and llms.txt, where they sat until a search found them
+# [measured 2026-08-28; planting the two retired names back makes this fail
+# naming exactly them]. This checks EXISTENCE and not call shape, which is the
+# part a regex can answer honestly.
+#
+# The door, for a name the prose means to use without a header counterpart:
+# write `<!-- names: <identifier> <why> -->` in the document itself. Declaring
+# it in place keeps the reason beside the name rather than in this file.
+docs:
+	@python3 -c "import re,sys; \
+	  known=set(re.findall(r'\b(?:mt_[a-z_0-9]+|MT_[A-Z_0-9]+)\b', open('cetta.h').read())); \
+	  bad=[]; \
+	  [bad.extend((d,n) for n in sorted(set(re.findall(r'\b(?:mt_[a-z_0-9]+|MT_[A-Z_0-9]+)\b', open(d).read())) \
+	    - known - set(re.findall(r'<!--\s*names:\s*(\S+)', open(d).read())))) \
+	   for d in ('README.md','llms.txt')]; \
+	  sys.exit('documented but not in cetta.h: ' + ', '.join(f'{d}:{n}' for d,n in bad)) if bad else \
+	  print('docs: every mt_ name in README.md and llms.txt is in the header')"
+
+# The examples run too. An example that no longer compiles, or that compiles
+# and then fails, is documentation that lies, and the README quotes all four
+# directly. The Python seat gates its examples for the same reason.
+test: $(TESTS) $(EXAMPLES) surface docs
 	@./tests/test_cetta
 	@for example in $(EXAMPLES); do \
 	    ./$$example > /dev/null || { echo "$$example failed" >&2; exit 1; }; \

@@ -394,7 +394,7 @@ MT_API const char *mt_space_name(const mt_space *space);
  * ================================================================== */
 
 /* Run MeTTa source in &self. Every `!` form contributes a group of answers in
-   source order; mt_group() says which group the current answer is in.
+   source order, and a row's `group` field says which one it came from.
 
    Eager: the engine's run door computes the whole program before the first
    answer, because that is what running a program means. mt_eval() is the
@@ -756,11 +756,15 @@ typedef struct mt_limits {
        mt_limit(m, (mt_limits){0});          -- and that clears them
 
    On a lazy cursor the inference bound is a CUMULATIVE budget for the whole
-   cursor: the engine's counter is read around every step and the deltas added
-   up. Measured 2026-08-27 on an endless generator, budgets of 1,000 / 5,000 /
-   20,000 / 100,000 stopped after spending 1,004 / 5,004 / 20,004 / 100,004
+   cursor, built INTO the goal the engine runs. It cannot be metered from out
+   here: an SWI engine counts its own inferences and this process cannot see
+   them, so a bound placed around each step would measure the pull loop.
+   Measured 2026-08-28 on the endless generator (= (from $n) (superpose ($n
+   (from (+ $n 1))))), budgets of 1,000 / 5,000 / 20,000 / 100,000 stop after
+   0 / 86 / 1,404 / 7,118 answers. Answers scaling with the budget is the
+   property that matters, and the one a per-step meter cannot produce
    [tested: tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
-   commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3].
+   commit=WORKTREE].
    The wall bound applies per step, so time the host spends between steps does
    not count against it. An eager mt_run() is bounded as one call. */
 MT_API bool mt_limit(metta *runtime, mt_limits limits);

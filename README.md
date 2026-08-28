@@ -140,20 +140,31 @@ mt_each (a, mt_eval(m, E("from", 0)))
 }
 ```
 
-Use `mt_each_cursor (a, it, ...)` when the body needs the cursor itself, for
-`mt_group(it)`, `mt_answer_text(it)` or `mt_bound(it, "y")`.
+Use `mt_rows` when you want the whole answer rather than the atom alone. It
+binds an `mt_row`, which carries the atom, the engine's own rendering of it,
+the `!` group it came from, and the cursor:
+
+```c
+typedef struct mt_row {
+  const mt_atom *atom;   /* the answer itself                     */
+  const char    *text;   /* the engine's own rendering            */
+  size_t         group;  /* which `!` form produced it            */
+  mt_answers    *of;     /* the cursor, so mt_bound takes the row */
+} mt_row;
+```
 
 `mt_bound` is what saves you counting children. The cursor keeps the pattern it
 was opened with, so a binding comes back under the name you wrote:
 
 ```c
-mt_each_cursor (row, it, mt_match(kb, E("edge", "a", V("y"))))
-    printf("y = %s\n", mt_show(mt_bound(it, "y")));
+mt_rows (row, mt_match(kb, E("edge", "a", V("y"))))
+    printf("y = %s\n", mt_show(mt_bound(row, "y")));
 ```
 
 rather than `mt_at(row, 2)` and a comment explaining why 2. It works at any
 depth in the pattern and costs one walk of the term, no engine call. The Python
-seat spells the same thing `row.y`.
+seat spells the same thing `row.y`, and draws the same line this does between
+iterating `Answers` and iterating `Rows`.
 
 When you want one value rather than a walk:
 
@@ -162,14 +173,14 @@ When you want one value rather than a walk:
 | `mt_one(r)` | EXACTLY one answer, owned; refuses zero or many |
 | `mt_first(r)` | the first, owned; claims nothing about the rest |
 | `mt_one_int(r)`, `_float`, `_truth`, `_name` | the value, no atom in your hands |
-| `mt_all(r, &n)` | every answer as one owned array |
+| `mt_all(r)` | every answer, as an `mt_list` of items and length |
 
 Each consumes the cursor. `one` and `first` draw the same line the Python seat
 draws between `one()` and `first()`.
 
-`mt_run()` is the eager door, because running a program means running it;
-its answers carry `mt_group()` saying which `!` form produced each. When the
-point is the effect rather than the answers, `mt_do(m, src)` runs and discards:
+`mt_run()` is the eager door, because running a program means running it, and
+each row's `group` says which `!` form the answer came from. When the point is
+the effect rather than the answers, `mt_do(m, src)` runs and discards:
 
 ```c
 mt_do(m, "(= (double $x) (* 2 $x))");
@@ -286,15 +297,18 @@ An embedded engine that cannot be stopped is a hazard, so bounds are part of
 the surface:
 
 ```c
-mt_limit(m, &(mt_limits){ .seconds = 2.0, .inferences = 1000000 });
+mt_limit(m, (mt_limits){ .seconds = 2.0, .inferences = 1000000 });
 if ( !mt_run(m, "!(from 0)") && mt_error() == MT_LIMIT )
     fprintf(stderr, "%s\n", mt_errmsg());   /* you stopped it */
 ```
 
 `MT_LIMIT` is its own status precisely because a bound is not a fault. On a
 lazy cursor the inference bound is a cumulative budget for the whole cursor,
-metered step by step, so a big budget really does buy more steps than a small
-one. The wall bound applies per step, so time the host spends between steps
+built into the goal the engine runs, so a big budget really does buy more steps
+than a small one: over an endless generator, budgets of 1,000 / 5,000 / 20,000
+/ 100,000 stop after 0 / 86 / 1,404 / 7,118 answers. It cannot be metered from
+out here, because an engine counts its own inferences and this process cannot
+see them. The wall bound applies per step, so time the host spends between steps
 does not count against it. A bound stops work MID-WAY and writes already made
 stand, which is the honest semantics of every timeout.
 
