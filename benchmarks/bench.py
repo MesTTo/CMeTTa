@@ -39,13 +39,13 @@ Open Obligations:
   To Do: None
   Hacks: None
   Future Enhancements: None
-"""  # noqa: D205  -- the contract is one continuous invariant, not summary-and-body prose
+"""
 
 from __future__ import annotations
 
 import argparse
 import os
-import subprocess  # noqa: S404  -- the warm-up runs one built binary from this tree with no shell
+import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -281,7 +281,8 @@ def warm() -> None:
     and that run carries a compile the others do not. One discarded boot is the
     whole fix, and it costs about a seventh of a second.
     """
-    subprocess.run(  # noqa: S603  -- a built binary from this tree, no shell, fixed arguments
+    # A built binary from this tree, no shell, fixed arguments.
+    subprocess.run(
         [str(DRIVER), "boot", "1"], check=True, stdout=subprocess.DEVNULL
     )
 
