@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -197,6 +198,75 @@ def loaded_seats() -> list[str]:
         msg = f"could not ask the engine which seats load: {detail}"
         raise SystemExit(msg)
     return sorted(line for line in answer.stdout.split() if line)
+
+
+#: What a seat DECLARES it loads, and what those files load in turn. Both are
+#: read from the seat rather than listed here, so a seat that grows a unit is
+#: covered without this file changing.
+SEAT_ENTRY = re.compile(r"^entry\([a-z_]+,\s*'([^']+)'\)", re.M)
+SEAT_LOAD = re.compile(r"(?:ensure_loaded|consult)\('([^']+\.pl)'\)")
+
+
+def seat_prolog_files(seat: str) -> list[Path]:
+    """Every Prolog file a seat boots, from its own declarations outwards.
+
+    extension.pl names its entries and each entry may load more, so the walk is
+    transitive with a visited set. A path that escapes the seat is dropped: the
+    engine's own sources are not this seat's configuration, and they move every
+    pin here anyway.
+    """
+    directory = ROOT / "extensions" / seat
+    manifest = directory / "extension.pl"
+    if not manifest.is_file():
+        return []
+    pending = [manifest]
+    seen: dict[Path, None] = {}
+    while pending:
+        path = pending.pop()
+        resolved = path.resolve()
+        if resolved in seen or not path.is_file():
+            continue
+        seen[resolved] = None
+        text = path.read_text(encoding="utf-8", errors="replace")
+        named = SEAT_ENTRY.findall(text) if path == manifest else []
+        named += SEAT_LOAD.findall(text)
+        for relative in named:
+            candidate = (path.parent / relative).resolve()
+            if candidate.is_relative_to(directory.resolve()):
+                pending.append(candidate)
+    return sorted(seen)
+
+
+def seats_differing_from_head() -> list[str]:
+    """Loaded seats whose declared Prolog differs from its committed state.
+
+    Read only when a row has ALREADY failed, and never as a refusal. A seat's
+    Prolog joins the engine's shared multifile seams, so its content is on this
+    seat's measured path and not just its presence: the Node bridge's own
+    seam:foreign_space/1 cost one inference on every space operation, consulted
+    by the matcher, the type resolvers, the translator and the codec, which
+    CHANGELOG.md records against that seat's own benchmark. A seat edited since
+    the pin was taken can therefore move counters here with no change in this
+    seat at all, and the failure then reads as a regression in the wrong tree.
+
+    Against HEAD rather than a stamp in the baseline, for two reasons. A stamp
+    would REFUSE every comparison while a sibling seat is being worked on,
+    which is a false failure this seat would be inventing; and a stamp needs
+    re-pinning where this needs nothing. What it answers is the question a
+    reader of a red row actually has: is anything loaded here uncommitted?
+    """
+    moved: list[str] = []
+    for seat in loaded_seats():
+        for path in seat_prolog_files(seat):
+            relative = path.relative_to(ROOT).as_posix()
+            committed = subprocess.run(
+                ["git", "show", f"HEAD:{relative}"],
+                cwd=ROOT, capture_output=True,
+            )
+            if committed.returncode != 0 or committed.stdout != path.read_bytes():
+                moved.append(f"{seat} ({relative})")
+                break
+    return moved
 
 
 def counter_configuration() -> dict[str, bool | list[str]]:
@@ -381,6 +451,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if failures:
         for message in failures:
             print(message, file=sys.stderr)
+        #Named beside the failure, because a reader of a red row here needs to
+        #know whether anything ELSE loaded into the measured process is
+        #uncommitted before reading the row as this seat's regression.
+        moved = seats_differing_from_head()
+        if moved:
+            print(
+                f"note: these seats load into the measured process and differ "
+                f"from HEAD, so they may be what moved a row rather than this "
+                f"seat: {', '.join(moved)}",
+                file=sys.stderr,
+            )
         print(f"{len(failures)} case(s) outside the band", file=sys.stderr)
         return 1
     print(f"{len(arguments.cases)} case(s) within band")
