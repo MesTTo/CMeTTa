@@ -39,7 +39,47 @@ check_c_binding() {
 suite will not run" >&2
         return 0
     fi
-    ( cd "$binding" && make --quiet clean >/dev/null 2>&1
-      cd "$binding" && make --quiet test )
+    sh "$HERE/extensions/cetta/test.sh"
 }
 run GATE c-binding check_c_binding
+
+# The same seat's benchmarks. Skipped for the same three reasons as the suite
+# above and for two more of its own, because a measurement needs instruments
+# the suite does not: perf, to read instructions:u, and a Python that can
+# import metta, because the counters are compared through metta's own
+# BenchmarkBaseline rather than through a second harness copied here.
+#
+# THE COUNTER RULE, and it is why this lane exists separately from the pytest
+# benchmark lanes: inference counters are BLIND across the C boundary, since
+# foreign code retires no inferences at all. A C wire encoder in this tree once
+# measured 526x faster on the inference counter while CPU time said it was 1.8x
+# SLOWER. Every case here is therefore decided by `perf stat -e instructions:u`
+# and CPU time PAIRED, and extensions/cetta/benchmarks/bench.py says beside
+# each case which counter decides it.
+check_c_bench() {
+    binding="$HERE/extensions/cetta"
+    [ -d "$binding" ] || return 0
+    if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+        echo "note: no C compiler found, the C benchmark suite will not run" >&2
+        return 0
+    fi
+    if [ ! -f "$(swipl --dump-runtime-variables 2>/dev/null \
+                  | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
+        echo "note: SWI-Prolog development headers not found, the C benchmark \
+suite will not run" >&2
+        return 0
+    fi
+    if ! command -v perf >/dev/null 2>&1 || [ ! -x /usr/bin/setarch ]; then
+        echo "note: perf or setarch not found, the C benchmark suite will not \
+run; instructions:u is what decides these cases" >&2
+        return 0
+    fi
+    if ! "$PY" -c 'import metta' >/dev/null 2>&1 &&
+       ! ( cd "$HERE/extensions/python" && "$PY" -c 'import metta' ) >/dev/null 2>&1; then
+        echo "note: this python cannot import metta, the C benchmark suite \
+will not run; it compares through metta's BenchmarkBaseline" >&2
+        return 0
+    fi
+    CHECK_PY="$PY" sh "$HERE/extensions/cetta/bench.sh"
+}
+run GATE c-bench check_c_bench

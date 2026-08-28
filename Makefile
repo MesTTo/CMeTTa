@@ -56,12 +56,18 @@ LIB       := libcetta.so
 EXAMPLES  := examples/hello examples/ops examples/stream
 TESTS     := tests/test_cetta
 KIT       := kit/driver
+BENCH     := benchmarks/cases
 
-.PHONY: all test examples kit clean
+.PHONY: all test bench examples kit clean
 
 kit: $(KIT)
 
-all: $(LIB) examples $(KIT)
+# The benchmark driver is a target of its own so bench.sh can ask for it
+# without rebuilding the suite, and so `make all` still produces everything a
+# fresh checkout needs.
+bench: $(BENCH)
+
+all: $(LIB) examples $(KIT) $(BENCH)
 
 $(LIB): cetta.c cetta.h
 	$(CC) $(CFLAGS) -shared -o $@ cetta.c $(LDFLAGS) $(LDLIBS)
@@ -72,6 +78,9 @@ examples/%: examples/%.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcetta $(LDFLAGS) $(LDLIBS) -lm
 
 kit/%: kit/%.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcetta $(LDFLAGS) $(LDLIBS) -lm
+
+benchmarks/%: benchmarks/%.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcetta $(LDFLAGS) $(LDLIBS) -lm
 
 tests/%: tests/%.c $(LIB)
@@ -88,4 +97,4 @@ test: $(TESTS) $(EXAMPLES)
 	done
 
 clean:
-	rm -f $(LIB) $(EXAMPLES) $(TESTS) $(KIT)
+	rm -f $(LIB) $(EXAMPLES) $(TESTS) $(KIT) $(BENCH)

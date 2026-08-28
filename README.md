@@ -21,9 +21,29 @@ int main(void)
 }
 ```
 
-Build with `make`, then `make test`. It needs a C compiler and SWI-Prolog's
+Build with `sh build.sh`, test with `sh test.sh`, measure with `sh bench.sh`.
+Those three are what the gate runs too, so a developer and `check.sh` go
+through one entry point each. It needs a C compiler and SWI-Prolog's
 development headers; `swipl --dump-runtime-variables` is how the Makefile finds
-them.
+them, and `bench.sh` additionally needs `perf` and a Python that can import
+`metta`.
+
+`bench.sh` prices six things a C host actually pays for: the process boot to a
+usable engine, one `cetta_answers_step`, a term crossing in each direction
+through `cetta_show` and `cetta_parse`, an add-and-match pair, and an engine
+error rendered back to C as words. Every case is decided by `perf stat -e
+instructions:u` and CPU time TOGETHER, never by the inference counter, because
+foreign code retires no inferences: a C encoder in this tree once measured 526x
+faster on that counter while CPU time said it was 1.8x slower. Inferences are
+pinned as a third reading of what the ENGINE did, and
+`benchmarks/bench.py` says beside each case which counter decides it.
+Pass case names to measure a subset, and `--update` to re-pin:
+
+```sh
+sh bench.sh                    # every case against benchmarks/baseline.json
+sh bench.sh cursor-step        # one case
+sh bench.sh --update           # re-measure and re-pin every case
+```
 
 ## Where this seat sits
 
@@ -229,8 +249,9 @@ neither.
 | `bridge.pl` | the Prolog half, calling published engine surface only |
 | `extension.pl` | the control file the engine reads at boot, and never runs |
 | `examples/` | `hello`, `ops`, `stream` |
-| `tests/` | the C suite, run by `make test` and by `check.sh` |
+| `tests/` | the C suite, run by `test.sh` and by `check.sh`'s `c-binding` lane |
 | `kit/` | the corpus and driver the cross-seat parity test uses |
+| `benchmarks/` | `cases.c`, the C workload driver; `bench.py`, which drives it through metta's own `BenchmarkBaseline`; and `baseline.json`, the committed pins. Run by `bench.sh` and by `check.sh`'s `c-bench` lane |
 
 `extensions/python/tests/ch21_another_language_at_the_seam/test_c_binding.py`
 runs both this seat and the Python host over `kit/corpus.json` and requires the
