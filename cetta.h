@@ -16,8 +16,12 @@
  *   - an atom is immutable and refcounted, so a term built once may be run
  *     many times and shared between threads without copying
  *   - building and reading atoms starts no engine
+ *     [tested: tests/test_cetta.c, test_atoms_need_no_engine; commit=56dcac4afc074dce9e401174c65cedc3071075ae]
  *   - cetta_eval() computes one answer per step, so a caller that stops
- *     pulling leaves the rest of an infinite stream uncomputed
+ *     pulling leaves the rest of an infinite stream uncomputed, and
+ *     cetta_each() closes the cursor on `break` as well as on exhaustion
+ *     [tested: tests/test_cetta.c, test_the_walk_closes_its_cursor_on_break;
+ *     commit=56dcac4afc074dce9e401174c65cedc3071075ae]
  *
  * Owns resources: one Prolog runtime per process, released by cetta_close();
  *   one engine per open cursor, released by cetta_answers_free(), which
@@ -54,10 +58,15 @@
  *          double y = cetta_float(cetta_arg(c, 1));
  *          if ( !cetta_ok() ) return cetta_fail(c, "wanted two numbers");
  *
+ *      [tested: tests/test_cetta.c, test_the_error_state_is_errno_shaped;
+ *      commit=56dcac4afc074dce9e401174c65cedc3071075ae]
+ *
  *   3. ONE VERB, EITHER RECEIVER. cetta_eval, cetta_match, cetta_atoms,
  *      cetta_add, cetta_del, cetta_count and cetta_wipe each take a `cetta *`,
  *      meaning its &self, or a `cetta_space *`. _Generic picks; the pair it
  *      picks between is declared above each macro for anyone who wants it.
+ *      [tested: tests/test_cetta.c, test_one_verb_takes_either_receiver;
+ *      commit=56dcac4afc074dce9e401174c65cedc3071075ae]
  *
  *   4. A MeTTa Number splits into CETTA_INT and CETTA_FLOAT, because C has two
  *      types where the wire codec has one tag and MeTTa tells 2 from 2.0
@@ -72,6 +81,8 @@
  *      value exists to get to the requested Inner Type, then the accessor
  *      seamlessly works. If a promotion path does not exist then the accessor
  *      will fail."
+ *      [tested: tests/test_cetta.c,
+ *      test_reading_promotes_only_where_it_is_lossless; commit=56dcac4afc074dce9e401174c65cedc3071075ae]
  *
  *   6. A BARE C STRING IN TERM POSITION IS A SYMBOL. cetta_expr("+", 1, 2) is
  *      (+ 1 2), not ("+" 1 2). MeTTa source writes a symbol bare and a string
@@ -236,7 +247,9 @@ CETTA_API cetta_atom *cetta_same_c(const cetta_atom *atom);
    Children are TAKEN. If any is NULL the whole call fails, drops the ones it
    was given and returns NULL, so a failed inner constructor cannot leak
    through an outer one. Sixteen children is the ceiling; wider uses
-   cetta_exprv(). */
+   cetta_exprv().
+   [tested: tests/test_cetta.c,
+   test_the_builder_coerces_each_child_by_its_c_type; commit=56dcac4afc074dce9e401174c65cedc3071075ae] */
 #define cetta_expr(...)                                                      \
     cetta_exprv(CETTA_NARG(__VA_ARGS__),                                     \
                 (cetta_atom *[]){ CETTA_MAP(__VA_ARGS__) })
@@ -441,7 +454,9 @@ CETTA_API cetta_atom *cetta_first(cetta_answers *answers);
 /* EXACTLY one answer, OWNED, or NULL with a failure recorded when there were
    none or more than one. The Python seat draws the same line between one()
    and first(), and the word means the same thing here: `one` is a claim about
-   the cardinality and `first` is not. CONSUMES `answers`. */
+   the cardinality and `first` is not. CONSUMES `answers`
+   [tested: tests/test_cetta.c, test_one_and_first_make_different_claims;
+   commit=56dcac4afc074dce9e401174c65cedc3071075ae]. */
 CETTA_API cetta_atom *cetta_one(cetta_answers *answers);
 
 /* Ask for exactly one answer and read it as a C value: the cursor is closed,
@@ -591,7 +606,9 @@ typedef struct cetta_limits {
    On a lazy cursor the inference bound is a CUMULATIVE budget for the whole
    cursor: the engine's counter is read around every step and the deltas added
    up. Measured 2026-08-27 on an endless generator, budgets of 1,000 / 5,000 /
-   20,000 / 100,000 stopped after spending 1,004 / 5,004 / 20,004 / 100,004.
+   20,000 / 100,000 stopped after spending 1,004 / 5,004 / 20,004 / 100,004
+   [tested: tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
+   commit=56dcac4afc074dce9e401174c65cedc3071075ae].
    The wall bound applies per step, so time the host spends between steps does
    not count against it. An eager cetta_run() is bounded as one call. */
 CETTA_API bool cetta_limit(cetta *runtime, const cetta_limits *limits);
