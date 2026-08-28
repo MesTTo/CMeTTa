@@ -203,7 +203,7 @@ def loaded_seats() -> list[str]:
 #: What a seat DECLARES it loads, and what those files load in turn. Both are
 #: read from the seat rather than listed here, so a seat that grows a unit is
 #: covered without this file changing.
-SEAT_ENTRY = re.compile(r"^entry\([a-z_]+,\s*'([^']+)'\)", re.M)
+SEAT_ENTRY = re.compile(r"^entry\([a-z_]+,\s*'([^']+)'\)", re.MULTILINE)
 SEAT_LOAD = re.compile(r"(?:ensure_loaded|consult)\('([^']+\.pl)'\)")
 
 
