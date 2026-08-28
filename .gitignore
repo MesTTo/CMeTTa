@@ -1,10 +1,11 @@
 # This binding's build products. cetta.c and cetta.h are the source; the shared
-# library, the three examples, the C suite, the parity driver and the benchmark
+# library, the four examples, the C suite, the parity driver and the benchmark
 # driver are all built by the Makefile here and are one machine's binaries.
 libcetta.so
 examples/hello
 examples/ops
 examples/stream
+examples/lower
 tests/test_cetta
 kit/driver
 benchmarks/cases

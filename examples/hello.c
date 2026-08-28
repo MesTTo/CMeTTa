@@ -17,12 +17,12 @@ int main(void)
   if ( !m ) return fprintf(stderr, "boot: %s\n", mt_errmsg()), 1;
 
   /* Run a program. The loop opens the cursor, walks it and closes it. */
-  mt_each_cursor (a, it, mt_run(m,
+  mt_rows (row, mt_run(m,
         "(= (double $x) (* 2 $x))\n"
         "!(double 21)\n"
         "!(superpose (a b c))\n"))
       printf("group %zu: %-4s %s\n",
-             mt_group(it), mt_show(a), mt_kind_str(mt_kind_of(a)));
+             row->group, row->text, mt_kind_str(mt_kind_of(row->atom)));
 
   /* A term built in C: no count, no per-child constructor, no text parsed.
      mt_eval takes the goal and mt_one_int closes the cursor and drops

@@ -111,7 +111,7 @@ int main(int argc, char **argv)
   for (p = corpus; (p = strstr(p, "\"source\"")) != NULL; )
   { static char source[4096];
     mt_answers *answers;
-    const mt_atom *atom;
+    const mt_row *row;
     int first_answer = 1;
 
     p = strchr(p + 8, '"');
@@ -134,14 +134,16 @@ int main(int argc, char **argv)
     }
 
     printf(",\"answers\":[");
-    while ( (atom = mt_next(answers)) != NULL )
+    /* The row form, because this report wants the group and the engine's own
+       text beside each answer, not the answer alone. */
+    while ( (row = mt_row_next(answers)) != NULL )
     {
       if ( !first_answer ) printf(",");
       first_answer = 0;
-      printf("{\"group\":%zu,\"kind\":", mt_group(answers));
-      json_string(stdout, mt_kind_str(mt_kind_of(atom)));
+      printf("{\"group\":%zu,\"kind\":", row->group);
+      json_string(stdout, mt_kind_str(mt_kind_of(row->atom)));
       printf(",\"text\":");
-      json_string(stdout, mt_answer_text(answers));
+      json_string(stdout, row->text);
       printf("}");
     }
     printf("]}");

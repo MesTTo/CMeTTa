@@ -48,9 +48,26 @@
 #include <SWI-Prolog.h>
 #include <SWI-Stream.h>
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Invariants the code below relies on, checked by the compiler rather than
+   trusted to a comment. Each one is a thing that would fail quietly. */
+static_assert(MT_NONE == -1,
+              "mt_kind_of(NULL) answers MT_NONE, and a kind of 0 would be a "
+              "real kind");
+static_assert(MT_HANDLE == MT_SYMBOL + 11,
+              "the kind enum is contiguous and twelve long, which is what "
+              "makes mt_kind_str's switch total and its missing-case warning "
+              "meaningful");
+static_assert(MT_SHOW_SLOTS > 1,
+              "one slot cannot survive two mt_show() calls in one printf, "
+              "which is the whole reason the buffer rotates");
+static_assert(MT_OK == 0,
+              "mt_ok() is a comparison against MT_OK, and cetta_clear() zeroes "
+              "the status to mean success");
 
 /* SWI takes a foreign predicate as pl_function_t, which is void *. ISO C does
    not guarantee a function pointer converts to an object pointer, so the two
@@ -342,7 +359,7 @@ mt_atom *mt_bigint(const char *decimal)
   return atom_text(MT_BIGINT, decimal, strlen(decimal));
 }
 
-mt_atom *mt_ratio(int64_t numerator, int64_t denominator)
+mt_atom *mt_rational(int64_t numerator, int64_t denominator)
 { mt_atom *a;
   if ( denominator == 0 )
   { err_set(MT_MISUSE, "a rational cannot have a zero denominator");
@@ -483,16 +500,16 @@ bool mt_truth(const mt_atom *atom)
   return atom->u.b;
 }
 
-bool mt_ratio_of(const mt_atom *atom,
-                    int64_t *numerator, int64_t *denominator)
-{ if ( !atom || atom->kind != MT_RATIONAL )
+mt_ratio mt_ratio_of(const mt_atom *atom)
+{ mt_ratio out = { 0, 0 };
+  if ( !atom || atom->kind != MT_RATIONAL )
   { err_set(MT_MISUSE, "mt_ratio_of wants a Rational; this is %s",
             atom ? mt_kind_str(atom->kind) : "NULL");
-    return false;
+    return out;
   }
-  *numerator = atom->u.r.num;
-  *denominator = atom->u.r.den;
-  return true;
+  out.num = atom->u.r.num;
+  out.den = atom->u.r.den;
+  return out;
 }
 
 size_t mt_len(const mt_atom *atom)
@@ -826,7 +843,7 @@ static mt_atom *decode_number(term_t t)
     if ( PL_unify(av, t) &&
          call_bridge("metta_c_rational_parts", 3, av) == MT_OK &&
          PL_get_int64(av + 1, &num) && PL_get_int64(av + 2, &den) )
-      a = mt_ratio(num, den);
+      a = mt_rational(num, den);
     else
       err_set(MT_UNSUPPORTED,
               "a rational whose halves do not fit int64_t; C has no type for "
@@ -1729,9 +1746,10 @@ struct mt_answers
   size_t       *groups;
   size_t        n, at;
   bool          started, done;
-  mt_atom *current;
+  mt_atom      *current;
   char         *current_text;
   size_t        current_group;
+  mt_row        row;            /* refreshed each step; mt_next points at it */
 };
 
 static mt_answers *answers_alloc(metta *runtime)
@@ -2005,6 +2023,17 @@ const mt_atom *mt_next(mt_answers *answers)
   return answers_step(answers) == MT_ROW ? answers->current : NULL;
 }
 
+/* The same step reported in full. The row lives in the cursor and is
+   refreshed here, so it is a pointer and costs no copy per answer. */
+const mt_row *mt_row_next(mt_answers *answers)
+{ if ( !mt_next(answers) ) return NULL;
+  answers->row.atom  = answers->current;
+  answers->row.text  = answers->current_text;
+  answers->row.group = answers->current_group;
+  answers->row.of    = answers;
+  return &answers->row;
+}
+
 /* The first answer, owned, with the cursor closed behind it. Consuming the
    cursor is what lets this compose in one expression. */
 mt_atom *mt_first(mt_answers *answers)
@@ -2019,32 +2048,6 @@ mt_atom *mt_first(mt_answers *answers)
 
 /* Every answer as one owned array, for a caller who wants them all rather
    than a walk. */
-mt_atom **mt_all(mt_answers *answers, size_t *n_out)
-{ mt_atom **items = NULL;
-  size_t n = 0, cap = 0;
-  const mt_atom *found;
-
-  if ( n_out ) *n_out = 0;
-  if ( !answers ) return NULL;
-  while ( (found = mt_next(answers)) != NULL )
-  { if ( n == cap )
-    { size_t grown_cap = cap ? cap * 2 : 8;
-      mt_atom **grown = realloc(items, grown_cap * sizeof(*grown));
-      if ( !grown )
-      { mt_atoms_free(items, n);
-        mt_answers_free(answers);
-        return err_null(MT_NOMEM, "out of memory collecting answers");
-      }
-      items = grown;
-      cap = grown_cap;
-    }
-    items[n++] = mt_keep(found);
-  }
-  mt_answers_free(answers);
-  if ( n_out ) *n_out = n;
-  return items;
-}
-
 /* Exactly one, or a recorded failure. Pulling the second answer is what makes
    the claim real, and it costs one step of a lazy cursor. */
 mt_atom *mt_one(mt_answers *answers)
@@ -2070,13 +2073,13 @@ mt_atom *mt_one(mt_answers *answers)
 /* Ask, read, and let go, which is the shape almost every question has: the
    caller wants the number, not an atom to look after. Each of these closes
    the cursor and drops the atom, so nothing is left owned. */
-#define MT_ONE(name, type, read, zero)                                    \
-  type name(mt_answers *answers)                                          \
-  { mt_atom *a = mt_one(answers);                                      \
+#define MT_ONE(name, type, read, zero)                                       \
+  type name(mt_answers *answers)                                             \
+  { mt_atom *a = mt_one(answers);                                            \
     type value;                                                              \
     if ( !a ) return zero;                                                   \
     value = read(a);                                                         \
-    mt_drop(a);                                                           \
+    mt_drop(a);                                                              \
     return value;                                                            \
   }
 
@@ -2085,8 +2088,8 @@ MT_ONE(mt_one_float, double,  mt_float, 0.0)
 MT_ONE(mt_one_truth, bool,    mt_truth, false)
 #undef MT_ONE
 
-/* The text goes into the same rotating buffer mt_show() writes, so the
-   atom can be released here and the caller still has something to print. */
+/* The text goes into the same rotating buffer mt_show() writes, so the atom
+   can be released here and the caller still has something to print. */
 const char *mt_one_name(mt_answers *answers)
 { mt_atom *a = mt_one(answers);
   const char *shown;
@@ -2097,15 +2100,38 @@ const char *mt_one_name(mt_answers *answers)
   return shown;
 }
 
-void mt_atoms_free(mt_atom **atoms, size_t count)
-{ size_t i;
-  if ( !atoms ) return;
-  for (i = 0; i < count; i++) mt_drop(atoms[i]);
-  free(atoms);
+mt_list mt_all(mt_answers *answers)
+{ mt_list out = { NULL, 0 };
+  size_t cap = 0;
+  const mt_atom *found;
+
+  if ( !answers ) return out;
+  while ( (found = mt_next(answers)) != NULL )
+  { if ( out.len == cap )
+    { size_t grown_cap = cap ? cap * 2 : 8;
+      mt_atom **grown = realloc(out.items, grown_cap * sizeof(*grown));
+      if ( !grown )
+      { mt_list_free(out);
+        mt_answers_free(answers);
+        err_set(MT_NOMEM, "out of memory collecting answers");
+        out.items = NULL;
+        out.len = 0;
+        return out;
+      }
+      out.items = grown;
+      cap = grown_cap;
+    }
+    out.items[out.len++] = mt_keep(found);
+  }
+  mt_answers_free(answers);
+  return out;
 }
 
-const char *mt_answer_text(const mt_answers *answers)
-{ return answers ? answers->current_text : NULL;
+void mt_list_free(mt_list list)
+{ size_t i;
+  if ( !list.items ) return;
+  for (i = 0; i < list.len; i++) mt_drop(list.items[i]);
+  free(list.items);
 }
 
 /* Walk the pattern and the answer together; where the pattern has the named
@@ -2139,14 +2165,10 @@ static const mt_atom *bound_in(const mt_atom *pattern, const mt_atom *answer,
   return NULL;
 }
 
-const mt_atom *mt_bound(const mt_answers *answers, const char *name)
-{ if ( !answers || !answers->pattern || !answers->current || !name )
+const mt_atom *mt_bound(const mt_row *row, const char *name)
+{ if ( !row || !row->of || !row->of->pattern || !row->atom || !name )
     return NULL;
-  return bound_in(answers->pattern, answers->current, name);
-}
-
-size_t mt_group(const mt_answers *answers)
-{ return answers ? answers->current_group : 0;
+  return bound_in(row->of->pattern, row->atom, name);
 }
 
 void mt_answers_free(mt_answers *answers)
@@ -2177,11 +2199,12 @@ void mt_answers_free(mt_answers *answers)
  * Bounding an evaluation
  * ================================================================== */
 
-bool mt_limit(metta *runtime, const mt_limits *limits)
+bool mt_limit(metta *runtime, mt_limits limits)
 { static const mt_limits none = {0, 0, 0};
 
   if ( !runtime ) { err_set(MT_MISUSE, "mt_limit needs a runtime"); return false; }
-  runtime->limits = limits ? *limits : none;
+  (void)none;
+  runtime->limits = limits;
 
   if ( runtime->limits.stack_bytes )
   { char goal_text[96];

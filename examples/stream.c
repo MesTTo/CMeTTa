@@ -41,10 +41,8 @@ int main(void)
         printf("stored: %s\n", mt_show(a));
 
     /* A binding by the name you wrote, rather than by counting children. */
-    mt_each_cursor (row, it, mt_match(kb, E("edge", "a", V("n"))))
-    { (void)row;
-      printf("n = %s\n", mt_show(mt_bound(it, "n")));
-    }
+    mt_rows (row, mt_match(kb, E("edge", "a", V("n"))))
+        printf("n = %s\n", mt_show(mt_bound(row, "n")));
 
     /* A pattern reused across calls is the one place mt_keep() earns its
        place: the door would otherwise take the only reference on the first

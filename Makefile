@@ -53,7 +53,7 @@ LDFLAGS += -L$(PLLIBDIR) -Wl,-rpath,$(PLLIBDIR)
 LDLIBS  += -lswipl
 
 LIB       := libcetta.so
-EXAMPLES  := examples/hello examples/ops examples/stream
+EXAMPLES  := examples/hello examples/ops examples/stream examples/lower
 TESTS     := tests/test_cetta
 KIT       := kit/driver
 BENCH     := benchmarks/cases
@@ -89,7 +89,21 @@ tests/%: tests/%.c $(LIB)
 # The examples run too. An example that no longer compiles, or that compiles
 # and then fails, is documentation that lies, and the README quotes these
 # three directly. The Python seat gates its examples for the same reason.
-test: $(TESTS) $(EXAMPLES)
+# Every MT_API declaration must have a definition in the library. A header and
+# an implementation drift apart silently: an edit that removes a function
+# leaves its declaration behind, and nothing notices until a consumer that
+# happens to call it fails to link. This caught six functions deleted by an
+# over-wide edit [measured 2026-08-28].
+surface: $(LIB)
+	@python3 -c "import re,subprocess,sys; \
+	  d=set(re.findall(r'^MT_API[^;(]*?\b(mt_[a-z_0-9]+)\(', open('cetta.h').read(), re.M)); \
+	  o=subprocess.run(['nm','-D','--defined-only','$(LIB)'],capture_output=True,text=True).stdout; \
+	  f={l.split()[2] for l in o.splitlines() if len(l.split())==3 and l.split()[1]=='T'}; \
+	  miss=sorted(d-f); \
+	  sys.exit('declared but not defined: '+', '.join(miss)) if miss else \
+	  print(f'surface: {len(d)} declarations, all defined')"
+
+test: $(TESTS) $(EXAMPLES) surface
 	@./tests/test_cetta
 	@for example in $(EXAMPLES); do \
 	    ./$$example > /dev/null || { echo "$$example failed" >&2; exit 1; }; \

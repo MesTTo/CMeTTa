@@ -223,6 +223,63 @@ and a C function can be a value rather than a name, applied wherever it lands:
 mt_atom *f = mt_function(fn_triple, NULL, NULL);   /* ($f 5) is 15 */
 ```
 
+## Lowering: C source becoming MeTTa
+
+`mt_def` publishes a C function the engine CALLS. `mt_lower` installs an
+EQUATION, which is a different thing:
+
+```c
+mt_lower(m, (twice $x), (* 2 $x));
+mt_lower(m, (fib $n), (if (< $n 2) $n
+                          (+ (fib (- $n 1)) (fib (- $n 2)))));
+```
+
+The body is C tokens the compiler saw, so there is no quoting, no escaped
+newlines, and unbalanced parentheses are a compile error rather than a runtime
+one. The preprocessor is what makes this possible: Python lowers by reading a
+function's `__code__` and Node by reading its `toString()`, and C has neither
+at run time but has `#`, which is access to the program's own source at the
+one moment C offers it.
+
+The difference from `mt_def` is what the engine can see. A published function
+is opaque, which is why it must declare an effect class. An equation is MeTTa,
+so the engine reads it, type-checks it, specialises it, and it is an atom in
+the space like any other:
+
+```c
+mt_each (a, mt_match(mt_self(m), E("=", E("poly", V("x")), V("body"))))
+    puts(mt_show(a));            /* (= (poly $_0) (+ (* 3 $_1) 1)) */
+```
+
+The same query against an `mt_def` name finds nothing. A lowered call also
+crosses into no host at all.
+
+**One body, both languages.** Parameterise the body by its operators and it
+expands to C in one mode and MeTTa in the other, so the function exists once
+and is callable from both:
+
+```c
+#define POLY(ADD, MUL, x)  ADD(MUL(3, x), 1)
+#define C_ADD(a, b) ((a) + (b))
+#define C_MUL(a, b) ((a) * (b))
+#define M_ADD(a, b) (+ a b)
+#define M_MUL(a, b) (* a b)
+
+int64_t poly(int64_t x) { return POLY(C_ADD, C_MUL, x); }
+mt_lower(m, (poly $x), POLY(M_ADD, M_MUL, $x));
+```
+
+That is what the other seats' twins buy, bought the way C buys things.
+`examples/lower.c` runs all of it.
+
+What is out of reach: an ARBITRARY existing C function cannot be lowered. The
+body has to be written in the neutral form, where Python's decorator lowers a
+function written in ordinary Python.
+
+`$x` tokenizes because GCC and Clang admit `$` in an identifier. Without that
+extension, use the string form, which is what this expands to:
+`mt_do(m, "(= (twice $x) (* 2 $x))")`.
+
 ## Bounding and measuring
 
 An embedded engine that cannot be stopped is a hazard, so bounds are part of
@@ -291,7 +348,7 @@ that evaluate start, the same restriction `sqlite3_create_function()` carries.
 | `cetta.c` | the C half: boot, term conversion, cursors, ops |
 | `bridge.pl` | the Prolog half, calling published engine surface only |
 | `extension.pl` | the seat declaration the engine reads at boot |
-| `examples/` | `hello`, `ops`, `stream` |
+| `examples/` | `hello`, `ops`, `stream`, `lower` |
 | `tests/` | the C suite, run by `sh test.sh` and by the gate |
 | `kit/` | the corpus and driver the cross-seat parity test uses |
 | `benchmarks/` | what a C host pays, pinned to `baseline.json` |

@@ -121,6 +121,27 @@ extern "C" {
 #define MT_API extern
 #endif
 
+/* C11 or nothing. _Generic carries mt_expr's coercions and the receiver
+   dispatch, and without it every macro here expands to a diagnostic about
+   something else entirely. Saying so once beats a hundred lines of that. */
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L
+#error "cetta.h needs C11: _Generic carries the argument coercions and the \
+receiver dispatch. Compile with -std=c11 or later."
+#endif
+
+/* Ignoring a returned resource is the leak this library can most easily be
+   made to commit, and a compiler that knows will say so.
+   The GNU spelling and not C23's [[nodiscard]], even where C23 is available:
+   an attribute in [[ ]] form must lead the declaration, where __attribute__
+   may follow the storage class, and this header writes `MT_API MT_MUST_USE
+   type name(...)`. One spelling that works in every position beats two that
+   need the macro to move. */
+#if defined(__GNUC__) || defined(__clang__)
+#define MT_MUST_USE __attribute__((warn_unused_result))
+#else
+#define MT_MUST_USE
+#endif
+
 /* ================================================================== *
  * Status
  * ================================================================== */
@@ -185,27 +206,28 @@ MT_API const char *mt_kind_str(mt_kind kind);
 
 /* --- building. None of these start the engine. --- */
 
-MT_API mt_atom *mt_sym(const char *name);
-MT_API mt_atom *mt_var(const char *name);
-MT_API mt_atom *mt_text(const char *text);
-MT_API mt_atom *mt_textn(const char *text, size_t length);
-MT_API mt_atom *mt_num(int64_t value);
-MT_API mt_atom *mt_real(double value);
-MT_API mt_atom *mt_bool(bool value);
-MT_API mt_atom *mt_unit(void);
+MT_API MT_MUST_USE mt_atom *mt_sym(const char *name);
+MT_API MT_MUST_USE mt_atom *mt_var(const char *name);
+MT_API MT_MUST_USE mt_atom *mt_text(const char *text);
+MT_API MT_MUST_USE mt_atom *mt_textn(const char *text, size_t length);
+MT_API MT_MUST_USE mt_atom *mt_num(int64_t value);
+MT_API MT_MUST_USE mt_atom *mt_real(double value);
+MT_API MT_MUST_USE mt_atom *mt_bool(bool value);
+MT_API MT_MUST_USE mt_atom *mt_unit(void);
 
 /* An exact integer wider than int64_t, as decimal digits with an optional
    leading minus. NULL on any other spelling. */
-MT_API mt_atom *mt_bigint(const char *decimal);
+MT_API MT_MUST_USE mt_atom *mt_bigint(const char *decimal);
 
-/* An exact ratio. A zero denominator is refused. */
-MT_API mt_atom *mt_ratio(int64_t numerator, int64_t denominator);
+/* An exact ratio. A zero denominator is refused. Read one back with
+   mt_ratio_of(), which answers the pair. */
+MT_API MT_MUST_USE mt_atom *mt_rational(int64_t numerator, int64_t denominator);
 
 /* A space reference by its portable engine name, which begins with '&'. */
-MT_API mt_atom *mt_spaceref(const char *name);
+MT_API MT_MUST_USE mt_atom *mt_spaceref(const char *name);
 
 /* An expression from an array. The children are TAKEN; the array is not. */
-MT_API mt_atom *mt_exprv(size_t count, mt_atom **children);
+MT_API MT_MUST_USE mt_atom *mt_exprv(size_t count, mt_atom **children);
 
 /* The widened forms mt_atom_of dispatches to. Call mt_num or mt_real
    directly rather than these. */
@@ -283,8 +305,15 @@ MT_API int64_t mt_int(const mt_atom *atom);
 MT_API double mt_float(const mt_atom *atom);
 
 MT_API bool mt_truth(const mt_atom *atom);
-MT_API bool mt_ratio_of(const mt_atom *atom, int64_t *numerator,
-                              int64_t *denominator);
+/* A ratio is a pair, so it comes back as one rather than through two
+   out-parameters. `den` is 0 when the atom is not a Rational, which is a value
+   no ratio has, and the failure is recorded either way. */
+typedef struct mt_ratio {
+  int64_t num;
+  int64_t den;
+} mt_ratio;
+
+MT_API mt_ratio mt_ratio_of(const mt_atom *atom);
 
 /* Child count of an EXPR, 0 otherwise. */
 MT_API size_t mt_len(const mt_atom *atom);
@@ -299,7 +328,7 @@ MT_API bool mt_eq(const mt_atom *a, const mt_atom *b);
 /* --- text, through the engine's own reader and writer --- */
 
 /* Read one MeTTa form. The engine's reader is the only reader. */
-MT_API mt_atom *mt_parse(const char *source);
+MT_API MT_MUST_USE mt_atom *mt_parse(const char *source);
 
 /* Write an atom the way the engine writes it, into a per-thread rotating
    buffer so it drops straight into printf:
@@ -311,7 +340,7 @@ MT_API mt_atom *mt_parse(const char *source);
    copy with mt_show_dup() to keep it, and free that with mt_free(). */
 #define MT_SHOW_SLOTS 8
 MT_API const char *mt_show(const mt_atom *atom);
-MT_API char *mt_show_dup(const mt_atom *atom);
+MT_API MT_MUST_USE char *mt_show_dup(const mt_atom *atom);
 
 /* Free anything this library handed back by pointer that is not an atom. */
 MT_API void mt_free(void *pointer);
@@ -336,7 +365,7 @@ typedef struct mt_config {
    One runtime per process: PL_initialise() sets up the process's single
    Prolog heap, so a second mt_open() with a matching configuration hands
    back the same runtime and one with a different path fails. */
-MT_API metta *mt_open(const mt_config *config);
+MT_API MT_MUST_USE metta *mt_open(const mt_config *config);
 
 /* Shut the runtime down. Atoms outlive it: they are C memory and stay valid
    until their own references go. */
@@ -356,7 +385,7 @@ MT_API mt_space *mt_self(metta *runtime);
 MT_API mt_space *mt_catalog(metta *runtime);
 
 /* Create or open a space by name; names begin with '&'. NULL on failure. */
-MT_API mt_space *mt_space_open(metta *runtime, const char *name);
+MT_API MT_MUST_USE mt_space *mt_space_open(metta *runtime, const char *name);
 MT_API void mt_space_close(mt_space *space);
 MT_API const char *mt_space_name(const mt_space *space);
 
@@ -370,11 +399,64 @@ MT_API const char *mt_space_name(const mt_space *space);
    Eager: the engine's run door computes the whole program before the first
    answer, because that is what running a program means. mt_eval() is the
    lazy door. NULL on failure. */
-MT_API mt_answers *mt_run(metta *runtime, const char *source);
+MT_API MT_MUST_USE mt_answers *mt_run(metta *runtime, const char *source);
 
 /* Load a file through the same door `import!` uses, so a reload replaces the
    first load's definitions rather than doubling them. */
-MT_API mt_answers *mt_load(metta *runtime, const char *path);
+MT_API MT_MUST_USE mt_answers *mt_load(metta *runtime, const char *path);
+
+/* ------------------------------------------------------------------ *
+ * Lowering: C source becoming MeTTa
+ * ------------------------------------------------------------------ */
+
+/* The MeTTa text of a token sequence the C compiler saw. Two levels, so the
+   argument is macro-expanded before it is stringified: that is what lets a
+   body assembled by other macros arrive here already expanded. */
+#define MT_METTA(tokens)  MT_METTA_(tokens)
+#define MT_METTA_(tokens) #tokens
+
+/* Install an equation written as C TOKENS rather than as a string:
+
+       mt_lower(m, (twice $x), (* 2 $x));
+       mt_lower(m, (fib $n), (if (< $n 2) $n
+                                 (+ (fib (- $n 1)) (fib (- $n 2)))));
+
+   This is LOWERING, and it is a different thing from mt_def(). A published C
+   function is OPAQUE to the engine, which is why it must declare an effect
+   class: nothing can be seen of what it does. An equation is MeTTa, so the
+   engine reads it, type-checks it, specialises it and reasons about it, and a
+   call costs no host crossing at all.
+
+   The preprocessor is what makes this possible. The Python seat lowers by
+   reading a function's __code__ and the Node seat by reading its
+   toString(); C has neither at run time, but `#` is compile-time access to
+   the program's own source, which is the same capability at the only moment C
+   offers it. No quoting, no escaped newlines, and the tokens are checked for
+   balanced parentheses by the compiler before the engine ever sees them.
+
+   `$x` tokenizes because GCC and Clang admit `$` in an identifier. That is an
+   extension rather than ISO C, so a compiler without it needs the string
+   form, mt_do(m, "(= (twice $x) (* 2 $x))"), which is what this expands to.
+
+   ONE BODY, BOTH LANGUAGES. Parameterise the body by its operators and it
+   expands to C in one mode and to MeTTa in the other, so a function exists
+   once and is callable from both:
+
+       #define POLY(ADD, MUL, x)  ADD(MUL(3, x), 1)
+       #define C_ADD(a, b)        ((a) + (b))
+       #define C_MUL(a, b)        ((a) * (b))
+       #define M_ADD(a, b)        (+ a b)
+       #define M_MUL(a, b)        (* a b)
+
+       int64_t poly(int64_t x) { return POLY(C_ADD, C_MUL, x); }
+       mt_lower(m, (poly $x), POLY(M_ADD, M_MUL, $x));
+
+   which installs `(= (poly $x) (+ (* 3 $x) 1))` and leaves poly() callable
+   from C. The engine gets an equation it can see into; C gets a function with
+   no crossing. That is what the other seats' twins buy, bought the way C
+   buys things. */
+#define mt_lower(runtime, head, body)                                     \
+    mt_do((runtime), "(= " MT_METTA(head) " " MT_METTA(body) ")")
 
 /* Run source for its EFFECT and discard the answers: definitions, imports,
    pragmas, anything whose point is what it leaves behind rather than what it
@@ -388,12 +470,12 @@ MT_API bool mt_do(metta *runtime, const char *source);
 
 /* The pairs the verbs below dispatch between. Call these directly if you
    would rather not go through _Generic. Each TAKES its atom argument. */
-MT_API mt_answers *mt_self_eval(metta *runtime, mt_atom *goal);
-MT_API mt_answers *mt_space_eval(mt_space *space, mt_atom *goal);
-MT_API mt_answers *mt_self_match(metta *runtime, mt_atom *pattern);
-MT_API mt_answers *mt_space_match(mt_space *space, mt_atom *pattern);
-MT_API mt_answers *mt_self_atoms(metta *runtime);
-MT_API mt_answers *mt_space_atoms(mt_space *space);
+MT_API MT_MUST_USE mt_answers *mt_self_eval(metta *runtime, mt_atom *goal);
+MT_API MT_MUST_USE mt_answers *mt_space_eval(mt_space *space, mt_atom *goal);
+MT_API MT_MUST_USE mt_answers *mt_self_match(metta *runtime, mt_atom *pattern);
+MT_API MT_MUST_USE mt_answers *mt_space_match(mt_space *space, mt_atom *pattern);
+MT_API MT_MUST_USE mt_answers *mt_self_atoms(metta *runtime);
+MT_API MT_MUST_USE mt_answers *mt_space_atoms(mt_space *space);
 MT_API bool mt_self_add(metta *runtime, mt_atom *atom);
 MT_API bool mt_space_add(mt_space *space, mt_atom *atom);
 MT_API bool mt_self_del(metta *runtime, mt_atom *atom);
@@ -433,26 +515,43 @@ MT_API bool mt_space_wipe(mt_space *space);
 
 /* --- reading answers --- */
 
-/* The next answer, BORROWED and valid until the following step, or NULL at
-   the end. NULL is also what a failure gives, and mt_ok() tells the two
-   apart. This is what mt_each() calls. */
+/* One answer, as a record rather than four questions put to the cursor.
+   BORROWED: it belongs to the cursor and every field is refreshed by the next
+   step, so keep an atom with mt_keep() and text with mt_show_dup(). */
+typedef struct mt_row {
+  const mt_atom *atom;   /* the answer itself                              */
+  const char    *text;   /* the engine's own rendering of it, which can show
+                            a value mt_show() refuses: a host-only value or
+                            a non-finite float                             */
+  size_t         group;  /* which `!` form produced it, counting from 0;
+                            always 0 for the lazy doors, which run one goal */
+  mt_answers    *of;     /* the cursor it came from, which is what lets
+                            mt_bound() take the row and not the cursor     */
+} mt_row;
+
+/* The next ANSWER, or NULL at the end. NULL is also what a failure gives, and
+   mt_ok() tells the two apart. This is what mt_each() calls, and it is the
+   short form because most loops want the answer and nothing else. */
 MT_API const mt_atom *mt_next(mt_answers *answers);
 
-/* Which `!` form produced the current answer, counting from 0. Always 0 for
-   the lazy doors, which evaluate one goal. */
-MT_API size_t mt_group(const mt_answers *answers);
+/* The next answer as a ROW: the same step, reported in full. A pointer rather
+   than a value because the row lives IN the cursor, so returning it by value
+   would copy four fields per answer and a cursor walked two million times
+   notices. This is what mt_rows() calls.
 
-/* The engine's own rendering of the current answer. Presentation: it can show
-   a value mt_show() refuses, a host-only value or a non-finite float. */
-MT_API const char *mt_answer_text(const mt_answers *answers);
+   The split is the Python seat's. There, `Answers` iterates atoms and `Rows`
+   iterates a `Row` whose fields are the query's variable names, because a
+   result you match for and a result you evaluate for are different questions.
+   Making every walk carry a row would charge the common one for the other. */
+MT_API const mt_row *mt_row_next(mt_answers *answers);
 
 /* What the pattern's `$name` is bound to in the CURRENT answer, BORROWED and
    valid until the next step. This is what saves you counting children:
 
-       mt_each_cursor (row, it, mt_match(kb, E("edge", "a", V("y"))))
-           printf("y = %s\n", mt_show(mt_bound(it, "y")));
+       mt_rows (row, mt_match(kb, E("edge", "a", V("y"))))
+           printf("y = %s\n", mt_show(mt_bound(row, "y")));
 
-   rather than mt_at(row, 2) and a comment explaining why 2. The cursor keeps
+   rather than mt_at(row->atom, 2) and a comment explaining why 2. The cursor keeps
    the pattern it was opened with and lines it up against each answer, so this
    costs one walk of the term and no engine call. NULL when the cursor has no
    pattern, when no `$name` is in it, or when that position did not bind.
@@ -466,7 +565,7 @@ MT_API const char *mt_answer_text(const mt_answers *answers);
 
    The Python seat spells the same thing `row.y`, and MeTTa's own answer frames
    carry it as theta, name-to-term pairs against the caller's variables. */
-MT_API const mt_atom *mt_bound(const mt_answers *answers, const char *name);
+MT_API const mt_atom *mt_bound(const mt_row *row, const char *name);
 
 /* Release the cursor and, for a lazy one, the engine behind it. NULL-safe.
    mt_each() does this for you. */
@@ -481,7 +580,7 @@ MT_API void mt_answers_free(mt_answers *answers);
 
    The atom is yours, so it is yours to drop. When all you want is the VALUE,
    the four below do that without an atom ever landing in your hands. */
-MT_API mt_atom *mt_first(mt_answers *answers);
+MT_API MT_MUST_USE mt_atom *mt_first(mt_answers *answers);
 
 /* EXACTLY one answer, OWNED, or NULL with a failure recorded when there were
    none or more than one. The Python seat draws the same line between one()
@@ -489,7 +588,7 @@ MT_API mt_atom *mt_first(mt_answers *answers);
    the cardinality and `first` is not. CONSUMES `answers`
    [tested: tests/test_cetta.c, test_one_and_first_make_different_claims;
    commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]. */
-MT_API mt_atom *mt_one(mt_answers *answers);
+MT_API MT_MUST_USE mt_atom *mt_one(mt_answers *answers);
 
 /* Ask for exactly one answer and read it as a C value: the cursor is closed,
    the atom is released, and the whole question is one expression.
@@ -506,13 +605,29 @@ MT_API double mt_one_float(mt_answers *answers);
 MT_API bool mt_one_truth(mt_answers *answers);
 MT_API const char *mt_one_name(mt_answers *answers);
 
-/* Every answer in order as one owned array, the eager door for a caller who
-   wants them all. CONSUMES `answers`. n_out may be NULL. Release with
-   mt_atoms_free(), which drops each atom and frees the array. */
-MT_API mt_atom **mt_all(mt_answers *answers, size_t *n_out);
-MT_API void mt_atoms_free(mt_atom **atoms, size_t count);
+/* An owned array and its length, which are one thing and so travel as one.
+   The alternative is an out-parameter for the count and a loop bound the
+   caller has to keep in step with it by hand. */
+typedef struct mt_list {
+  mt_atom **items;
+  size_t    len;
+} mt_list;
 
-/* Walk every answer and close the cursor, however the loop is left:
+/* Every answer in order, the eager door for a caller who wants them all.
+   CONSUMES `answers`. An empty or failed call answers {NULL, 0}, which loops
+   zero times, so a caller need not test it before walking:
+
+       mt_list all = mt_all(mt_eval(m, goal));
+       for (size_t i = 0; i < all.len; i++) puts(mt_show(all.items[i]));
+       mt_list_free(all);                                                  */
+MT_API MT_MUST_USE mt_list mt_all(mt_answers *answers);
+
+/* Drops every atom and frees the array. Safe on {NULL, 0}. */
+MT_API void mt_list_free(mt_list list);
+
+/* Walk every answer and close the cursor, however the loop is left. The row
+   carries everything there is to know about one answer, so there is one walk
+   and not two:
 
        mt_each (a, mt_run(m, "!(superpose (1 2 3))"))
            printf("%s\n", mt_show(a));
@@ -520,27 +635,27 @@ MT_API void mt_atoms_free(mt_atom **atoms, size_t count);
    `break` is safe and closes the cursor. `return` and `goto` out of the body
    are NOT: they leave without running the loop's increment, so free it by
    hand there, or use MT_AUTO_ASK below. */
-#define mt_each(var, answers)                                             \
-    MT_EACH_(var, answers, MT_ID(mt_it_))
+#define mt_each(atom, answers)                                            \
+    MT_WALK_(atom, answers, MT_ID(mt_it_), const mt_atom *, mt_next)
 
-/* The same walk with the cursor in hand, for the body that needs to ask it
-   something: which `!` form this answer came from, or how the engine itself
-   rendered it.
+/* The same walk reported in full, for a query rather than an evaluation:
 
-       mt_each_cursor (a, it, mt_run(m, src))
-           printf("group %zu: %s\n", mt_group(it), mt_answer_text(it)); */
-#define mt_each_cursor(var, cursor, answers)                              \
-  for (mt_answers *cursor = (answers); cursor != NULL;                    \
-       mt_answers_free(cursor), cursor = NULL)                            \
-    for (const mt_atom *var; (var = mt_next(cursor)) != NULL; )
+       mt_rows (row, mt_match(kb, E("edge", "a", V("y"))))
+           printf("group %zu: y = %s\n",
+                  row->group, mt_show(mt_bound(row, "y")));
+
+   Named for what it binds, the way mt_each is. The Python seat draws the same
+   line between iterating `Answers` and iterating `Rows`. */
+#define mt_rows(row, answers)                                             \
+    MT_WALK_(row, answers, MT_ID(mt_it_), const mt_row *, mt_row_next)
 
 /* The cursor's name is generated ONCE, by the caller above, and passed in as
    a parameter. Generating it at each mention would give three different names
    because __COUNTER__ increments every time it is read. */
-#define MT_EACH_(var, answers, it)                                        \
+#define MT_WALK_(var, answers, it, type, step)                            \
   for (mt_answers *it = (answers); it != NULL;                            \
        mt_answers_free(it), it = NULL)                                    \
-    for (const mt_atom *var; (var = mt_next(it)) != NULL; )
+    for (type var; (var = step(it)) != NULL; )
 
 /* ================================================================== *
  * Publishing C functions to MeTTa
@@ -607,7 +722,7 @@ typedef void (*mt_free_fn)(void *value);
 
 /* Wrap a C pointer as a grounded atom. MeTTa carries it by reference, never
    serialises it, and hands it back unchanged. */
-MT_API mt_atom *mt_object(void *value, const char *type_name,
+MT_API MT_MUST_USE mt_atom *mt_object(void *value, const char *type_name,
                                    mt_free_fn release);
 MT_API void *mt_value(const mt_atom *atom);
 MT_API const char *mt_type(const mt_atom *atom);
@@ -615,7 +730,7 @@ MT_API const char *mt_type(const mt_atom *atom);
 /* A C function as a VALUE rather than a name, so `($f 2)` calls it wherever
    the atom lands. This is what C answers to a Python callable being an atom;
    mt_def() is the other half, a function reached by its published name. */
-MT_API mt_atom *mt_function(mt_fn fn, void *user,
+MT_API MT_MUST_USE mt_atom *mt_function(mt_fn fn, void *user,
                                      mt_free_fn release);
 
 /* ================================================================== *
@@ -633,7 +748,12 @@ typedef struct mt_limits {
                             max-stack-depth pragma in the program text    */
 } mt_limits;
 
-/* Bounds for every later call. NULL clears them.
+/* Bounds for every later call. By value and not by pointer, because a
+   compound literal says it at the call site and the zero struct already means
+   what a NULL would have:
+
+       mt_limit(m, (mt_limits){ .seconds = 2.0, .inferences = 1000000 });
+       mt_limit(m, (mt_limits){0});          -- and that clears them
 
    On a lazy cursor the inference bound is a CUMULATIVE budget for the whole
    cursor: the engine's counter is read around every step and the deltas added
@@ -643,7 +763,7 @@ typedef struct mt_limits {
    commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3].
    The wall bound applies per step, so time the host spends between steps does
    not count against it. An eager mt_run() is bounded as one call. */
-MT_API bool mt_limit(metta *runtime, const mt_limits *limits);
+MT_API bool mt_limit(metta *runtime, mt_limits limits);
 MT_API mt_limits mt_limits_of(const metta *runtime);
 
 /* The engine's own counters. Inferences are DETERMINISTIC where wall clock is

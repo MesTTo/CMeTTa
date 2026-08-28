@@ -127,6 +127,35 @@ static void test_the_builder_coerces_each_child_by_its_c_type(void)
   }
 }
 
+/* A macro that evaluates its argument twice is C's classic trap: mt_expr and
+   the receiver dispatch both mention theirs more than once in their
+   expansion, so "exactly once" is a property to test rather than assume. */
+static int side_effects;
+static metta *counted_runtime;
+static int64_t bump(void)       { side_effects++; return 1; }
+static const char *bump_s(void) { side_effects++; return "s"; }
+static metta *bump_rt(void)     { side_effects++; return counted_runtime; }
+
+static void test_a_macro_evaluates_each_argument_exactly_once(metta *m)
+{ mt_atom *e;
+
+  CASE("mt_expr evaluates each argument exactly once");
+  side_effects = 0;
+  e = E("f", bump(), bump_s(), bump());
+  CHECK(e != NULL);
+  CHECK(side_effects == 3);
+  mt_drop(e);
+
+  CASE("the _Generic receiver dispatch evaluates its target exactly once");
+  /* MT_ON names the target twice: once as _Generic's controlling expression
+     and once as the call's argument. The controlling expression is NOT
+     evaluated -- only its type is read -- so the count must be one. */
+  counted_runtime = m;
+  side_effects = 0;
+  (void)mt_count(bump_rt());
+  CHECK(side_effects == 1);
+}
+
 static void test_a_failed_child_does_not_leak_its_siblings(void)
 { mt_atom *bad;
   CASE("a NULL child fails the whole expression");
@@ -147,7 +176,7 @@ static void test_refusals_are_named(void)
   mt_clear();
   CHECK(mt_bigint("12x3") == NULL);
   CHECK(!mt_ok());
-  CHECK(mt_ratio(1, 0) == NULL);
+  CHECK(mt_rational(1, 0) == NULL);
   CHECK(mt_spaceref("kb") == NULL);
 
   mt_clear();
@@ -159,7 +188,7 @@ static void test_refusals_are_named(void)
 }
 
 static void test_reading_promotes_only_where_it_is_lossless(void)
-{ mt_atom *i = N(7), *f = R(2.5), *r = mt_ratio(1, 4), *huge;
+{ mt_atom *i = N(7), *f = R(2.5), *r = mt_rational(1, 4), *huge;
 
   CASE("an Int reads as a double, because nothing is lost");
   mt_clear();
@@ -171,7 +200,12 @@ static void test_reading_promotes_only_where_it_is_lossless(void)
   CHECK(mt_int(f) == 0);
   CHECK(!mt_ok());
 
-  CASE("a Rational reads as its quotient");
+  CASE("a Rational reads as its quotient, and as its two halves");
+  { mt_ratio parts = mt_ratio_of(r);
+    CHECK(parts.num == 1 && parts.den == 4);
+    /* A non-Rational answers a zero denominator, which no ratio has. */
+    CHECK(mt_ratio_of(i).den == 0);
+  }
   mt_clear();
   CHECK(mt_float(r) == 0.25);
   CHECK(mt_ok());
@@ -276,11 +310,12 @@ static void test_run_groups_answers_by_form(metta *m)
   size_t last_group = 0;
 
   CASE("run groups its answers by ! form, in source order");
-  mt_each_cursor (a, it, mt_run(m,
+  mt_rows (row, mt_run(m,
         "(= (twice $x) (* 2 $x))\n"
         "!(twice 21)\n"
         "!(superpose (a b))\n"))
-  { last_group = mt_group(it);
+  { const mt_atom *a = row->atom;
+    last_group = row->group;
     if ( seen == 0 )
     { CHECK(mt_int(a) == 42);
       CHECK(last_group == 0);
@@ -289,7 +324,7 @@ static void test_run_groups_answers_by_form(metta *m)
     { CHECK(mt_kind_of(a) == MT_SYMBOL);
       CHECK(last_group == 1);
     }
-    CHECK(mt_answer_text(it) != NULL);
+    CHECK(row->text != NULL);
     seen++;
   }
   CHECK(seen == 3);
@@ -349,11 +384,11 @@ static void test_one_and_first_make_different_claims(metta *m)
   CHECK(!mt_ok());
 
   CASE("mt_all collects every answer as one owned array");
-  { size_t n = 0;
-    mt_atom **all = mt_all(mt_eval(m, E("superpose", E(1, 2, 3))), &n);
-    CHECK(n == 3);
-    CHECK(all != NULL && mt_int(all[0]) + mt_int(all[1]) + mt_int(all[2]) == 6);
-    mt_atoms_free(all, n);
+  { mt_list all = mt_all(mt_eval(m, E("superpose", E(1, 2, 3))));
+    CHECK(all.len == 3);
+    CHECK(all.items && mt_int(all.items[0]) + mt_int(all.items[1]) +
+                       mt_int(all.items[2]) == 6);
+    mt_list_free(all);
   }
 }
 
@@ -373,27 +408,27 @@ static void test_spaces_store_and_query(metta *m)
   CHECK(mt_add(kb, E("edge", "a", "b")));
   CHECK(mt_count(kb) == 1);
 
-  mt_each_cursor (got, it, mt_match(kb, E("edge", "a", V("y"))))
-  { CHECK(mt_len(got) == 3);
+  mt_rows (r, mt_match(kb, E("edge", "a", V("y"))))
+  { const mt_atom *got = r->atom;
+    CHECK(mt_len(got) == 3);
     /* The pattern's variable arrives bound in the answer, reachable by the
        name the caller wrote rather than by counting children. */
     CHECK(strcmp(mt_name(mt_at(got, 2)), "b") == 0);
-    CHECK(mt_bound(it, "y") != NULL);
-    CHECK(strcmp(mt_name(mt_bound(it, "y")), "b") == 0);
-    CHECK(mt_eq(mt_bound(it, "y"), mt_at(got, 2)));
+    CHECK(mt_bound(r, "y") != NULL);
+    CHECK(strcmp(mt_name(mt_bound(r, "y")), "b") == 0);
+    CHECK(mt_eq(mt_bound(r, "y"), mt_at(got, 2)));
     /* A name the pattern never had is NULL rather than a guess. */
-    CHECK(mt_bound(it, "nosuch") == NULL);
+    CHECK(mt_bound(r, "nosuch") == NULL);
     matched++;
   }
   CHECK(matched == 1);
 
   CASE("a name reaches a binding however deep the pattern puts it");
   CHECK(mt_add(kb, E("path", E("from", "a"), E("to", "z"))));
-  mt_each_cursor (row, it, mt_match(kb, E("path", E("from", V("s")),
-                                               E("to", V("d")))))
-  { (void)row;
-    CHECK(mt_bound(it, "s") && strcmp(mt_name(mt_bound(it, "s")), "a") == 0);
-    CHECK(mt_bound(it, "d") && strcmp(mt_name(mt_bound(it, "d")), "z") == 0);
+  mt_rows (row, mt_match(kb, E("path", E("from", V("s")),
+                                        E("to", V("d")))))
+  { CHECK(mt_bound(row, "s") && strcmp(mt_name(mt_bound(row, "s")), "a") == 0);
+    CHECK(mt_bound(row, "d") && strcmp(mt_name(mt_bound(row, "d")), "z") == 0);
   }
   CHECK(mt_del(kb, E("path", E("from", "a"), E("to", "z"))));
 
@@ -402,12 +437,14 @@ static void test_spaces_store_and_query(metta *m)
      the two up would find a subterm at the same index and call it a binding.
      Asserted outside any loop, so the case holds whether or not the goal
      answered at all. */
-  { mt_answers *it = mt_eval(m, E("quote", V("x")));
-    CHECK(it != NULL);
-    CHECK(mt_bound(it, "x") == NULL);      /* before the first step */
-    mt_next(it);
-    CHECK(mt_bound(it, "x") == NULL);      /* and after it */
-    mt_answers_free(it);
+  { mt_answers *cur = mt_eval(m, E("quote", V("x")));
+    const mt_row *row;
+    CHECK(cur != NULL);
+    row = mt_row_next(cur);
+    /* The row still carries its atom and text; only the binding is absent. */
+    CHECK(row == NULL || row->atom != NULL);
+    CHECK(row == NULL || mt_bound(row, "x") == NULL);
+    mt_answers_free(cur);
   }
 
   CHECK(mt_del(kb, E("edge", "a", "b")) == true);
@@ -530,6 +567,48 @@ static mt_status op_bump(mt_call *call, void *user)
   return mt_answer(call, N(c->bumps));
 }
 
+/* One body, two languages: the operators are parameters, so this expands to C
+   in one mode and to MeTTa tokens in the other. */
+#define POLY_BODY(ADD, MUL, x)  ADD(MUL(3, x), 1)
+#define POLY_C_ADD(a, b)        ((a) + (b))
+#define POLY_C_MUL(a, b)        ((a) * (b))
+#define POLY_M_ADD(a, b)        (+ a b)
+#define POLY_M_MUL(a, b)        (* a b)
+
+static int64_t poly_in_c(int64_t x) { return POLY_BODY(POLY_C_ADD, POLY_C_MUL, x); }
+
+static void test_a_c_body_lowers_into_an_equation_the_engine_can_see(metta *m)
+{ CASE("mt_lower installs an equation from C tokens");
+  CHECK(mt_lower(m, (lowered-twice $x), (* 2 $x)));
+  CHECK(mt_one_int(mt_run(m, "!(lowered-twice 21)")) == 42);
+
+  CASE("a nested body lowers whole");
+  CHECK(mt_lower(m, (fib $n), (if (< $n 2) $n
+                                  (+ (fib (- $n 1)) (fib (- $n 2))))));
+  CHECK(mt_one_int(mt_run(m, "!(fib 10)")) == 55);
+
+  CASE("one body reaches C and MeTTa, and the two agree");
+  CHECK(mt_lower(m, (poly $x), POLY_BODY(POLY_M_ADD, POLY_M_MUL, $x)));
+  CHECK(mt_one_int(mt_run(m, "!(poly 5)")) == 16);
+  CHECK(poly_in_c(5) == 16);
+  CHECK(mt_one_int(mt_run(m, "!(poly 7)")) == poly_in_c(7));
+
+  CASE("what lowering buys over mt_def: the engine can SEE the equation");
+  /* A published C function is opaque, so nothing can be asked about it. An
+     equation is MeTTa, so it is in the space and matches like any other atom.
+     That is the whole difference, and it is why lowering is worth having. */
+  { int found = 0;
+    mt_each (a, mt_match(mt_self(m), E("=", E("poly", V("x")), V("body"))))
+    { CHECK(mt_kind_of(a) == MT_EXPR);
+      found++;
+    }
+    CHECK(found == 1);
+  }
+
+  CASE("a lowered name is a function, so it composes with the rest");
+  CHECK(mt_one_int(mt_run(m, "!(lowered-twice (poly 5))")) == 32);
+}
+
 static void test_a_c_value_crosses_by_reference(metta *m)
 { static counter c = {0};
   mt_atom *handle;
@@ -637,7 +716,7 @@ static void test_a_bound_stops_a_runaway_and_says_so(metta *m)
      roughly 40 engine inferences, so 20,000 buys a few hundred answers and
      then stops. The budget is CUMULATIVE across steps. */
   bounded.inferences = 20000;
-  CHECK(mt_limit(m, &bounded));
+  CHECK(mt_limit(m, bounded));
 
   mt_clear();
   /* The ceiling is a BACKSTOP: the bound should stop this long before
@@ -658,7 +737,7 @@ static void test_a_bound_stops_a_runaway_and_says_so(metta *m)
   CHECK(mt_error() == MT_LIMIT);
 
   CASE("clearing the bounds restores unbounded evaluation");
-  CHECK(mt_limit(m, &none));
+  CHECK(mt_limit(m, none));
   CHECK(mt_limits_of(m).inferences == 0);
   mt_clear();
   CHECK(mt_one_int(mt_run(m, "!(+ 1 2)")) == 3);
@@ -756,6 +835,7 @@ int main(void)
 
   test_atoms_need_no_engine();
   test_the_builder_coerces_each_child_by_its_c_type();
+  test_a_macro_evaluates_each_argument_exactly_once(m);
   test_a_failed_child_does_not_leak_its_siblings();
   test_refusals_are_named();
   test_reading_promotes_only_where_it_is_lossless();
@@ -769,6 +849,7 @@ int main(void)
   test_one_verb_takes_either_receiver(m);
   test_a_user_space_decodes_as_a_space(m);
   test_a_c_function_is_callable_from_metta(m);
+  test_a_c_body_lowers_into_an_equation_the_engine_can_see(m);
   test_a_c_value_crosses_by_reference(m);
   test_a_function_value_is_applicable(m);
   test_an_engine_error_reaches_c_as_words(m);
