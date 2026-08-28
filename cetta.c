@@ -1483,7 +1483,7 @@ metta *mt_open(const mt_config *config)
      publishes its stamp through a temporary file and rename/2 for that reason,
      and the Python seat has run the same shape through main.pl all along
      [measured 2026-08-29: 6/6, examples/hello, set made stale by touching
-     engine/spaces/foreign.pl]. */
+     engine/spaces/foreign.pl; commit=888a73c7d231188cd90fafcb8b0cce3799ef5e97]. */
   snprintf(buf, bufsz, "consult('%s/engine/qlf_boot.pl')", path);
   if ( !goal(buf) )
   { void *refused =
