@@ -1,4 +1,4 @@
-/* Purpose: drive the PeTTa engine from a C program. Boot it, build and read
+/* Purpose: drive the MeTTa Kernel engine from a C program. Boot it, build and read
  *   MeTTa terms as C values, run programs, pull answers one at a time, and
  *   publish C functions the language can call.
  *
