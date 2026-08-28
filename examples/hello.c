@@ -1,5 +1,5 @@
-/* Purpose: the shortest complete C program that runs MeTTa. Boot, run a
- *   program, read its answers, shut down.
+/* Purpose: the shortest complete C program that runs MeTTa, and the shape
+ *   every other one starts from.
  * Guarantees: prints one line per answer and exits 0, or names the failure on
  *   stderr and exits 1.
  * Open Obligations:
@@ -8,55 +8,35 @@
  *   Future Enhancements: None
  */
 
+#define CETTA_SHORTHAND
 #include <cetta.h>
 #include <stdio.h>
 
 int main(void)
-{ cetta_t *m;
-  cetta_answers_t *answers;
-  cetta_status_t status;
+{ cetta *m = cetta_open(NULL);
+  if ( !m ) return fprintf(stderr, "boot: %s\n", cetta_errmsg()), 1;
 
-  if ( cetta_open(NULL, &m) != CETTA_OK )
-  { fprintf(stderr, "boot: %s\n", cetta_errmsg());
-    return 1;
-  }
+  /* Run a program. The loop opens the cursor, walks it and closes it. */
+  cetta_each_cursor (a, it, cetta_run(m,
+        "(= (double $x) (* 2 $x))\n"
+        "!(double 21)\n"
+        "!(superpose (a b c))\n"))
+      printf("group %zu: %-4s %s\n",
+             cetta_group(it), cetta_show(a), cetta_kind_str(cetta_kind_of(a)));
 
-  if ( cetta_run(m,
-                 "(= (double $x) (* 2 $x))\n"
-                 "!(double 21)\n"
-                 "!(superpose (a b c))\n",
-                 &answers) != CETTA_OK )
-  { fprintf(stderr, "run: %s\n", cetta_errmsg());
-    cetta_close(m);
-    return 1;
-  }
+  /* A term built in C: no count, no per-child constructor, no text parsed.
+     cetta_eval takes the goal and cetta_one_int closes the cursor and drops
+     the answer, so the whole question is one expression that owns nothing. */
+  printf("(+ 1 2) = %lld\n",
+         (long long)cetta_one_int(cetta_eval(m, E("+", 1, 2))));
 
-  while ( (status = cetta_answers_step(answers)) == CETTA_ROW )
-  { const cetta_atom_t *a = cetta_answers_atom(answers);
-    printf("group %zu: %s  (%s)\n",
-           cetta_answers_group(answers),
-           cetta_answers_text(answers),
-           cetta_kind_str(cetta_kind(a)));
-  }
-  if ( status == CETTA_ERROR )
-    fprintf(stderr, "step: %s\n", cetta_errmsg());
+  /* Reading promotes where it is lossless, so an Int answers cetta_float. */
+  printf("as a double: %g\n", cetta_one_float(cetta_eval(m, E("+", 1, 2))));
 
-  cetta_answers_free(answers);
-
-  /* An atom built in C, evaluated lazily: (+ 1 2). Nothing here parses text. */
-  { cetta_atom_t *goal = cetta_expr(3, cetta_sym("+"), cetta_int(1), cetta_int(2));
-    cetta_answers_t *one;
-    if ( cetta_eval(cetta_self(m), goal, &one) == CETTA_OK )
-    { while ( cetta_answers_step(one) == CETTA_ROW )
-      { int64_t value = 0;
-        cetta_int_value(cetta_answers_atom(one), &value);
-        printf("built in C: (+ 1 2) = %lld\n", (long long)value);
-      }
-      cetta_answers_free(one);
-    } else
-      fprintf(stderr, "eval: %s\n", cetta_errmsg());
-    cetta_release(goal);
-  }
+  /* Errors are checked where it suits you, not at every call. */
+  cetta_clear();
+  cetta_drop(cetta_parse("(unclosed"));
+  if ( !cetta_ok() ) printf("refused, as it should be: %s\n", cetta_errmsg());
 
   cetta_close(m);
   return 0;

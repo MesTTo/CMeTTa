@@ -8,62 +8,49 @@
  *   Future Enhancements: None
  */
 
+#define CETTA_SHORTHAND
 #include <cetta.h>
 #include <stdio.h>
 
 int main(void)
-{ cetta_t *m;
-  cetta_answers_t *answers = NULL;
-  cetta_atom_t *goal;
-  cetta_space_t *kb;
+{ cetta *m = cetta_open(NULL);
+  cetta_space *kb;
   int taken = 0;
+  int i;
 
-  if ( cetta_open(NULL, &m) != CETTA_OK )
-  { fprintf(stderr, "boot: %s\n", cetta_errmsg());
-    return 1;
-  }
+  if ( !m ) return fprintf(stderr, "boot: %s\n", cetta_errmsg()), 1;
 
-  if ( cetta_run(m, "(= (from $n) (superpose ($n (from (+ $n 1)))))\n",
-                 &answers) != CETTA_OK )
-  { fprintf(stderr, "define: %s\n", cetta_errmsg());
-    return 1;
-  }
-  cetta_answers_free(answers);
+  cetta_answers_free(cetta_run(m,
+      "(= (from $n) (superpose ($n (from (+ $n 1)))))"));
 
   /* (from 0) is 0, 1, 2, ... forever. Five are wanted, so five are computed
-     and the rest never run. */
-  goal = cetta_expr(2, cetta_sym("from"), cetta_int(0));
-  if ( cetta_eval(cetta_self(m), goal, &answers) != CETTA_OK )
-  { fprintf(stderr, "eval: %s\n", cetta_errmsg());
-    return 1;
+     and the rest never run. Leaving the loop closes the cursor. */
+  cetta_each (a, cetta_eval(m, E("from", 0)))
+  { printf("take %d: %lld\n", ++taken, (long long)cetta_int(a));
+    if ( taken == 5 ) break;
   }
-  while ( taken < 5 && cetta_answers_step(answers) == CETTA_ROW )
-  { int64_t v = 0;
-    cetta_int_value(cetta_answers_atom(answers), &v);
-    printf("take %d: %lld\n", ++taken, (long long)v);
-  }
-  /* Abandoning the cursor releases the engine behind it. */
-  cetta_answers_free(answers);
-  cetta_release(goal);
 
-  /* The same cursor shape over stored atoms. */
-  if ( cetta_space_open(m, "&stream-demo", &kb) == CETTA_OK )
-  { int i;
-    for (i = 0; i < 3; i++)
-    { /* cetta_add takes a const pointer, so it BORROWS: the caller still owns
-         the atom and releases it. Passing a constructor call inline here
-         would leak, which is the ownership law doing its job. */
-      cetta_atom_t *fact = cetta_expr(3, cetta_sym("edge"), cetta_sym("a"),
-                                      cetta_int(i));
-      cetta_add(kb, fact);
-      cetta_release(fact);
+  /* A space is the same cursor shape over stored atoms, and the write verbs
+     take their atom, so nothing here is dropped by hand. */
+  if ( (kb = cetta_space_open(m, "&stream-demo")) != NULL )
+  { for (i = 0; i < 3; i++) cetta_add(kb, E("edge", "a", i));
+
+    printf("%zu stored\n", cetta_count(kb));
+    cetta_each (a, cetta_atoms(kb))
+        printf("stored: %s\n", cetta_show(a));
+
+    /* A pattern reused across calls is the one place cetta_keep() earns its
+       place: the door would otherwise take the only reference on the first
+       pass and leave nothing for the second. */
+    { cetta_atom *pattern = E("edge", "a", V("n"));
+      for (i = 0; i < 2; i++)
+      { size_t seen = 0;
+        cetta_each (row, cetta_match(kb, cetta_keep(pattern))) { (void)row; seen++; }
+        printf("pass %d matched %zu\n", i + 1, seen);
+      }
+      cetta_drop(pattern);
     }
-    if ( cetta_space_atoms(kb, &answers) == CETTA_OK )
-    { while ( cetta_answers_step(answers) == CETTA_ROW )
-        printf("stored: %s\n", cetta_answers_text(answers));
-      cetta_answers_free(answers);
-    }
-    cetta_space_free(kb);
+    cetta_space_close(kb);
   }
 
   cetta_close(m);

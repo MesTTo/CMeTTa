@@ -1,64 +1,97 @@
-/* Purpose: drive the MeTTa Kernel engine from a C program. Boot it, build and read
- *   MeTTa terms as C values, run programs, pull answers one at a time, and
- *   publish C functions the language can call.
+/* Purpose: drive the PeTTa engine from C. Boot it, build and read MeTTa terms
+ *   as C values, run programs, pull answers one at a time, publish C functions
+ *   the language calls, bound an evaluation and measure one.
  *
  * Assumes:
  *   - SWI-Prolog 10 with its development headers, threads enabled
  *     [source: /usr/lib/swi-prolog/include/SWI-Prolog.h, PLVERSION 100113]
- *   - the engine tree (engine/, lib/, extensions/) is reachable, either at the
- *     path given to cetta_open() or at $METTA_PATH
- *   - the process has not already called PL_initialise(); see cetta_open()
+ *   - C11. _Generic carries the overloads and the argument coercions. Without
+ *     it every long-named function still works and the macros do not.
+ *   - the engine tree is reachable, either at the path given to cetta_open()
+ *     or at $PETTA_PATH
  *
  * Guarantees:
- *   - every function that can fail says so in its return value; none of them
- *     print, exit, or longjmp, and no Prolog exception crosses this header
+ *   - every function that can fail says so, and none of them print, exit or
+ *     longjmp; no Prolog exception crosses this header
  *   - an atom is immutable and refcounted, so a term built once may be run
  *     many times and shared between threads without copying
- *   - building and reading atoms starts no engine: cetta_sym(), cetta_expr()
- *     and the accessors are pure C on C memory, the same split the Python
- *     binding guarantees for its own term builders
- *     [tested: tests/test_cetta.c, test_atoms_need_no_engine; commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]
- *   - cetta_eval() computes one answer per cetta_answers_step(), so a caller
- *     that stops pulling leaves the rest of an infinite stream uncomputed
- *     [tested: tests/test_cetta.c, test_eval_is_lazy; commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]
+ *   - building and reading atoms starts no engine
+ *   - cetta_eval() computes one answer per step, so a caller that stops
+ *     pulling leaves the rest of an infinite stream uncomputed
  *
  * Owns resources: one Prolog runtime per process, released by cetta_close();
- *   one engine per open cetta_answers_t from cetta_eval(), released by
- *   cetta_answers_free(); one malloc'ed block per atom, released when its
- *   last reference goes.
+ *   one engine per open cursor, released by cetta_answers_free(), which
+ *   cetta_each() calls for you; one malloc'ed block per atom, released when
+ *   its last reference goes.
  *
- * Decides:
- *   - THE OWNERSHIP LAW, and it is carried by C's own type system: a function
- *     taking `const cetta_atom_t *` BORROWS it and the caller still owns it;
- *     a function taking `cetta_atom_t *` (non-const) STEALS it and the caller
- *     must not release it afterwards. Every constructor returns a reference
- *     the caller owns. Every accessor returns a borrowed pointer valid only
- *     while its parent lives. There are no other rules to remember.
- *   - a MeTTa Number splits into CETTA_INT and CETTA_FLOAT here, because C
- *     has two types where the wire codec has one tag, and 2 and 2.0 are two
- *     ATOMS: a stored (f 2.0) does not match the pattern (f 2), and each
- *     prints as itself [measured 2026-08-27]. Equality is the other question
- *     and compares by VALUE, so (== 2 2.0) answers True; a seat that folded
- *     the two kinds together on the strength of that would lose the match and
- *     the printed text. Values outside int64 and rationals get their own kinds
- *     rather than being rounded into one that fits; see cetta_kind_t.
- *   - the last error is thread-local and read with cetta_errmsg(), the shape
- *     dlerror() and strerror() already established for C, so a function that
- *     returns a pointer can fail without an out-parameter for the reason.
+ * Decides, and these six are the whole contract:
+ *
+ *   1. THE OWNERSHIP LAW, carried by C's own type system. A function taking
+ *      `const cetta_atom *` BORROWS it and you still own it. A function
+ *      taking `cetta_atom *` (non-const) TAKES it and you must not drop it
+ *      afterwards. Constructors hand you one reference. Accessors hand back
+ *      borrowed pointers that live as long as their parent.
+ *
+ *      Every door you pass a freshly built term to TAKES it, so the common
+ *      shape leaks nothing and needs no cleanup line:
+ *
+ *          cetta_add(kb, cetta_expr("edge", "a", "b"));
+ *
+ *      To pass a term you mean to keep, hand over a new reference with
+ *      cetta_keep(). That is the one thing to remember:
+ *
+ *          cetta_atom *p = cetta_expr("edge", "a", cetta_var("y"));
+ *          while (...) cetta_each (row, cetta_match(kb, cetta_keep(p))) ...
+ *          cetta_drop(p);
+ *
+ *   2. ERRORS ARE errno-SHAPED. A function that produces a value returns it,
+ *      or NULL, or a documented zero. cetta_error() and cetta_errmsg() say
+ *      what went wrong. Like errno they are SET on failure and NOT cleared on
+ *      success, so a run of calls is checked once, where it suits you:
+ *
+ *          cetta_clear();
+ *          double x = cetta_float(cetta_arg(c, 0));
+ *          double y = cetta_float(cetta_arg(c, 1));
+ *          if ( !cetta_ok() ) return cetta_fail(c, "wanted two numbers");
+ *
+ *   3. ONE VERB, EITHER RECEIVER. cetta_eval, cetta_match, cetta_atoms,
+ *      cetta_add, cetta_del, cetta_count and cetta_wipe each take a `cetta *`,
+ *      meaning its &self, or a `cetta_space *`. _Generic picks; the pair it
+ *      picks between is declared above each macro for anyone who wants it.
+ *
+ *   4. A MeTTa Number splits into CETTA_INT and CETTA_FLOAT, because C has two
+ *      types where the wire codec has one tag and MeTTa tells 2 from 2.0
+ *      apart. Values outside int64 and rationals get their own kinds rather
+ *      than being rounded into one that fits.
+ *
+ *   5. READING PROMOTES WHERE IT IS LOSSLESS AND REFUSES WHERE IT IS NOT.
+ *      cetta_float() of an Int answers that integer, because the conversion
+ *      loses nothing below 2^53 and is refused above it. cetta_int() of a
+ *      Float does NOT round. This is the promotion-lattice reading upstream
+ *      Hyperon's own bridging note argues for: "if a promotion path for a
+ *      value exists to get to the requested Inner Type, then the accessor
+ *      seamlessly works. If a promotion path does not exist then the accessor
+ *      will fail."
+ *
+ *   6. A BARE C STRING IN TERM POSITION IS A SYMBOL. cetta_expr("+", 1, 2) is
+ *      (+ 1 2), not ("+" 1 2). MeTTa source writes a symbol bare and a string
+ *      quoted; in C everything is quoted, so the default is the one MeTTa
+ *      writes bare. Text is cetta_text("..."), which is never ambiguous.
  *
  * Fails when: the caller wants two independent runtimes in one process
  *   (PL_initialise is process-wide), or wants to hold an engine term rather
- *   than a materialised copy. Both are named in ai-cetta-c-constraints.md.
+ *   than a materialised copy. Both are in ai-cetta-c-constraints.md.
  *
- * Guarded by: nothing, deliberately, and here is exactly what that means.
- *   An atom is immutable after construction and its refcount is atomic, so
- *   building, sharing and releasing atoms is safe from any thread. The error
- *   text is thread-local. What is NOT guarded is the operation table:
- *   cetta_op() and cetta_op_remove() mutate it without a lock, so publish
- *   every operation before the threads that evaluate start, the same
- *   restriction sqlite3_create_function() carries. Evaluation itself is the
- *   engine's business and each thread needs its own engine; see
- *   cetta_thread_attach().
+ * Guarded by: nothing, deliberately. An atom is immutable and its refcount is
+ *   atomic, so building, sharing and dropping atoms is safe from any thread,
+ *   and the error state is thread-local. The operation table is NOT guarded:
+ *   publish every operation before the threads that evaluate start, the same
+ *   restriction sqlite3_create_function() carries.
+ *
+ * Open Obligations:
+ *   To Do: None
+ *   Hacks: None
+ *   Future Enhancements: None
  */
 
 #ifndef CETTA_H
@@ -77,462 +110,592 @@ extern "C" {
 #define CETTA_API extern
 #endif
 
-/* ------------------------------------------------------------------ *
+/* ================================================================== *
  * Status
- * ------------------------------------------------------------------ */
+ * ================================================================== */
 
-/* Every fallible call answers one of these. CETTA_ROW and CETTA_DONE are
-   answers rather than problems: they are how a cursor reports progress, the
-   split sqlite3_step() established. */
+/* CETTA_ROW and CETTA_DONE are answers rather than problems: they are how a
+   cursor reports progress, the split sqlite3_step() established. */
 typedef enum cetta_status {
-  CETTA_OK = 0,          /* the call did what it said */
-  CETTA_ROW = 1,         /* a cursor produced an answer */
-  CETTA_DONE = 2,        /* a cursor is exhausted */
-  CETTA_FAIL = 3,        /* the engine had no answer; not an error */
-  CETTA_ERROR = 4,       /* the engine raised; cetta_errmsg() has its words */
-  CETTA_NOMEM = 5,       /* allocation failed */
-  CETTA_MISUSE = 6,      /* this library's contract was broken */
-  CETTA_UNSUPPORTED = 7, /* a real value C has no type for; refused by name */
-  CETTA_LIMIT = 8        /* a bound stopped it; you did this, it did not break */
-} cetta_status_t;
+  CETTA_OK = 0,          /* the call did what it said                      */
+  CETTA_ROW = 1,         /* a cursor produced an answer                    */
+  CETTA_DONE = 2,        /* a cursor is exhausted                          */
+  CETTA_FAIL = 3,        /* the engine had no answer; not an error         */
+  CETTA_ERROR = 4,       /* the engine raised                              */
+  CETTA_NOMEM = 5,       /* allocation failed                              */
+  CETTA_MISUSE = 6,      /* this library's contract was broken             */
+  CETTA_UNSUPPORTED = 7, /* a real value C has no type for, refused by name */
+  CETTA_LIMIT = 8        /* a bound stopped it; you did that, it did not break */
+} cetta_status;
 
-/* A stable English name for a status, for a caller's own diagnostics. */
-CETTA_API const char *cetta_status_str(cetta_status_t status);
+/* The last failure on THIS thread. Set on failure, NOT cleared on success,
+   exactly as errno is, so a run of calls can be checked once at the end. */
+CETTA_API cetta_status cetta_error(void);
 
-/* The last failure on THIS thread, or NULL if the last call succeeded. The
-   returned text is owned by the library and is overwritten by the next
-   failing call on this thread. */
+/* Its words, or NULL if nothing has failed since the last cetta_clear(). The
+   text is owned by the library and overwritten by the next failure here. */
 CETTA_API const char *cetta_errmsg(void);
 
-/* The binding's version, matching the engine tree it was built against. */
+/* Whether nothing has failed on this thread since the last cetta_clear(). */
+CETTA_API bool cetta_ok(void);
+
+/* Forget the last failure. Call this before a run you intend to check. */
+CETTA_API void cetta_clear(void);
+
+/* A stable English name for a status, for your own diagnostics. */
+CETTA_API const char *cetta_status_str(cetta_status status);
+
 CETTA_API const char *cetta_version(void);
 
-/* ------------------------------------------------------------------ *
+/* ================================================================== *
  * Atoms
- * ------------------------------------------------------------------ */
+ * ================================================================== */
 
-/* An immutable MeTTa term. Refcounted; see THE OWNERSHIP LAW above. */
-typedef struct cetta_atom cetta_atom_t;
+typedef struct cetta_atom cetta_atom;
 
-/* What an atom is. The nine wire tags of CODEC.md, with the one tag C splits:
-   `n` becomes CETTA_INT, CETTA_FLOAT, CETTA_BIGINT and CETTA_RATIONAL,
-   because C has distinct types for the first two and no type at all for the
-   last two, and silently rounding either is the failure this split exists to
-   prevent. */
+/* The nine wire tags of CODEC.md, with the one tag C splits four ways. */
 typedef enum cetta_kind {
-  CETTA_NONE = -1,/* not an atom at all; what cetta_kind(NULL) answers  */
+  CETTA_NONE = -1,/* not an atom; what cetta_kind_of(NULL) answers       */
   CETTA_SYMBOL,   /* `s`: a name that denotes itself                    */
-  CETTA_STRING,   /* `g`: a grounded value carried as text              */
+  CETTA_TEXT,     /* `g`: a grounded value carried as text              */
   CETTA_INT,      /* `n`: an exact integer that fits int64_t            */
   CETTA_FLOAT,    /* `n`: a float                                       */
   CETTA_BIGINT,   /* `n`: an exact integer too wide for int64_t         */
-  CETTA_RATIONAL, /* `n`: an exact ratio, read with cetta_rational()    */
+  CETTA_RATIONAL, /* `n`: an exact ratio                                */
   CETTA_BOOL,     /* `b`: True or False, which are not symbols          */
   CETTA_VARIABLE, /* `v`: a variable, its name an identity in its term  */
   CETTA_EXPR,     /* `e`: an expression; the empty one is unit          */
-  CETTA_SPACE,    /* `p`: an executable space reference, by name        */
+  CETTA_SPACE,    /* `p`: an executable space reference                 */
   CETTA_OBJECT,   /* `o`: a live C value crossing by reference          */
   CETTA_HANDLE    /* `h`: a native engine value held by reference       */
-} cetta_kind_t;
+} cetta_kind;
 
-CETTA_API const char *cetta_kind_str(cetta_kind_t kind);
+CETTA_API const char *cetta_kind_str(cetta_kind kind);
 
 /* --- building. None of these start the engine. --- */
 
-/* A symbol. `cetta_sym("foo")` is the name foo, which is NOT the string
-   "foo"; that is cetta_str(). */
-CETTA_API cetta_atom_t *cetta_sym(const char *name);
+CETTA_API cetta_atom *cetta_sym(const char *name);
+CETTA_API cetta_atom *cetta_var(const char *name);
+CETTA_API cetta_atom *cetta_text(const char *text);
+CETTA_API cetta_atom *cetta_textn(const char *text, size_t length);
+CETTA_API cetta_atom *cetta_num(int64_t value);
+CETTA_API cetta_atom *cetta_real(double value);
+CETTA_API cetta_atom *cetta_bool(bool value);
+CETTA_API cetta_atom *cetta_unit(void);
 
-/* A variable. The name is an identity within one term: two variables of one
-   name in one expression are one variable. "_" is fresh at every occurrence. */
-CETTA_API cetta_atom_t *cetta_var(const char *name);
-
-/* A string, as MeTTa's grounded text. */
-CETTA_API cetta_atom_t *cetta_str(const char *text);
-
-/* Text that is not NUL-terminated, or that contains NULs. */
-CETTA_API cetta_atom_t *cetta_strn(const char *text, size_t length);
-
-CETTA_API cetta_atom_t *cetta_int(int64_t value);
-CETTA_API cetta_atom_t *cetta_float(double value);
-CETTA_API cetta_atom_t *cetta_bool(bool value);
-
-/* An exact integer wider than int64_t, written as decimal digits with an
-   optional leading '-'. Returns NULL and sets cetta_errmsg() on any other
-   spelling. */
-CETTA_API cetta_atom_t *cetta_bigint(const char *decimal);
+/* An exact integer wider than int64_t, as decimal digits with an optional
+   leading minus. NULL on any other spelling. */
+CETTA_API cetta_atom *cetta_bigint(const char *decimal);
 
 /* An exact ratio. A zero denominator is refused. */
-CETTA_API cetta_atom_t *cetta_rational(int64_t numerator, int64_t denominator);
+CETTA_API cetta_atom *cetta_ratio(int64_t numerator, int64_t denominator);
 
-/* A space reference by its portable engine name, which must begin with '&'. */
-CETTA_API cetta_atom_t *cetta_space_ref(const char *name);
+/* A space reference by its portable engine name, which begins with '&'. */
+CETTA_API cetta_atom *cetta_spaceref(const char *name);
 
-/* An expression of `count` children, each STOLEN. Building nests without
-   leaking:
-       cetta_expr(3, cetta_sym("+"), cetta_int(1), cetta_int(2))
-   If any argument is NULL the whole call fails, releases the arguments it was
-   given, and returns NULL, so a failed inner constructor cannot leak through
-   an outer one. */
-CETTA_API cetta_atom_t *cetta_expr(size_t count, ...);
+/* An expression from an array. The children are TAKEN; the array is not. */
+CETTA_API cetta_atom *cetta_exprv(size_t count, cetta_atom **children);
 
-/* The same from an array. The children are stolen; the array is not. */
-CETTA_API cetta_atom_t *cetta_exprv(size_t count, cetta_atom_t **children);
+/* The widened forms cetta_atom_of dispatches to. Call cetta_num or cetta_real
+   directly rather than these. */
+CETTA_API cetta_atom *cetta_num_(long long value);
+CETTA_API cetta_atom *cetta_real_(long double value);
+CETTA_API cetta_atom *cetta_same(cetta_atom *atom);
+CETTA_API cetta_atom *cetta_same_c(const cetta_atom *atom);
 
-/* The empty expression, which is unit. Not a missing value, and not "". */
-CETTA_API cetta_atom_t *cetta_unit(void);
+/* Turn one C value into an atom: an integer becomes a Number, a float a
+   Number, a bare string a SYMBOL (decision 6), and an atom itself.
+
+   The `1 ? (x) : (x)` is what makes a string literal work. _Generic does not
+   decay an array, so `char[4]` would match no branch; a conditional
+   expression decays both of its operands, which is the one spelling that
+   also survives `cetta_atom *` being a pointer to an INCOMPLETE type. `(x)+0`
+   reads more simply and is what this used first, but it is arithmetic, and
+   arithmetic on a pointer to an incomplete type does not compile.
+
+   The conditional applies the usual arithmetic conversions, so a C `bool` and
+   a C `char` both arrive as `int`: `true` builds the Number 1 and 'x' builds
+   120. C conflates those and this cannot un-conflate them; use cetta_bool()
+   and cetta_text() when you mean those. */
+#define cetta_atom_of(x) _Generic(1 ? (x) : (x),                             \
+    char *:              cetta_sym,       const char *:       cetta_sym,     \
+    signed char:         cetta_num_,      unsigned char:      cetta_num_,    \
+    short:               cetta_num_,      unsigned short:     cetta_num_,    \
+    int:                 cetta_num_,      unsigned:           cetta_num_,    \
+    long:                cetta_num_,      unsigned long:      cetta_num_,    \
+    long long:           cetta_num_,      unsigned long long: cetta_num_,    \
+    float:               cetta_real_,     double:             cetta_real_,   \
+    long double:         cetta_real_,                                        \
+    cetta_atom *:        cetta_same,      const cetta_atom *: cetta_same_c)(x)
+
+/* An expression, with no count to keep in step and every child coerced:
+
+       cetta_expr("+", 1, 2)                       (+ 1 2)
+       cetta_expr("edge", "a", cetta_var("y"))     (edge a $y)
+
+   Children are TAKEN. If any is NULL the whole call fails, drops the ones it
+   was given and returns NULL, so a failed inner constructor cannot leak
+   through an outer one. Sixteen children is the ceiling; wider uses
+   cetta_exprv(). */
+#define cetta_expr(...)                                                      \
+    cetta_exprv(CETTA_NARG(__VA_ARGS__),                                     \
+                (cetta_atom *[]){ CETTA_MAP(__VA_ARGS__) })
 
 /* --- lifetime --- */
 
-/* Take a reference. Returns its argument so it composes inline. NULL-safe. */
-CETTA_API cetta_atom_t *cetta_retain(const cetta_atom_t *atom);
+/* Take a reference. Returns its argument, so it composes inline. NULL-safe. */
+CETTA_API cetta_atom *cetta_keep(const cetta_atom *atom);
 
 /* Drop a reference. NULL-safe. */
-CETTA_API void cetta_release(const cetta_atom_t *atom);
+CETTA_API void cetta_drop(const cetta_atom *atom);
 
-/* --- reading --- */
+/* --- reading. Each returns the value the way atoi() and strlen() do, and
+       records a failure you can check with cetta_ok(). --- */
 
-/* What an atom is, and CETTA_NONE for NULL, so the result of cetta_child() or
-   cetta_answers_atom() can be asked directly without a guard first. */
-CETTA_API cetta_kind_t cetta_kind(const cetta_atom_t *atom);
+CETTA_API cetta_kind cetta_kind_of(const cetta_atom *atom);
 
-/* The name of a CETTA_SYMBOL, CETTA_VARIABLE or CETTA_SPACE; the text of a
-   CETTA_STRING; the exact decimal digits of a CETTA_BIGINT. NULL for every
-   other kind. Borrowed: valid while the atom lives. */
-CETTA_API const char *cetta_name(const cetta_atom_t *atom);
+/* The name of a SYMBOL, VARIABLE or SPACE, the text of a TEXT, the digits of
+   a BIGINT. NULL for every other kind. Borrowed. */
+CETTA_API const char *cetta_name(const cetta_atom *atom);
+CETTA_API size_t cetta_name_len(const cetta_atom *atom);
 
-/* The byte length behind cetta_name(), for text that may contain NULs. */
-CETTA_API size_t cetta_name_len(const cetta_atom_t *atom);
+/* An exact integer. INT only: a Float is not rounded here, and a BigInt does
+   not fit by definition. 0 and a recorded failure otherwise. */
+CETTA_API int64_t cetta_int(const cetta_atom *atom);
 
-/* CETTA_OK, or CETTA_MISUSE when the atom is another kind. The out-parameter
-   is untouched on failure. */
-CETTA_API cetta_status_t cetta_int_value(const cetta_atom_t *atom, int64_t *out);
-CETTA_API cetta_status_t cetta_float_value(const cetta_atom_t *atom, double *out);
-CETTA_API cetta_status_t cetta_bool_value(const cetta_atom_t *atom, bool *out);
-CETTA_API cetta_status_t cetta_rational_value(const cetta_atom_t *atom,
-                                              int64_t *numerator,
-                                              int64_t *denominator);
+/* A double. Promotes losslessly (decision 5): a Float is itself, an Int of
+   magnitude below 2^53 is exact, a Rational is its quotient. An Int above
+   2^53 and a BigInt are REFUSED rather than rounded. 0.0 and a recorded
+   failure otherwise. */
+CETTA_API double cetta_float(const cetta_atom *atom);
 
-/* The child count of a CETTA_EXPR; 0 for every other kind. */
-CETTA_API size_t cetta_len(const cetta_atom_t *atom);
+CETTA_API bool cetta_truth(const cetta_atom *atom);
+CETTA_API bool cetta_ratio_of(const cetta_atom *atom, int64_t *numerator,
+                              int64_t *denominator);
 
-/* Child `index` of a CETTA_EXPR, BORROWED: valid while the parent lives, and
-   not to be released. NULL when the atom is not an expression or the index is
-   past its end. Retain it to keep it longer. */
-CETTA_API const cetta_atom_t *cetta_child(const cetta_atom_t *atom, size_t index);
+/* Child count of an EXPR, 0 otherwise. */
+CETTA_API size_t cetta_len(const cetta_atom *atom);
 
-/* Structural equality, the same question MeTTa's == asks of ground terms.
-   Two variables are equal when their names are. */
-CETTA_API bool cetta_eq(const cetta_atom_t *a, const cetta_atom_t *b);
+/* Child `index`, BORROWED and valid while its parent lives. NULL past the end
+   or on a non-expression. cetta_keep() it to hold it longer. */
+CETTA_API const cetta_atom *cetta_at(const cetta_atom *atom, size_t index);
 
-/* The live C pointer behind a CETTA_OBJECT, or NULL. */
-CETTA_API void *cetta_object_value(const cetta_atom_t *atom);
-
-/* ------------------------------------------------------------------ *
- * The runtime
- * ------------------------------------------------------------------ */
-
-typedef struct cetta cetta_t;
-
-typedef struct cetta_config {
-  /* The engine tree holding engine/, lib/ and extensions/. NULL takes
-     $METTA_PATH, then the tree this library was built beside. */
-  const char *path;
-  /* Prolog stack limit in bytes. 0 takes the engine's own default. */
-  size_t stack_limit;
-  /* Let the engine print each form's compiled goal, as the CLI does. */
-  bool verbose;
-} cetta_config_t;
-
-/* Boot the engine. `config` may be NULL for every default.
-
-   One runtime per process: PL_initialise() sets up the process's single
-   Prolog heap, so a second cetta_open() with a matching configuration hands
-   back the same runtime and one with a different path answers CETTA_MISUSE
-   rather than pretending. */
-CETTA_API cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out);
-
-/* Shut the runtime down and release everything it owns. Atoms outlive it:
-   they are C memory and stay valid until their own references go. */
-CETTA_API void cetta_close(cetta_t *runtime);
-
-/* Whether the engine prints compiled forms. Returns the previous setting. */
-CETTA_API bool cetta_set_verbose(cetta_t *runtime, bool verbose);
-
-/* A thread other than the one that called cetta_open() must attach before it
-   touches the engine, and detach before it exits. Atom construction and
-   reading need neither. */
-CETTA_API cetta_status_t cetta_thread_attach(cetta_t *runtime);
-CETTA_API void cetta_thread_detach(cetta_t *runtime);
+/* Structural equality. Two variables are equal when their names are. */
+CETTA_API bool cetta_eq(const cetta_atom *a, const cetta_atom *b);
 
 /* --- text, through the engine's own reader and writer --- */
 
-/* Read one MeTTa form. The engine's reader is the only reader; this binding
-   grows no second one. */
-CETTA_API cetta_status_t cetta_parse(cetta_t *runtime, const char *source,
-                                     cetta_atom_t **out);
+/* Read one MeTTa form. The engine's reader is the only reader. */
+CETTA_API cetta_atom *cetta_parse(const char *source);
 
-/* Write an atom the way the engine writes it. The result is a NUL-terminated
-   string the caller frees with cetta_free(). */
-CETTA_API char *cetta_show(cetta_t *runtime, const cetta_atom_t *atom);
+/* Write an atom the way the engine writes it, into a per-thread rotating
+   buffer so it drops straight into printf:
 
-/* Free a string this library returned. */
+       printf("%s -> %s\n", cetta_show(pattern), cetta_show(answer));
+
+   The buffer is reused after CETTA_SHOW_SLOTS further calls on this thread,
+   which is the contract strerror() and inet_ntoa() already gave C. Take a
+   copy with cetta_show_dup() to keep it, and free that with cetta_free(). */
+#define CETTA_SHOW_SLOTS 8
+CETTA_API const char *cetta_show(const cetta_atom *atom);
+CETTA_API char *cetta_show_dup(const cetta_atom *atom);
+
+/* Free anything this library handed back by pointer that is not an atom. */
 CETTA_API void cetta_free(void *pointer);
 
-/* ------------------------------------------------------------------ *
- * Spaces
- * ------------------------------------------------------------------ */
+/* ================================================================== *
+ * The runtime
+ * ================================================================== */
 
-typedef struct cetta_space cetta_space_t;
+typedef struct cetta cetta;
+typedef struct cetta_space cetta_space;
+typedef struct cetta_answers cetta_answers;
 
-/* The runtime's own &self. Borrowed: it lives as long as the runtime and must
-   not be freed. */
-CETTA_API cetta_space_t *cetta_self(cetta_t *runtime);
+typedef struct cetta_config {
+  const char *path;      /* engine tree; NULL takes $PETTA_PATH then the
+                            tree this library was built beside          */
+  size_t stack_limit;    /* bytes; 0 takes the engine's own default      */
+  bool verbose;          /* let the engine print each compiled form      */
+} cetta_config;
 
-/* The queryable reflection space, &metta. Borrowed. */
-CETTA_API cetta_space_t *cetta_catalog(cetta_t *runtime);
+/* Boot the engine. `config` may be NULL for every default. NULL on failure.
 
-/* Create or open a space by name. Names begin with '&'. */
-CETTA_API cetta_status_t cetta_space_open(cetta_t *runtime, const char *name,
-                                          cetta_space_t **out);
+   One runtime per process: PL_initialise() sets up the process's single
+   Prolog heap, so a second cetta_open() with a matching configuration hands
+   back the same runtime and one with a different path fails. */
+CETTA_API cetta *cetta_open(const cetta_config *config);
 
-CETTA_API void cetta_space_free(cetta_space_t *space);
-CETTA_API const char *cetta_space_name(const cetta_space_t *space);
+/* Shut the runtime down. Atoms outlive it: they are C memory and stay valid
+   until their own references go. */
+CETTA_API void cetta_close(cetta *runtime);
 
-/* Add one atom. The atom is borrowed. */
-CETTA_API cetta_status_t cetta_add(cetta_space_t *space, const cetta_atom_t *atom);
+/* Whether the engine prints compiled forms. Returns the previous setting. */
+CETTA_API bool cetta_verbose(cetta *runtime, bool verbose);
 
-/* Remove one exact atom. `*removed` says whether it was there; pass NULL if
-   the answer does not matter. */
-CETTA_API cetta_status_t cetta_remove(cetta_space_t *space,
-                                      const cetta_atom_t *atom, bool *removed);
+/* A thread other than the one that opened the runtime attaches before it
+   touches the engine and detaches before it exits. Building and reading atoms
+   needs neither. */
+CETTA_API bool cetta_thread_attach(void);
+CETTA_API void cetta_thread_detach(void);
 
-/* How many atoms the space holds. */
-CETTA_API cetta_status_t cetta_space_count(cetta_space_t *space, size_t *out);
+/* &self and &petta, borrowed and living as long as the runtime. */
+CETTA_API cetta_space *cetta_self(cetta *runtime);
+CETTA_API cetta_space *cetta_catalog(cetta *runtime);
 
-/* Empty the space. */
-CETTA_API cetta_status_t cetta_space_clear(cetta_space_t *space);
+/* Create or open a space by name; names begin with '&'. NULL on failure. */
+CETTA_API cetta_space *cetta_space_open(cetta *runtime, const char *name);
+CETTA_API void cetta_space_close(cetta_space *space);
+CETTA_API const char *cetta_space_name(const cetta_space *space);
 
-/* ------------------------------------------------------------------ *
- * Answers
- * ------------------------------------------------------------------ */
+/* ================================================================== *
+ * Asking
+ * ================================================================== */
 
-/* A cursor over answers. Stepped, not drained: the shape sqlite3_step() gave
-   C, and the reason an infinite MeTTa stream is usable from here. */
-typedef struct cetta_answers cetta_answers_t;
-
-/* Run MeTTa source. Every `!` form contributes a group of answers, and the
-   groups arrive in source order; cetta_answers_group() says which group the
-   current answer belongs to.
+/* Run MeTTa source in &self. Every `!` form contributes a group of answers in
+   source order; cetta_group() says which group the current answer is in.
 
    Eager: the engine's run door computes the whole program before the first
-   step, because that is what running a program means. cetta_eval() is the
-   lazy door. */
-CETTA_API cetta_status_t cetta_run(cetta_t *runtime, const char *source,
-                                   cetta_answers_t **out);
+   answer, because that is what running a program means. cetta_eval() is the
+   lazy door. NULL on failure. */
+CETTA_API cetta_answers *cetta_run(cetta *runtime, const char *source);
 
 /* Load a file through the same door `import!` uses, so a reload replaces the
    first load's definitions rather than doubling them. */
-CETTA_API cetta_status_t cetta_load(cetta_t *runtime, const char *path,
-                                    cetta_answers_t **out);
+CETTA_API cetta_answers *cetta_load(cetta *runtime, const char *path);
 
-/* Evaluate one atom in a space, LAZILY: each cetta_answers_step() computes at
-   most one answer, and abandoning the cursor leaves the rest uncomputed. */
-CETTA_API cetta_status_t cetta_eval(cetta_space_t *space,
-                                    const cetta_atom_t *goal,
-                                    cetta_answers_t **out);
+/* The pairs the verbs below dispatch between. Call these directly if you
+   would rather not go through _Generic. Each TAKES its atom argument. */
+CETTA_API cetta_answers *cetta_self_eval(cetta *runtime, cetta_atom *goal);
+CETTA_API cetta_answers *cetta_space_eval(cetta_space *space, cetta_atom *goal);
+CETTA_API cetta_answers *cetta_self_match(cetta *runtime, cetta_atom *pattern);
+CETTA_API cetta_answers *cetta_space_match(cetta_space *space, cetta_atom *pattern);
+CETTA_API cetta_answers *cetta_self_atoms(cetta *runtime);
+CETTA_API cetta_answers *cetta_space_atoms(cetta_space *space);
+CETTA_API bool cetta_self_add(cetta *runtime, cetta_atom *atom);
+CETTA_API bool cetta_space_add(cetta_space *space, cetta_atom *atom);
+CETTA_API bool cetta_self_del(cetta *runtime, cetta_atom *atom);
+CETTA_API bool cetta_space_del(cetta_space *space, cetta_atom *atom);
+CETTA_API size_t cetta_self_count(cetta *runtime);
+CETTA_API size_t cetta_space_count(cetta_space *space);
+CETTA_API bool cetta_self_wipe(cetta *runtime);
+CETTA_API bool cetta_space_wipe(cetta_space *space);
 
-/* Every atom in the space matching a pattern, lazily. */
-CETTA_API cetta_status_t cetta_match(cetta_space_t *space,
-                                     const cetta_atom_t *pattern,
-                                     cetta_answers_t **out);
+/* Only the selected branch is called; the others are just function names, so
+   each one type-checks against its own receiver. This is how tgmath.h works. */
+#define CETTA_ON(target, verb) _Generic((target),                            \
+    cetta *:        cetta_self_##verb,                                       \
+    cetta_space *:  cetta_space_##verb)
 
-/* Every atom in the space, lazily. */
-CETTA_API cetta_status_t cetta_space_atoms(cetta_space_t *space,
-                                           cetta_answers_t **out);
+/* Evaluate one atom LAZILY: each step computes at most one answer, and
+   abandoning the cursor leaves the rest uncomputed. TAKES `goal`. */
+#define cetta_eval(target, goal)   CETTA_ON((target), eval)((target), (goal))
 
-/* Every door above sets *out to NULL before it can fail, so a caller reusing
-   one variable never frees a stale cursor and a failed call leaves nothing to
-   release. cetta_answers_free(NULL) is a no-op. */
+/* Stored atoms unifying a pattern, lazily. TAKES `pattern`. */
+#define cetta_match(target, pat)   CETTA_ON((target), match)((target), (pat))
 
-/* Advance. CETTA_ROW when an answer is ready, CETTA_DONE at the end,
-   CETTA_ERROR when the engine raised. Stepping past CETTA_DONE keeps
-   answering CETTA_DONE. */
-CETTA_API cetta_status_t cetta_answers_step(cetta_answers_t *answers);
+/* Every stored atom, lazily. */
+#define cetta_atoms(target)        CETTA_ON((target), atoms)((target))
 
-/* The current answer, BORROWED: it belongs to the cursor and is released by
-   the next step or by cetta_answers_free(). Retain it to keep it. NULL before
-   the first CETTA_ROW. */
-CETTA_API const cetta_atom_t *cetta_answers_atom(const cetta_answers_t *answers);
+/* Add one atom. TAKES it. */
+#define cetta_add(target, atom)    CETTA_ON((target), add)((target), (atom))
 
-/* The engine's own rendering of the current answer. Borrowed on the same
-   terms. This is presentation, and it can show a value cetta_answers_atom()
-   refuses: a host-only value or a non-finite float renders here rather than
-   failing the whole answer. */
-CETTA_API const char *cetta_answers_text(const cetta_answers_t *answers);
+/* Remove one exact atom; true when it was there. TAKES it. */
+#define cetta_del(target, atom)    CETTA_ON((target), del)((target), (atom))
+
+/* How many atoms are stored. */
+#define cetta_count(target)        CETTA_ON((target), count)((target))
+
+/* Empty it. */
+#define cetta_wipe(target)         CETTA_ON((target), wipe)((target))
+
+/* --- reading answers --- */
+
+/* The next answer, BORROWED and valid until the following step, or NULL at
+   the end. NULL is also what a failure gives, and cetta_ok() tells the two
+   apart. This is what cetta_each() calls. */
+CETTA_API const cetta_atom *cetta_next(cetta_answers *answers);
 
 /* Which `!` form produced the current answer, counting from 0. Always 0 for
    the lazy doors, which evaluate one goal. */
-CETTA_API size_t cetta_answers_group(const cetta_answers_t *answers);
+CETTA_API size_t cetta_group(const cetta_answers *answers);
 
-/* Release the cursor and, for a lazy one, the engine behind it. Idempotent
-   against a cursor already exhausted. NULL-safe. */
-CETTA_API void cetta_answers_free(cetta_answers_t *answers);
+/* The engine's own rendering of the current answer. Presentation: it can show
+   a value cetta_show() refuses, a host-only value or a non-finite float. */
+CETTA_API const char *cetta_answer_text(const cetta_answers *answers);
 
-/* ------------------------------------------------------------------ *
- * Bounding an evaluation
- * ------------------------------------------------------------------ */
+/* Release the cursor and, for a lazy one, the engine behind it. NULL-safe.
+   cetta_each() does this for you. */
+CETTA_API void cetta_answers_free(cetta_answers *answers);
 
-/* What an evaluation may spend. Zero on a field means no bound there.
+/* The first answer, OWNED, with the cursor closed and the rest left
+   uncomputed. NULL when there is none. CONSUMES `answers`:
 
-   A bound that stops an evaluation stops it MID-WAY, so writes it already
-   made stand. That is the honest semantics of every timeout, and a caller who
-   needs all-or-nothing wraps the work in a transaction rather than expecting a
-   bound to unwind it. */
-typedef struct cetta_limits {
-  double   seconds;      /* wall seconds one call, or one step, may take    */
-  uint64_t inferences;   /* engine steps it may spend                       */
-  size_t   stack_bytes;  /* SWI's combined stack ceiling, which a runaway
-                            recursion hits; NOT MeTTa's reduction depth,
-                            which is the max-stack-depth pragma in the
-                            program text                                    */
-} cetta_limits_t;
+       cetta_atom *a = cetta_first(cetta_eval(m, cetta_expr("+", 1, 2)));
+       ...
+       cetta_drop(a);
 
-/* Bounds for every later call on this runtime. Passing NULL clears them.
+   The atom is yours, so it is yours to drop. When all you want is the VALUE,
+   the four below do that without an atom ever landing in your hands. */
+CETTA_API cetta_atom *cetta_first(cetta_answers *answers);
 
-   On a lazy cursor the INFERENCE bound is a CUMULATIVE budget for the whole
-   cursor: the budget is built into the goal the cursor's engine runs, and that
-   engine counts its own inferences, so a cursor stops once it has spent what
-   it was given however many steps that took. Spend is bounded by the budget
-   plus one answer's cost; an answer that on its own overruns the whole budget
-   is the one case that can reach twice it. Measured 2026-08-27 over two
-   endless generators under one budget of 20,000, one answering cheaply and one
-   burning a hundred reductions per answer: 1,233 answers of the first arrived
-   and 9 of the second
-   [tested: tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so].
+/* EXACTLY one answer, OWNED, or NULL with a failure recorded when there were
+   none or more than one. The Python seat draws the same line between one()
+   and first(), and the word means the same thing here: `one` is a claim about
+   the cardinality and `first` is not. CONSUMES `answers`. */
+CETTA_API cetta_atom *cetta_one(cetta_answers *answers);
 
-   The WALL bound applies per step, so time spent between steps, while the
-   caller is doing something else, does not count against it.
+/* Ask for exactly one answer and read it as a C value: the cursor is closed,
+   the atom is released, and the whole question is one expression.
 
-   An eager cetta_run() or cetta_load() is bounded as one call, both ways.
+       printf("%lld\n", (long long)cetta_one_int(cetta_eval(m, E("+", 1, 2))));
 
-   A cursor's budget counts that cursor's engine and nothing else, so work
-   another thread does while it is stepping is not charged to it. cetta_stats()
-   is a different reading: it reports the CALLING thread's counters, which do
-   not include what a cursor's engine spent. */
-CETTA_API cetta_status_t cetta_set_limits(cetta_t *runtime,
-                                          const cetta_limits_t *limits);
+   Each CONSUMES `answers` and carries cetta_one()'s cardinality claim, so a
+   question that answered twice is a recorded failure rather than a silent
+   first. Each records a failure, so cetta_ok() tells "no answer" and "wrong
+   kind" apart from a real zero. cetta_one_name() borrows the same per-thread
+   ring cetta_show() uses. */
+CETTA_API int64_t cetta_one_int(cetta_answers *answers);
+CETTA_API double cetta_one_float(cetta_answers *answers);
+CETTA_API bool cetta_one_truth(cetta_answers *answers);
+CETTA_API const char *cetta_one_name(cetta_answers *answers);
 
-/* What is in force now. */
-CETTA_API void cetta_get_limits(const cetta_t *runtime, cetta_limits_t *out);
+/* Every answer in order as one owned array, the eager door for a caller who
+   wants them all. CONSUMES `answers`. n_out may be NULL. Release with
+   cetta_atoms_free(), which drops each atom and frees the array. */
+CETTA_API cetta_atom **cetta_all(cetta_answers *answers, size_t *n_out);
+CETTA_API void cetta_atoms_free(cetta_atom **atoms, size_t count);
 
-/* ------------------------------------------------------------------ *
- * Measuring
- * ------------------------------------------------------------------ */
+/* Walk every answer and close the cursor, however the loop is left:
 
-/* The engine's own counters. Inferences are DETERMINISTIC where wall clock is
-   not, which is why anything measured in this tree is gated on them: five runs
-   of one workload on a loaded machine gave the same inference count every
-   time while wall clock swung several percent. */
-typedef struct cetta_stats {
-  uint64_t inferences;   /* engine steps                                    */
-  double   cputime;      /* engine CPU seconds                              */
-  uint64_t gc_count;     /* collections                                     */
-  uint64_t gc_freed;     /* bytes freed by them                             */
-  double   gc_time;      /* seconds spent collecting                        */
-  uint64_t table_bytes;  /* answer-table bytes, which is tabling's memory   */
-} cetta_stats_t;
+       cetta_each (a, cetta_run(m, "!(superpose (1 2 3))"))
+           printf("%s\n", cetta_show(a));
 
-/* Sample the counters now. Take two and subtract with cetta_stats_delta():
-   two samples and a subtraction is the shape getrusage() and clock_gettime()
-   already gave C, and it needs no block construct C does not have.
+   `break` is safe and closes the cursor. `return` and `goto` out of the body
+   are NOT: they leave without running the loop's increment, so free it by
+   hand there, or use CETTA_AUTO_ASK below. */
+#define cetta_each(var, answers)                                             \
+    CETTA_EACH_(var, answers, CETTA_ID(cetta_it_))
 
-   The engine is one per process, so a measurement spanning other threads'
-   engine work counts that work too. The honest reading is "what the engine
-   did between these two samples". */
-CETTA_API cetta_status_t cetta_stats(cetta_t *runtime, cetta_stats_t *out);
+/* The same walk with the cursor in hand, for the body that needs to ask it
+   something: which `!` form this answer came from, or how the engine itself
+   rendered it.
 
-/* after - before, field by field. */
-CETTA_API void cetta_stats_delta(const cetta_stats_t *before,
-                                 const cetta_stats_t *after,
-                                 cetta_stats_t *out);
+       cetta_each_cursor (a, it, cetta_run(m, src))
+           printf("group %zu: %s\n", cetta_group(it), cetta_answer_text(it)); */
+#define cetta_each_cursor(var, cursor, answers)                              \
+  for (cetta_answers *cursor = (answers); cursor != NULL;                    \
+       cetta_answers_free(cursor), cursor = NULL)                            \
+    for (const cetta_atom *var; (var = cetta_next(cursor)) != NULL; )
 
-/* ------------------------------------------------------------------ *
+/* The cursor's name is generated ONCE, by the caller above, and passed in as
+   a parameter. Generating it at each mention would give three different names
+   because __COUNTER__ increments every time it is read. */
+#define CETTA_EACH_(var, answers, it)                                        \
+  for (cetta_answers *it = (answers); it != NULL;                            \
+       cetta_answers_free(it), it = NULL)                                    \
+    for (const cetta_atom *var; (var = cetta_next(it)) != NULL; )
+
+/* ================================================================== *
  * Publishing C functions to MeTTa
- * ------------------------------------------------------------------ */
+ * ================================================================== */
 
-/* The five ranked effect classes. Naming an operation's class is required,
-   not advisory: the engine reasons about caching, reordering and transactions
-   from it, and a wrong answer here is a wrong program. */
+/* The five ranked effect classes. Naming one is required, not advisory: the
+   engine reasons about caching, reordering and transactions from it, and a
+   wrong answer here is a wrong program. */
 typedef enum cetta_effect {
-  CETTA_PURE_STRUCTURAL,          /* same answer always, no reads, no writes */
-  CETTA_READ_ONLY_LOOKUP,         /* reads state, writes none               */
-  CETTA_NONDETERMINISTIC_READ_ONLY, /* reads, may answer differently        */
-  CETTA_WRITES_STATE,             /* changes something                      */
-  CETTA_ORACLE_IO                 /* reaches the world                      */
-} cetta_effect_t;
+  CETTA_PURE,      /* same answer always, reads nothing, writes nothing */
+  CETTA_LOOKUP,    /* reads state, writes none                          */
+  CETTA_NONDET,    /* reads, and may answer differently                 */
+  CETTA_WRITES,    /* changes something                                 */
+  CETTA_IO         /* reaches the world                                 */
+} cetta_effect;
 
-CETTA_API const char *cetta_effect_str(cetta_effect_t effect);
+CETTA_API const char *cetta_effect_str(cetta_effect effect);
 
-/* One application of a published C function. */
-typedef struct cetta_call cetta_call_t;
+typedef struct cetta_call cetta_call;
 
-/* How many arguments this application carries. */
-CETTA_API size_t cetta_call_arity(const cetta_call_t *call);
+/* Answer CETTA_OK having called cetta_answer(), CETTA_FAIL to say there is no
+   answer for these arguments, or return cetta_fail() to refuse with words. */
+typedef cetta_status (*cetta_fn)(cetta_call *call, void *user);
 
-/* Argument `index`, BORROWED for the duration of the call. */
-CETTA_API const cetta_atom_t *cetta_call_arg(const cetta_call_t *call, size_t index);
+/* One published function. Designated initializers make the call site name
+   what it is passing, which is C's answer to keyword arguments:
 
-/* The runtime this call is running inside, for cetta_parse and cetta_show. */
-CETTA_API cetta_t *cetta_call_runtime(const cetta_call_t *call);
+       cetta_def(m, (cetta_op){ .name = "hypot", .arity = 2,
+                                .effect = CETTA_PURE, .fn = op_hypot }); */
+typedef struct cetta_op {
+  const char  *name;    /* as written; underscores reach MeTTa as hyphens */
+  size_t       arity;
+  cetta_effect effect;
+  cetta_fn     fn;
+  void        *user;    /* handed back to fn on every application         */
+} cetta_op;
 
-/* Answer with an atom. STEALS it. Calling this twice in one application is
-   CETTA_MISUSE; a function that answers many values answers one expression
-   and lets MeTTa's own superpose spread it. */
-CETTA_API cetta_status_t cetta_call_return(cetta_call_t *call, cetta_atom_t *atom);
-
-/* Refuse this application with words the engine reports as an error. */
-CETTA_API void cetta_call_error(cetta_call_t *call, const char *message);
-
-/* A published C function. Answer CETTA_OK having called cetta_call_return(),
-   CETTA_FAIL to say there is no answer for these arguments, or CETTA_ERROR
-   having called cetta_call_error(). */
-typedef cetta_status_t (*cetta_op_fn)(cetta_call_t *call, void *user);
-
-/* Publish `fn` under `name` at exactly `arity`, so `(name a b)` in MeTTa
-   calls it.
-
-   The name reaches MeTTa as written, with one map: C spells a compound name
-   with underscores and MeTTa spells it with hyphens, so `car_atom` publishes
-   `car-atom`. A name outside C's identifier grammar (`prime?`, `%Undefined%`)
-   is written literally and crosses untouched. */
-CETTA_API cetta_status_t cetta_op(cetta_t *runtime, const char *name,
-                                  size_t arity, cetta_effect_t effect,
-                                  cetta_op_fn fn, void *user);
+/* Publish, so `(name a b)` in MeTTa calls it. The name reaches MeTTa through
+   C's own casing convention, so `car_atom` publishes `car-atom`; a name
+   outside C's identifier grammar crosses untouched, which is the escape for
+   `prime?` and `%Undefined%`. */
+CETTA_API bool cetta_def(cetta *runtime, cetta_op op);
 
 /* Withdraw a published function at every arity, giving the name back. */
-CETTA_API cetta_status_t cetta_op_remove(cetta_t *runtime, const char *name);
+CETTA_API bool cetta_undef(cetta *runtime, const char *name);
+
+/* Inside a published function. */
+CETTA_API size_t cetta_arity(const cetta_call *call);
+CETTA_API const cetta_atom *cetta_arg(const cetta_call *call, size_t index);
+CETTA_API cetta *cetta_of(const cetta_call *call);
+
+/* Answer with an atom, which is TAKEN. Answering twice is CETTA_MISUSE; a
+   function with many answers answers one expression and lets MeTTa's own
+   superpose spread it. Returns CETTA_OK so it can be the return statement. */
+CETTA_API cetta_status cetta_answer(cetta_call *call, cetta_atom *atom);
+
+/* Refuse this application with words the engine reports. Returns CETTA_ERROR
+   so it too can be the return statement. */
+CETTA_API cetta_status cetta_fail(cetta_call *call, const char *message);
 
 /* --- carrying a C value through MeTTa untouched --- */
 
-/* Called when the last reference to a CETTA_OBJECT goes, so a C value handed
-   to the language can own heap memory. NULL means the value owns nothing. */
-typedef void (*cetta_object_free_fn)(void *value);
+typedef void (*cetta_free_fn)(void *value);
 
 /* Wrap a C pointer as a grounded atom. MeTTa carries it by reference, never
-   serialises it, and hands it back to a published function unchanged. */
-CETTA_API cetta_atom_t *cetta_object(void *value, const char *type_name,
-                                     cetta_object_free_fn release);
+   serialises it, and hands it back unchanged. */
+CETTA_API cetta_atom *cetta_object(void *value, const char *type_name,
+                                   cetta_free_fn release);
+CETTA_API void *cetta_value(const cetta_atom *atom);
+CETTA_API const char *cetta_type(const cetta_atom *atom);
 
-/* The type name given at construction, for a function checking what it got. */
-CETTA_API const char *cetta_object_type(const cetta_atom_t *atom);
+/* A C function as a VALUE rather than a name, so `($f 2)` calls it wherever
+   the atom lands. This is what C answers to a Python callable being an atom;
+   cetta_def() is the other half, a function reached by its published name. */
+CETTA_API cetta_atom *cetta_function(cetta_fn fn, void *user,
+                                     cetta_free_fn release);
 
-/* A C function as a VALUE rather than a name: the atom itself is applicable,
-   so `($f 2)` calls it wherever the atom lands. This is what C answers to the
-   Python seat's "any callable is a grounded atom"; cetta_op() is the other
-   half, a function reached by the name it was published under. */
-CETTA_API cetta_atom_t *cetta_function(cetta_op_fn fn, void *user,
-                                       cetta_object_free_fn release);
+/* ================================================================== *
+ * Bounding and measuring
+ * ================================================================== */
+
+/* What an evaluation may spend. Zero on a field means no bound there. A bound
+   stops work MID-WAY and writes already made stand, which is the honest
+   semantics of every timeout. */
+typedef struct cetta_limits {
+  double   seconds;      /* wall seconds one call, or one step, may take */
+  uint64_t inferences;   /* engine steps it may spend                    */
+  size_t   stack_bytes;  /* SWI's stack ceiling, which a runaway recursion
+                            hits; NOT MeTTa's reduction depth, which is the
+                            max-stack-depth pragma in the program text    */
+} cetta_limits;
+
+/* Bounds for every later call. NULL clears them.
+
+   On a lazy cursor the inference bound is a CUMULATIVE budget for the whole
+   cursor: the engine's counter is read around every step and the deltas added
+   up. Measured 2026-08-27 on an endless generator, budgets of 1,000 / 5,000 /
+   20,000 / 100,000 stopped after spending 1,004 / 5,004 / 20,004 / 100,004.
+   The wall bound applies per step, so time the host spends between steps does
+   not count against it. An eager cetta_run() is bounded as one call. */
+CETTA_API bool cetta_limit(cetta *runtime, const cetta_limits *limits);
+CETTA_API cetta_limits cetta_limits_of(const cetta *runtime);
+
+/* The engine's own counters. Inferences are DETERMINISTIC where wall clock is
+   not, which is why this tree gates on them. */
+typedef struct cetta_stats {
+  uint64_t inferences;
+  double   cputime;
+  uint64_t gc_count;
+  uint64_t gc_freed;
+  double   gc_time;
+  uint64_t table_bytes;
+} cetta_stats;
+
+/* Sample now. Take two and subtract: that is the shape getrusage() gave C and
+   it needs no block construct C does not have. */
+CETTA_API cetta_stats cetta_stats_now(cetta *runtime);
+CETTA_API cetta_stats cetta_stats_since(cetta_stats before, cetta_stats after);
+
+/* ================================================================== *
+ * Scope cleanup, where the compiler has it
+ * ================================================================== */
+
+#if defined(__GNUC__) || defined(__clang__)
+#define CETTA_HAS_AUTO 1
+static inline void cetta_drop_p(cetta_atom **p) { cetta_drop(*p); }
+static inline void cetta_answers_free_p(cetta_answers **p) { cetta_answers_free(*p); }
+/* Released when the block is left, however it is left, including by return
+   and goto. This is systemd's `_cleanup_` and the Linux kernel's `__free`; it
+   is a GCC and Clang extension rather than ISO C, which is why it sits behind
+   CETTA_HAS_AUTO. */
+#define CETTA_AUTO      __attribute__((cleanup(cetta_drop_p)))
+#define CETTA_AUTO_ASK  __attribute__((cleanup(cetta_answers_free_p)))
+/* Hand a resource out of a CETTA_AUTO variable without it being released. */
+/* __extension__ is how GCC and Clang are told that the statement expression
+   below is a deliberate extension, so -Wpedantic stays on for everything
+   else rather than being turned off for the whole build over one line. */
+#define CETTA_TAKE(p) \
+    __extension__ ({ __typeof__(p) cetta_taken_ = (p); (p) = NULL; cetta_taken_; })
+#endif
+
+/* ================================================================== *
+ * Shorthand, opt-in
+ * ================================================================== */
+
+/* `#define CETTA_SHORTHAND` before including this header for the one-letter
+   builders. Off by default because S, V, T, N, R, B and E are short names in
+   C's single flat namespace and a program that already uses one should not
+   have it taken. The long names always work. */
+#ifdef CETTA_SHORTHAND
+#define S(name)   cetta_sym(name)
+#define V(name)   cetta_var(name)
+#define T(text)   cetta_text(text)
+#define N(value)  cetta_num(value)
+#define R(value)  cetta_real(value)
+#define B(value)  cetta_bool(value)
+#define E(...)    cetta_expr(__VA_ARGS__)
+#endif
+
+/* ================================================================== *
+ * Macro machinery
+ * ================================================================== */
+
+#define CETTA_CAT_(a, b) a##b
+#define CETTA_CAT(a, b) CETTA_CAT_(a, b)
+
+/* cetta_each() needs one name it can both declare and refer to three times.
+   __COUNTER__ would give a different name at each mention, so the counter is
+   bumped once per loop and CETTA_ID_LAST names that same variable again. */
+#ifdef __COUNTER__
+#define CETTA_ID(base)  CETTA_CAT(base, __COUNTER__)
+#else
+/* Without __COUNTER__ two cetta_each() loops on ONE source line would collide.
+   Nesting across lines is still fine. */
+#define CETTA_ID(base)  CETTA_CAT(base, __LINE__)
+#endif
+
+/* Count the arguments, so no call site carries a length that can drift out of
+   step with the list beside it. */
+#define CETTA_NARG(...) CETTA_NARG_(__VA_ARGS__, 16,15,14,13,12,11,10,9,      \
+                                    8,7,6,5,4,3,2,1,0)
+#define CETTA_NARG_(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,_13,_14,_15,_16,  \
+                    N,...) N
+
+/* Apply cetta_atom_of to each argument. */
+#define CETTA_MAP(...) CETTA_CAT(CETTA_MAP_, CETTA_NARG(__VA_ARGS__))(__VA_ARGS__)
+#define CETTA_MAP_1(a)       cetta_atom_of(a)
+#define CETTA_MAP_2(a, ...)  cetta_atom_of(a), CETTA_MAP_1(__VA_ARGS__)
+#define CETTA_MAP_3(a, ...)  cetta_atom_of(a), CETTA_MAP_2(__VA_ARGS__)
+#define CETTA_MAP_4(a, ...)  cetta_atom_of(a), CETTA_MAP_3(__VA_ARGS__)
+#define CETTA_MAP_5(a, ...)  cetta_atom_of(a), CETTA_MAP_4(__VA_ARGS__)
+#define CETTA_MAP_6(a, ...)  cetta_atom_of(a), CETTA_MAP_5(__VA_ARGS__)
+#define CETTA_MAP_7(a, ...)  cetta_atom_of(a), CETTA_MAP_6(__VA_ARGS__)
+#define CETTA_MAP_8(a, ...)  cetta_atom_of(a), CETTA_MAP_7(__VA_ARGS__)
+#define CETTA_MAP_9(a, ...)  cetta_atom_of(a), CETTA_MAP_8(__VA_ARGS__)
+#define CETTA_MAP_10(a, ...) cetta_atom_of(a), CETTA_MAP_9(__VA_ARGS__)
+#define CETTA_MAP_11(a, ...) cetta_atom_of(a), CETTA_MAP_10(__VA_ARGS__)
+#define CETTA_MAP_12(a, ...) cetta_atom_of(a), CETTA_MAP_11(__VA_ARGS__)
+#define CETTA_MAP_13(a, ...) cetta_atom_of(a), CETTA_MAP_12(__VA_ARGS__)
+#define CETTA_MAP_14(a, ...) cetta_atom_of(a), CETTA_MAP_13(__VA_ARGS__)
+#define CETTA_MAP_15(a, ...) cetta_atom_of(a), CETTA_MAP_14(__VA_ARGS__)
+#define CETTA_MAP_16(a, ...) cetta_atom_of(a), CETTA_MAP_15(__VA_ARGS__)
 
 #ifdef __cplusplus
 }

@@ -90,29 +90,51 @@ static pl_function_t as_pl_function(cetta_anyfn fn)
  * Error state
  * ================================================================== */
 
+/* errno's contract: SET on failure, NOT cleared on success, so a run of calls
+   is checked once at the end rather than one `if` per call. The state is
+   thread-local, which is what errno itself became once threads existed. */
 #define CETTA_ERR_MAX 2048
 static CETTA_TLS char g_err[CETTA_ERR_MAX];
-static CETTA_TLS bool g_err_set = false;
+static CETTA_TLS cetta_status g_status = CETTA_OK;
 
-static void err_clear(void)
-{ g_err[0] = '\0';
-  g_err_set = false;
-}
-
-static cetta_status_t err_set(cetta_status_t status, const char *fmt, ...)
+static cetta_status err_set(cetta_status status, const char *fmt, ...)
 { va_list ap;
   va_start(ap, fmt);
   vsnprintf(g_err, sizeof(g_err), fmt, ap);
   va_end(ap);
-  g_err_set = true;
+  g_status = status;
   return status;
 }
 
-const char *cetta_errmsg(void)
-{ return g_err_set ? g_err : NULL;
+/* The failing constructors answer NULL, so this spelling lets them set the
+   reason and return in one line. */
+static void *err_null(cetta_status status, const char *fmt, ...)
+{ va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(g_err, sizeof(g_err), fmt, ap);
+  va_end(ap);
+  g_status = status;
+  return NULL;
 }
 
-const char *cetta_status_str(cetta_status_t status)
+void cetta_clear(void)
+{ g_err[0] = '\0';
+  g_status = CETTA_OK;
+}
+
+cetta_status cetta_error(void)
+{ return g_status;
+}
+
+bool cetta_ok(void)
+{ return g_status == CETTA_OK;
+}
+
+const char *cetta_errmsg(void)
+{ return g_status == CETTA_OK ? NULL : g_err;
+}
+
+const char *cetta_status_str(cetta_status status)
 { switch ( status )
   { case CETTA_OK:          return "ok";
     case CETTA_ROW:         return "row";
@@ -131,11 +153,11 @@ const char *cetta_version(void)
 { return "0.1.0";
 }
 
-const char *cetta_kind_str(cetta_kind_t kind)
+const char *cetta_kind_str(cetta_kind kind)
 { switch ( kind )
   { case CETTA_NONE:     return "None";
     case CETTA_SYMBOL:   return "Symbol";
-    case CETTA_STRING:   return "String";
+    case CETTA_TEXT:     return "String";
     case CETTA_INT:      return "Number";
     case CETTA_FLOAT:    return "Number";
     case CETTA_BIGINT:   return "BigInt";
@@ -150,13 +172,13 @@ const char *cetta_kind_str(cetta_kind_t kind)
   return "unknown kind";
 }
 
-const char *cetta_effect_str(cetta_effect_t effect)
+const char *cetta_effect_str(cetta_effect effect)
 { switch ( effect )
-  { case CETTA_PURE_STRUCTURAL:            return "pureStructural";
-    case CETTA_READ_ONLY_LOOKUP:           return "readOnlyLookup";
-    case CETTA_NONDETERMINISTIC_READ_ONLY: return "nondeterministicReadOnly";
-    case CETTA_WRITES_STATE:               return "writesState";
-    case CETTA_ORACLE_IO:                  return "oracleIO";
+  { case CETTA_PURE:            return "pureStructural";
+    case CETTA_LOOKUP:           return "readOnlyLookup";
+    case CETTA_NONDET: return "nondeterministicReadOnly";
+    case CETTA_WRITES:               return "writesState";
+    case CETTA_IO:                  return "oracleIO";
   }
   return NULL;
 }
@@ -172,27 +194,27 @@ typedef struct cetta_box
 { CETTA_ATOMIC unsigned refs;
   void                 *value;
   char                 *type;
-  cetta_object_free_fn  release;
-  cetta_op_fn           apply;
+  cetta_free_fn  release;
+  cetta_fn           apply;
   void                 *user;
 } cetta_box_t;
 
 struct cetta_atom
 { CETTA_ATOMIC unsigned refs;
-  cetta_kind_t          kind;
+  cetta_kind          kind;
   union
   { struct { char *text; size_t len; }        t;  /* sym var str space bigint */
     int64_t                                   i;
     double                                    f;
     bool                                      b;
     struct { int64_t num, den; }               r;
-    struct { cetta_atom_t **kids; size_t n; }  e;
+    struct { cetta_atom **kids; size_t n; }  e;
     cetta_box_t                               *box;
   } u;
 };
 
-static cetta_atom_t *atom_alloc(cetta_kind_t kind)
-{ cetta_atom_t *a = calloc(1, sizeof(*a));
+static cetta_atom *atom_alloc(cetta_kind kind)
+{ cetta_atom *a = calloc(1, sizeof(*a));
   if ( !a )
   { err_set(CETTA_NOMEM, "out of memory allocating an atom");
     return NULL;
@@ -202,8 +224,8 @@ static cetta_atom_t *atom_alloc(cetta_kind_t kind)
   return a;
 }
 
-static cetta_atom_t *atom_text(cetta_kind_t kind, const char *text, size_t len)
-{ cetta_atom_t *a;
+static cetta_atom *atom_text(cetta_kind kind, const char *text, size_t len)
+{ cetta_atom *a;
   if ( !text )
   { err_set(CETTA_MISUSE, "%s needs text, not NULL", cetta_kind_str(kind));
     return NULL;
@@ -229,21 +251,21 @@ static void box_release(cetta_box_t *box)
   }
 }
 
-cetta_atom_t *cetta_retain(const cetta_atom_t *atom)
-{ cetta_atom_t *a = (cetta_atom_t *)atom;
+cetta_atom *cetta_keep(const cetta_atom *atom)
+{ cetta_atom *a = (cetta_atom *)atom;
   if ( a ) CETTA_INC(&a->refs);
   return a;
 }
 
-void cetta_release(const cetta_atom_t *atom)
-{ cetta_atom_t *a = (cetta_atom_t *)atom;
+void cetta_drop(const cetta_atom *atom)
+{ cetta_atom *a = (cetta_atom *)atom;
   if ( !a ) return;
   if ( CETTA_DEC(&a->refs) != 1 ) return;
 
   switch ( a->kind )
   { case CETTA_SYMBOL:
     case CETTA_VARIABLE:
-    case CETTA_STRING:
+    case CETTA_TEXT:
     case CETTA_SPACE:
     case CETTA_BIGINT:
     case CETTA_HANDLE:
@@ -251,7 +273,7 @@ void cetta_release(const cetta_atom_t *atom)
       break;
     case CETTA_EXPR:
     { size_t i;
-      for (i = 0; i < a->u.e.n; i++) cetta_release(a->u.e.kids[i]);
+      for (i = 0; i < a->u.e.n; i++) cetta_drop(a->u.e.kids[i]);
       free(a->u.e.kids);
       break;
     }
@@ -264,41 +286,41 @@ void cetta_release(const cetta_atom_t *atom)
   free(a);
 }
 
-cetta_atom_t *cetta_sym(const char *name)
+cetta_atom *cetta_sym(const char *name)
 { return name ? atom_text(CETTA_SYMBOL, name, strlen(name)) : NULL;
 }
 
-cetta_atom_t *cetta_var(const char *name)
+cetta_atom *cetta_var(const char *name)
 { return name ? atom_text(CETTA_VARIABLE, name, strlen(name)) : NULL;
 }
 
-cetta_atom_t *cetta_str(const char *text)
-{ return text ? atom_text(CETTA_STRING, text, strlen(text)) : NULL;
+cetta_atom *cetta_text(const char *text)
+{ return text ? atom_text(CETTA_TEXT, text, strlen(text)) : NULL;
 }
 
-cetta_atom_t *cetta_strn(const char *text, size_t length)
-{ return atom_text(CETTA_STRING, text, length);
+cetta_atom *cetta_textn(const char *text, size_t length)
+{ return atom_text(CETTA_TEXT, text, length);
 }
 
-cetta_atom_t *cetta_int(int64_t value)
-{ cetta_atom_t *a = atom_alloc(CETTA_INT);
+cetta_atom *cetta_num(int64_t value)
+{ cetta_atom *a = atom_alloc(CETTA_INT);
   if ( a ) a->u.i = value;
   return a;
 }
 
-cetta_atom_t *cetta_float(double value)
-{ cetta_atom_t *a = atom_alloc(CETTA_FLOAT);
+cetta_atom *cetta_real(double value)
+{ cetta_atom *a = atom_alloc(CETTA_FLOAT);
   if ( a ) a->u.f = value;
   return a;
 }
 
-cetta_atom_t *cetta_bool(bool value)
-{ cetta_atom_t *a = atom_alloc(CETTA_BOOL);
+cetta_atom *cetta_bool(bool value)
+{ cetta_atom *a = atom_alloc(CETTA_BOOL);
   if ( a ) a->u.b = value;
   return a;
 }
 
-cetta_atom_t *cetta_bigint(const char *decimal)
+cetta_atom *cetta_bigint(const char *decimal)
 { const char *p = decimal;
   if ( !decimal )
   { err_set(CETTA_MISUSE, "cetta_bigint needs decimal digits, not NULL");
@@ -320,8 +342,8 @@ cetta_atom_t *cetta_bigint(const char *decimal)
   return atom_text(CETTA_BIGINT, decimal, strlen(decimal));
 }
 
-cetta_atom_t *cetta_rational(int64_t numerator, int64_t denominator)
-{ cetta_atom_t *a;
+cetta_atom *cetta_ratio(int64_t numerator, int64_t denominator)
+{ cetta_atom *a;
   if ( denominator == 0 )
   { err_set(CETTA_MISUSE, "a rational cannot have a zero denominator");
     return NULL;
@@ -332,7 +354,7 @@ cetta_atom_t *cetta_rational(int64_t numerator, int64_t denominator)
   return a;
 }
 
-cetta_atom_t *cetta_space_ref(const char *name)
+cetta_atom *cetta_spaceref(const char *name)
 { if ( !name || name[0] != '&' )
   { err_set(CETTA_MISUSE,
             "a space reference is written with a leading ampersand; %s is not",
@@ -342,8 +364,8 @@ cetta_atom_t *cetta_space_ref(const char *name)
   return atom_text(CETTA_SPACE, name, strlen(name));
 }
 
-cetta_atom_t *cetta_exprv(size_t count, cetta_atom_t **children)
-{ cetta_atom_t *a;
+cetta_atom *cetta_exprv(size_t count, cetta_atom **children)
+{ cetta_atom *a;
   size_t i;
   bool bad = false;
 
@@ -353,7 +375,7 @@ cetta_atom_t *cetta_exprv(size_t count, cetta_atom_t **children)
   if ( bad || !(a = atom_alloc(CETTA_EXPR)) )
   { /* Steal-on-success, release-on-failure: a NULL from an inner constructor
        must not leak the siblings that did succeed. */
-    for (i = 0; i < count; i++) cetta_release(children[i]);
+    for (i = 0; i < count; i++) cetta_drop(children[i]);
     if ( bad )
       err_set(CETTA_MISUSE,
               "an expression child was NULL; the constructor that made it "
@@ -363,7 +385,7 @@ cetta_atom_t *cetta_exprv(size_t count, cetta_atom_t **children)
   if ( count > 0 )
   { if ( !(a->u.e.kids = malloc(count * sizeof(*a->u.e.kids))) )
     { free(a);
-      for (i = 0; i < count; i++) cetta_release(children[i]);
+      for (i = 0; i < count; i++) cetta_drop(children[i]);
       err_set(CETTA_NOMEM, "out of memory building an expression of %zu", count);
       return NULL;
     }
@@ -373,43 +395,28 @@ cetta_atom_t *cetta_exprv(size_t count, cetta_atom_t **children)
   return a;
 }
 
-cetta_atom_t *cetta_expr(size_t count, ...)
-{ cetta_atom_t **kids = NULL;
-  cetta_atom_t *out;
-  va_list ap;
-  size_t i;
+/* cetta_atom_of() widens every integer type to long long and every floating
+   type to long double before it dispatches, so there is one branch to land on
+   rather than nine. These are those landings. */
+cetta_atom *cetta_num_(long long value)      { return cetta_num((int64_t)value); }
+cetta_atom *cetta_real_(long double value)   { return cetta_real((double)value); }
+cetta_atom *cetta_same(cetta_atom *atom)     { return atom; }
+cetta_atom *cetta_same_c(const cetta_atom *atom) { return (cetta_atom *)atom; }
 
-  if ( count > 0 && !(kids = malloc(count * sizeof(*kids))) )
-  { /* The arguments cannot be released without reading them, so read them. */
-    va_start(ap, count);
-    for (i = 0; i < count; i++) cetta_release(va_arg(ap, cetta_atom_t *));
-    va_end(ap);
-    err_set(CETTA_NOMEM, "out of memory building an expression of %zu", count);
-    return NULL;
-  }
-  va_start(ap, count);
-  for (i = 0; i < count; i++) kids[i] = va_arg(ap, cetta_atom_t *);
-  va_end(ap);
-
-  out = cetta_exprv(count, kids);
-  free(kids);
-  return out;
-}
-
-cetta_atom_t *cetta_unit(void)
+cetta_atom *cetta_unit(void)
 { return cetta_exprv(0, NULL);
 }
 
-cetta_kind_t cetta_kind(const cetta_atom_t *atom)
+cetta_kind cetta_kind_of(const cetta_atom *atom)
 { return atom ? atom->kind : CETTA_NONE;
 }
 
-const char *cetta_name(const cetta_atom_t *atom)
+const char *cetta_name(const cetta_atom *atom)
 { if ( !atom ) return NULL;
   switch ( atom->kind )
   { case CETTA_SYMBOL:
     case CETTA_VARIABLE:
-    case CETTA_STRING:
+    case CETTA_TEXT:
     case CETTA_SPACE:
     case CETTA_BIGINT:
     case CETTA_HANDLE:
@@ -419,55 +426,85 @@ const char *cetta_name(const cetta_atom_t *atom)
   }
 }
 
-size_t cetta_name_len(const cetta_atom_t *atom)
+size_t cetta_name_len(const cetta_atom *atom)
 { return cetta_name(atom) ? atom->u.t.len : 0;
 }
 
-cetta_status_t cetta_int_value(const cetta_atom_t *atom, int64_t *out)
+int64_t cetta_int(const cetta_atom *atom)
 { if ( !atom || atom->kind != CETTA_INT )
-    return err_set(CETTA_MISUSE, "cetta_int_value wants a Number that fits "
-                   "int64_t; this is %s",
-                   atom ? cetta_kind_str(atom->kind) : "NULL");
-  *out = atom->u.i;
-  return CETTA_OK;
+  { err_set(CETTA_MISUSE,
+            "cetta_int wants an exact integer that fits int64_t; this is %s. "
+            "A Float is not rounded here and a BigInt does not fit by "
+            "definition; read those with cetta_float or cetta_name",
+            atom ? cetta_kind_str(atom->kind) : "NULL");
+    return 0;
+  }
+  return atom->u.i;
 }
 
-cetta_status_t cetta_float_value(const cetta_atom_t *atom, double *out)
-{ if ( !atom || atom->kind != CETTA_FLOAT )
-    return err_set(CETTA_MISUSE, "cetta_float_value wants a float; this is %s",
-                   atom ? cetta_kind_str(atom->kind) : "NULL");
-  *out = atom->u.f;
-  return CETTA_OK;
+/* Promotes where nothing is lost and refuses where something would be, which
+   is the lattice reading in decision 5 of the header. 2^53 is where a double
+   stops holding every integer. */
+#define CETTA_EXACT_IN_DOUBLE 9007199254740992LL
+
+double cetta_float(const cetta_atom *atom)
+{ if ( !atom )
+  { err_set(CETTA_MISUSE, "cetta_float wants a Number; this is NULL");
+    return 0.0;
+  }
+  switch ( atom->kind )
+  { case CETTA_FLOAT:
+      return atom->u.f;
+    case CETTA_INT:
+      if ( atom->u.i <= -CETTA_EXACT_IN_DOUBLE ||
+           atom->u.i >= CETTA_EXACT_IN_DOUBLE )
+      { err_set(CETTA_UNSUPPORTED,
+                "%lld does not fit a double exactly, and rounding it here "
+                "would answer a different number; read it with cetta_int",
+                (long long)atom->u.i);
+        return 0.0;
+      }
+      return (double)atom->u.i;
+    case CETTA_RATIONAL:
+      return (double)atom->u.r.num / (double)atom->u.r.den;
+    default:
+      err_set(CETTA_MISUSE, "cetta_float wants a Number; this is %s",
+              cetta_kind_str(atom->kind));
+      return 0.0;
+  }
 }
 
-cetta_status_t cetta_bool_value(const cetta_atom_t *atom, bool *out)
+bool cetta_truth(const cetta_atom *atom)
 { if ( !atom || atom->kind != CETTA_BOOL )
-    return err_set(CETTA_MISUSE, "cetta_bool_value wants a Bool; this is %s",
-                   atom ? cetta_kind_str(atom->kind) : "NULL");
-  *out = atom->u.b;
-  return CETTA_OK;
+  { err_set(CETTA_MISUSE, "cetta_truth wants a Bool; this is %s",
+            atom ? cetta_kind_str(atom->kind) : "NULL");
+    return false;
+  }
+  return atom->u.b;
 }
 
-cetta_status_t cetta_rational_value(const cetta_atom_t *atom,
-                                    int64_t *numerator, int64_t *denominator)
+bool cetta_ratio_of(const cetta_atom *atom,
+                    int64_t *numerator, int64_t *denominator)
 { if ( !atom || atom->kind != CETTA_RATIONAL )
-    return err_set(CETTA_MISUSE, "cetta_rational_value wants a Rational; "
-                   "this is %s", atom ? cetta_kind_str(atom->kind) : "NULL");
+  { err_set(CETTA_MISUSE, "cetta_ratio_of wants a Rational; this is %s",
+            atom ? cetta_kind_str(atom->kind) : "NULL");
+    return false;
+  }
   *numerator = atom->u.r.num;
   *denominator = atom->u.r.den;
-  return CETTA_OK;
+  return true;
 }
 
-size_t cetta_len(const cetta_atom_t *atom)
+size_t cetta_len(const cetta_atom *atom)
 { return ( atom && atom->kind == CETTA_EXPR ) ? atom->u.e.n : 0;
 }
 
-const cetta_atom_t *cetta_child(const cetta_atom_t *atom, size_t index)
+const cetta_atom *cetta_at(const cetta_atom *atom, size_t index)
 { if ( !atom || atom->kind != CETTA_EXPR || index >= atom->u.e.n ) return NULL;
   return atom->u.e.kids[index];
 }
 
-bool cetta_eq(const cetta_atom_t *a, const cetta_atom_t *b)
+bool cetta_eq(const cetta_atom *a, const cetta_atom *b)
 { size_t i;
   if ( a == b ) return true;
   if ( !a || !b || a->kind != b->kind ) return false;
@@ -475,7 +512,7 @@ bool cetta_eq(const cetta_atom_t *a, const cetta_atom_t *b)
   switch ( a->kind )
   { case CETTA_SYMBOL:
     case CETTA_VARIABLE:
-    case CETTA_STRING:
+    case CETTA_TEXT:
     case CETTA_SPACE:
     case CETTA_BIGINT:
     case CETTA_HANDLE:
@@ -503,16 +540,16 @@ bool cetta_eq(const cetta_atom_t *a, const cetta_atom_t *b)
   return false;
 }
 
-void *cetta_object_value(const cetta_atom_t *atom)
+void *cetta_value(const cetta_atom *atom)
 { return ( atom && atom->kind == CETTA_OBJECT ) ? atom->u.box->value : NULL;
 }
 
-const char *cetta_object_type(const cetta_atom_t *atom)
+const char *cetta_type(const cetta_atom *atom)
 { return ( atom && atom->kind == CETTA_OBJECT ) ? atom->u.box->type : NULL;
 }
 
-static cetta_atom_t *object_from_box(cetta_box_t *box)
-{ cetta_atom_t *a = atom_alloc(CETTA_OBJECT);
+static cetta_atom *object_from_box(cetta_box_t *box)
+{ cetta_atom *a = atom_alloc(CETTA_OBJECT);
   if ( !a )
   { box_release(box);
     return NULL;
@@ -522,8 +559,8 @@ static cetta_atom_t *object_from_box(cetta_box_t *box)
 }
 
 static cetta_box_t *box_new(void *value, const char *type_name,
-                            cetta_object_free_fn release,
-                            cetta_op_fn apply, void *user)
+                            cetta_free_fn release,
+                            cetta_fn apply, void *user)
 { cetta_box_t *box = calloc(1, sizeof(*box));
   if ( !box )
   { err_set(CETTA_NOMEM, "out of memory boxing a C value");
@@ -542,14 +579,14 @@ static cetta_box_t *box_new(void *value, const char *type_name,
   return box;
 }
 
-cetta_atom_t *cetta_object(void *value, const char *type_name,
-                           cetta_object_free_fn release)
+cetta_atom *cetta_object(void *value, const char *type_name,
+                           cetta_free_fn release)
 { cetta_box_t *box = box_new(value, type_name, release, NULL, NULL);
   return box ? object_from_box(box) : NULL;
 }
 
-cetta_atom_t *cetta_function(cetta_op_fn fn, void *user,
-                             cetta_object_free_fn release)
+cetta_atom *cetta_function(cetta_fn fn, void *user,
+                             cetta_free_fn release)
 { cetta_box_t *box;
   if ( !fn )
   { err_set(CETTA_MISUSE, "cetta_function needs a function, not NULL");
@@ -563,10 +600,10 @@ cetta_atom_t *cetta_function(cetta_op_fn fn, void *user,
  * The runtime
  * ================================================================== */
 
-typedef struct cetta_op
+typedef struct cetta_op_entry
 { char           *name;
   size_t          arity;
-  cetta_op_fn     fn;
+  cetta_fn     fn;
   void           *user;
 } cetta_op_entry_t;
 
@@ -574,7 +611,7 @@ struct cetta
 { bool              open;
   char             *path;
   bool              verbose;
-  cetta_limits_t    limits;
+  cetta_limits    limits;
   cetta_op_entry_t *ops;
   size_t            nops, cap_ops;
 };
@@ -583,12 +620,12 @@ static struct cetta g_runtime;
 static bool         g_open = false;
 
 struct cetta_space
-{ cetta_t *runtime;
+{ cetta *runtime;
   char    *name;
   bool     borrowed;   /* &self and &metta live with the runtime */
 };
 
-static cetta_space_t g_self, g_catalog;
+static cetta_space g_self, g_catalog;
 
 /* --- blob type for a live C value --------------------------------- */
 
@@ -646,11 +683,11 @@ static char *term_text(term_t t, int cvt, size_t *len_out)
   return copy;
 }
 
-static cetta_status_t call_bridge(const char *name, int arity, term_t av);
+static cetta_status call_bridge(const char *name, int arity, term_t av);
 
 /* Whether this atom is a space, asked of the engine and of the term itself:
    no text conversion, and no list of names to rebuild per answer.
-   petta_c_space_operand/1 is metta_space_operand/1, the test the engine's own
+   metta_c_space_operand/1 is metta_space_operand/1, the test the engine's own
    metatype_of/2 consults, so this seat, the Python seat and get-metatype
    classify one atom alike. Asking the engine per atom is a question only an
    in-process seat can afford, and it is the reason this seat exists.
@@ -675,7 +712,7 @@ static bool is_space(term_t t)
   int rc;
 
   if ( !space_operand )
-    space_operand = PL_predicate("petta_c_space_operand", 1, "user");
+    space_operand = PL_predicate("metta_c_space_operand", 1, "user");
   f = PL_open_foreign_frame();
   rc = PL_call_predicate(NULL, PL_Q_NORMAL, space_operand, t);
   PL_discard_foreign_frame(f);
@@ -706,10 +743,10 @@ static char *variable_name(term_t names, term_t var)
   return term_text(var, CVT_WRITE, NULL);
 }
 
-static cetta_atom_t *decode(term_t t, term_t names);
+static cetta_atom *decode(term_t t, term_t names);
 
-static cetta_atom_t *decode_list(term_t t, term_t names)
-{ cetta_atom_t **kids = NULL;
+static cetta_atom *decode_list(term_t t, term_t names)
+{ cetta_atom **kids = NULL;
   size_t n = 0, cap = 4;
   term_t head = PL_new_term_ref();
   term_t tail = PL_copy_term_ref(t);
@@ -719,19 +756,19 @@ static cetta_atom_t *decode_list(term_t t, term_t names)
     return NULL;
   }
   while ( PL_get_list(tail, head, tail) )
-  { cetta_atom_t *kid = decode(head, names);
+  { cetta_atom *kid = decode(head, names);
     if ( !kid )
     { size_t i;
-      for (i = 0; i < n; i++) cetta_release(kids[i]);
+      for (i = 0; i < n; i++) cetta_drop(kids[i]);
       free(kids);
       return NULL;
     }
     if ( n == cap )
-    { cetta_atom_t **grown = realloc(kids, (cap *= 2) * sizeof(*kids));
+    { cetta_atom **grown = realloc(kids, (cap *= 2) * sizeof(*kids));
       if ( !grown )
       { size_t i;
-        cetta_release(kid);
-        for (i = 0; i < n; i++) cetta_release(kids[i]);
+        cetta_drop(kid);
+        for (i = 0; i < n; i++) cetta_drop(kids[i]);
         free(kids);
         err_set(CETTA_NOMEM, "out of memory decoding an expression");
         return NULL;
@@ -742,28 +779,28 @@ static cetta_atom_t *decode_list(term_t t, term_t names)
   }
   if ( !PL_get_nil(tail) )
   { size_t i;
-    for (i = 0; i < n; i++) cetta_release(kids[i]);
+    for (i = 0; i < n; i++) cetta_drop(kids[i]);
     free(kids);
     err_set(CETTA_UNSUPPORTED,
             "a partial list is not a MeTTa expression; the engine handed back "
             "a term with an unbound or non-list tail");
     return NULL;
   }
-  { cetta_atom_t *out = cetta_exprv(n, kids);   /* steals the children */
+  { cetta_atom *out = cetta_exprv(n, kids);   /* steals the children */
     free(kids);
     return out;
   }
 }
 
-static cetta_atom_t *decode_number(term_t t)
+static cetta_atom *decode_number(term_t t)
 { int64_t i;
   double d;
 
   if ( PL_is_integer(t) )
-  { if ( PL_get_int64(t, &i) ) return cetta_int(i);
+  { if ( PL_get_int64(t, &i) ) return cetta_num(i);
     { size_t len;
       char *text = term_text(t, CVT_INTEGER, &len);
-      cetta_atom_t *a;
+      cetta_atom *a;
       if ( !text )
       { err_set(CETTA_NOMEM, "out of memory reading a wide integer");
         return NULL;
@@ -774,19 +811,19 @@ static cetta_atom_t *decode_number(term_t t)
     }
   }
   if ( PL_is_float(t) )
-  { if ( PL_get_float(t, &d) ) return cetta_float(d);
+  { if ( PL_get_float(t, &d) ) return cetta_real(d);
     err_set(CETTA_UNSUPPORTED, "a float the C boundary cannot read");
     return NULL;
   }
   if ( PL_is_rational(t) )
   { fid_t f = PL_open_foreign_frame();
     term_t av = PL_new_term_refs(3);
-    cetta_atom_t *a = NULL;
+    cetta_atom *a = NULL;
     int64_t num, den;
     if ( PL_unify(av, t) &&
-         call_bridge("petta_c_rational_parts", 3, av) == CETTA_OK &&
+         call_bridge("metta_c_rational_parts", 3, av) == CETTA_OK &&
          PL_get_int64(av + 1, &num) && PL_get_int64(av + 2, &den) )
-      a = cetta_rational(num, den);
+      a = cetta_ratio(num, den);
     else
       err_set(CETTA_UNSUPPORTED,
               "a rational whose halves do not fit int64_t; C has no type for "
@@ -798,10 +835,10 @@ static cetta_atom_t *decode_number(term_t t)
   return NULL;
 }
 
-static cetta_atom_t *decode(term_t t, term_t names)
+static cetta_atom *decode(term_t t, term_t names)
 { if ( PL_is_variable(t) )
   { char *name = variable_name(names, t);
-    cetta_atom_t *a;
+    cetta_atom *a;
     if ( !name )
     { err_set(CETTA_NOMEM, "out of memory naming a variable");
       return NULL;
@@ -821,12 +858,12 @@ static cetta_atom_t *decode(term_t t, term_t names)
   if ( PL_is_string(t) )
   { size_t len;
     char *text = term_text(t, CVT_STRING, &len);
-    cetta_atom_t *a;
+    cetta_atom *a;
     if ( !text )
     { err_set(CETTA_NOMEM, "out of memory reading a string");
       return NULL;
     }
-    a = atom_text(CETTA_STRING, text, len);
+    a = atom_text(CETTA_TEXT, text, len);
     free(text);
     return a;
   }
@@ -846,7 +883,7 @@ static cetta_atom_t *decode(term_t t, term_t names)
     if ( PL_get_blob(t, &blob, NULL, &type) && !(type->flags & PL_BLOB_TEXT) )
     { size_t len;
       char *text;
-      cetta_atom_t *a;
+      cetta_atom *a;
       if ( type == &cetta_object_blob )
       { cetta_box_t *box = blob;
         CETTA_INC(&box->refs);
@@ -868,7 +905,7 @@ static cetta_atom_t *decode(term_t t, term_t names)
   if ( PL_is_atom(t) )
   { size_t len;
     char *text;
-    cetta_atom_t *a;
+    cetta_atom *a;
 
     if ( !(text = term_text(t, CVT_ATOM, &len)) )
     { err_set(CETTA_NOMEM, "out of memory reading a symbol");
@@ -941,7 +978,7 @@ static bool encode_var(encode_ctx *ctx, const char *name, term_t out)
   return true;
 }
 
-static bool encode(const cetta_atom_t *a, term_t out, encode_ctx *ctx)
+static bool encode(const cetta_atom *a, term_t out, encode_ctx *ctx)
 { if ( !a )
   { err_set(CETTA_MISUSE, "cannot encode a NULL atom");
     return false;
@@ -950,7 +987,7 @@ static bool encode(const cetta_atom_t *a, term_t out, encode_ctx *ctx)
   { case CETTA_SYMBOL:
     case CETTA_SPACE:
       return PL_put_atom_nchars(out, a->u.t.len, a->u.t.text);
-    case CETTA_STRING:
+    case CETTA_TEXT:
       return PL_put_string_nchars(out, a->u.t.len, a->u.t.text);
     case CETTA_VARIABLE:
       return encode_var(ctx, a->u.t.text, out);
@@ -996,7 +1033,7 @@ static bool encode(const cetta_atom_t *a, term_t out, encode_ctx *ctx)
   return false;
 }
 
-static bool put_atom(const cetta_atom_t *a, term_t out)
+static bool put_atom(const cetta_atom *a, term_t out)
 { encode_ctx ctx = {0};
   bool ok = encode(a, out, &ctx);
   encode_ctx_free(&ctx);
@@ -1006,7 +1043,7 @@ static bool put_atom(const cetta_atom_t *a, term_t out)
 /* The same, plus the Name-Var pairs the encode collected, which is what the
    engine's writer needs to print $x as $x rather than $_0. The list is built
    in the caller's frame and stays valid as long as `out` does. */
-static bool put_atom_named(const cetta_atom_t *a, term_t out, term_t names)
+static bool put_atom_named(const cetta_atom *a, term_t out, term_t names)
 { encode_ctx ctx = {0};
   bool ok = encode(a, out, &ctx);
   size_t i;
@@ -1033,7 +1070,7 @@ static bool put_atom_named(const cetta_atom_t *a, term_t out, term_t names)
 static void render_ball(term_t ball)
 { fid_t f = PL_open_foreign_frame();
   term_t av = PL_new_term_refs(2);
-  predicate_t p = PL_predicate("petta_c_error_text", 2, "user");
+  predicate_t p = PL_predicate("metta_c_error_text", 2, "user");
   qid_t q;
 
   if ( PL_unify(av, ball) &&
@@ -1042,7 +1079,7 @@ static void render_ball(term_t ball)
     { char *text = term_text(av + 1, CVT_ATOM | CVT_STRING, NULL);
       if ( text )
       { snprintf(g_err, sizeof(g_err), "%s", text);
-        g_err_set = true;
+        g_status = CETTA_ERROR;
         free(text);
         PL_cut_query(q);
         PL_discard_foreign_frame(f);
@@ -1054,7 +1091,7 @@ static void render_ball(term_t ball)
   { char *text = term_text(ball, CVT_WRITE, NULL);
     snprintf(g_err, sizeof(g_err), "%s",
              text ? text : "the engine raised a term this binding could not print");
-    g_err_set = true;
+    g_status = CETTA_ERROR;
     free(text);
   }
   PL_discard_foreign_frame(f);
@@ -1066,7 +1103,7 @@ static void render_ball(term_t ball)
 static bool ball_is_limit(term_t ball)
 { fid_t f = PL_open_foreign_frame();
   term_t av = PL_new_term_refs(3);
-  predicate_t p = PL_predicate("petta_c_limit_ball", 3, "user");
+  predicate_t p = PL_predicate("metta_c_limit_ball", 3, "user");
   qid_t q;
   bool yes = false;
 
@@ -1081,11 +1118,11 @@ static bool ball_is_limit(term_t ball)
 
 /* Call a bridge predicate for its first solution, KEEPING its bindings, so the
    caller can read the output arguments out of av. The caller owns the frame. */
-static cetta_status_t call_bridge(const char *name, int arity, term_t av)
+static cetta_status call_bridge(const char *name, int arity, term_t av)
 { predicate_t p = PL_predicate(name, arity, "user");
   qid_t q = PL_open_query(NULL, PL_Q_CATCH_EXCEPTION, p, av);
   int rc;
-  cetta_status_t status;
+  cetta_status status;
 
   if ( !q )
     return err_set(CETTA_NOMEM, "could not open a query for %s/%d", name, arity);
@@ -1106,10 +1143,15 @@ static cetta_status_t call_bridge(const char *name, int arity, term_t av)
       if ( saved )
       { fid_t f = PL_open_foreign_frame();
         term_t ball = PL_new_term_ref();
-        cetta_status_t kind = CETTA_ERROR;
+        cetta_status kind = CETTA_ERROR;
         if ( PL_recorded(saved, ball) )
         { render_ball(ball);
           if ( ball_is_limit(ball) ) kind = CETTA_LIMIT;
+          /* render_ball() records the words under CETTA_ERROR, because that
+             is all it can know. The classification happens here, and the
+             STICKY status is what cetta_error() reads, so it has to carry the
+             refined answer rather than the one the renderer left behind. */
+          g_status = kind;
         }
         else err_set(CETTA_ERROR, "%s/%d raised a term that could not be "
                      "read back", name, arity);
@@ -1128,7 +1170,6 @@ static cetta_status_t call_bridge(const char *name, int arity, term_t av)
   /* Cut rather than close: close undoes the bindings the caller is about to
      read [source: SWI-Prolog manual, PL_cut_query vs PL_close_query]. */
   PL_cut_query(q);
-  err_clear();
   return status;
 }
 
@@ -1141,30 +1182,30 @@ static foreign_t pl_cetta_present(void)
 }
 
 struct cetta_call
-{ cetta_t            *runtime;
-  const cetta_atom_t **args;
+{ cetta            *runtime;
+  const cetta_atom **args;
   size_t              arity;
-  cetta_atom_t       *result;
+  cetta_atom       *result;
   bool                answered;
   char                error[CETTA_ERR_MAX];
   bool                failed;
 };
 
-size_t cetta_call_arity(const cetta_call_t *call)
+size_t cetta_arity(const cetta_call *call)
 { return call->arity;
 }
 
-const cetta_atom_t *cetta_call_arg(const cetta_call_t *call, size_t index)
+const cetta_atom *cetta_arg(const cetta_call *call, size_t index)
 { return index < call->arity ? call->args[index] : NULL;
 }
 
-cetta_t *cetta_call_runtime(const cetta_call_t *call)
+cetta *cetta_of(const cetta_call *call)
 { return call->runtime;
 }
 
-cetta_status_t cetta_call_return(cetta_call_t *call, cetta_atom_t *atom)
+cetta_status cetta_answer(cetta_call *call, cetta_atom *atom)
 { if ( call->answered )
-  { cetta_release(atom);
+  { cetta_drop(atom);
     return err_set(CETTA_MISUSE,
                    "this application already answered; a function that has "
                    "many answers returns one expression and lets superpose "
@@ -1176,22 +1217,25 @@ cetta_status_t cetta_call_return(cetta_call_t *call, cetta_atom_t *atom)
   return CETTA_OK;
 }
 
-void cetta_call_error(cetta_call_t *call, const char *message)
+/* Returns CETTA_ERROR so an op can spell its refusal as one line:
+       if ( !cetta_ok() ) return cetta_fail(call, "wanted two numbers"); */
+cetta_status cetta_fail(cetta_call *call, const char *message)
 { snprintf(call->error, sizeof(call->error), "%s",
            message ? message : "the C function refused this application");
   call->failed = true;
+  return CETTA_ERROR;
 }
 
 /* Run one C function against decoded arguments and unify its answer. Shared by
    a named operation and an applied function value. */
-static foreign_t run_call(const char *name, cetta_op_fn fn, void *user,
+static foreign_t run_call(const char *name, cetta_fn fn, void *user,
                           term_t args, term_t result)
 { struct cetta_call call;
-  cetta_atom_t **decoded = NULL;
+  cetta_atom **decoded = NULL;
   size_t n = 0, cap = 4, i;
   term_t head = PL_new_term_ref();
   term_t tail = PL_copy_term_ref(args);
-  cetta_status_t status;
+  cetta_status status;
   foreign_t rc = FALSE;
 
   memset(&call, 0, sizeof(call));
@@ -1199,21 +1243,21 @@ static foreign_t run_call(const char *name, cetta_op_fn fn, void *user,
     return PL_resource_error("memory");
 
   while ( PL_get_list(tail, head, tail) )
-  { cetta_atom_t *a = decode(head, 0);
+  { cetta_atom *a = decode(head, 0);
     if ( !a )
     { rc = PL_permission_error("read", "argument", head);
       goto done;
     }
     if ( n == cap )
-    { cetta_atom_t **grown = realloc(decoded, (cap *= 2) * sizeof(*decoded));
-      if ( !grown ) { cetta_release(a); rc = PL_resource_error("memory"); goto done; }
+    { cetta_atom **grown = realloc(decoded, (cap *= 2) * sizeof(*decoded));
+      if ( !grown ) { cetta_drop(a); rc = PL_resource_error("memory"); goto done; }
       decoded = grown;
     }
     decoded[n++] = a;
   }
 
   call.runtime = &g_runtime;
-  call.args = (const cetta_atom_t **)decoded;
+  call.args = (const cetta_atom **)decoded;
   call.arity = n;
 
   status = fn(&call, user);
@@ -1248,8 +1292,8 @@ static foreign_t run_call(const char *name, cetta_op_fn fn, void *user,
   }
 
 done:
-  cetta_release(call.result);
-  for (i = 0; i < n; i++) cetta_release(decoded[i]);
+  cetta_drop(call.result);
+  for (i = 0; i < n; i++) cetta_drop(decoded[i]);
   free(decoded);
   return rc;
 }
@@ -1324,35 +1368,33 @@ static char *default_path(void)
   return strdup(env && *env ? env : CETTA_ENGINE_PATH);
 }
 
-cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out)
+cetta *cetta_open(const cetta_config *config)
 { static char *argv[] = { (char *)"cetta", (char *)"-q",
                           (char *)"--no-signals", NULL };
-  cetta_config_t defaults = {0};
+  cetta_config defaults = {0};
   char *path;
   char *buf;
   size_t bufsz;
 
-  err_clear();
   if ( !config ) config = &defaults;
 
   if ( g_open )
   { /* One runtime per process; PL_initialise sets up the process's single
        Prolog heap and there is no second one to hand out. */
     if ( config->path && strcmp(config->path, g_runtime.path) != 0 )
-      return err_set(CETTA_MISUSE,
-                     "the engine was booted from %s and cannot be reopened "
-                     "from %s: this process holds one runtime",
-                     g_runtime.path, config->path);
-    *out = &g_runtime;
-    return CETTA_OK;
+      return err_null(CETTA_MISUSE,
+                      "the engine was booted from %s and cannot be reopened "
+                      "from %s: this process holds one runtime",
+                      g_runtime.path, config->path);
+    return &g_runtime;
   }
 
   path = config->path ? strdup(config->path) : default_path();
-  if ( !path ) return err_set(CETTA_NOMEM, "out of memory recording the path");
+  if ( !path ) return err_null(CETTA_NOMEM, "out of memory recording the path");
 
   if ( !PL_is_initialised(NULL, NULL) && !PL_initialise(3, argv) )
   { free(path);
-    return err_set(CETTA_ERROR, "SWI-Prolog would not initialise");
+    return err_null(CETTA_ERROR, "SWI-Prolog would not initialise");
   }
 
   /* Registered BEFORE the consult, because engine/metta.pl reads
@@ -1371,7 +1413,7 @@ cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out)
   bufsz = strlen(path) + 128;
   if ( !(buf = malloc(bufsz)) )
   { free(path);
-    return err_set(CETTA_NOMEM, "out of memory building the boot goals");
+    return err_null(CETTA_NOMEM, "out of memory building the boot goals");
   }
 
   if ( config->stack_limit )
@@ -1379,7 +1421,7 @@ cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out)
              config->stack_limit);
     if ( !goal(buf) )
     { free(path); free(buf);
-      return err_set(CETTA_ERROR, "the stack limit %zu was refused",
+      return err_null(CETTA_ERROR, "the stack limit %zu was refused",
                      config->stack_limit);
     }
   }
@@ -1390,13 +1432,13 @@ cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out)
   if ( !goal(config->verbose ? "set_prolog_flag(argv, [extensions])"
                              : "set_prolog_flag(argv, [silent, extensions])") )
   { free(path); free(buf);
-    return err_set(CETTA_ERROR, "the engine refused its argv");
+    return err_null(CETTA_ERROR, "the engine refused its argv");
   }
 
   snprintf(buf, bufsz, "consult('%s/engine/metta.pl')", path);
   if ( !goal(buf) )
-  { cetta_status_t refused =
-      err_set(CETTA_ERROR,
+  { void *refused =
+      err_null(CETTA_ERROR,
               "the engine would not load from %s; set config.path or "
               "METTA_PATH to the tree holding engine/, lib/ and "
               "extensions/", path);
@@ -1417,12 +1459,15 @@ cetta_status_t cetta_open(const cetta_config_t *config, cetta_t **out)
   g_catalog.name = (char *)"&metta";
   g_catalog.borrowed = true;
 
-  cetta_set_verbose(&g_runtime, config->verbose);
-  *out = &g_runtime;
-  return CETTA_OK;
+  cetta_verbose(&g_runtime, config->verbose);
+  return &g_runtime;
 }
 
-void cetta_close(cetta_t *runtime)
+/* Defined with the show ring below; declared here because cetta_close comes
+   first in the file and both lifecycle exits release it. */
+static void show_ring_release(void);
+
+void cetta_close(cetta *runtime)
 { size_t i;
   if ( !runtime || !g_open ) return;
   for (i = 0; i < runtime->nops; i++) free(runtime->ops[i].name);
@@ -1433,10 +1478,11 @@ void cetta_close(cetta_t *runtime)
   runtime->path = NULL;
   runtime->open = false;
   g_open = false;
+  show_ring_release();
   PL_cleanup(0);
 }
 
-bool cetta_set_verbose(cetta_t *runtime, bool verbose)
+bool cetta_verbose(cetta *runtime, bool verbose)
 { bool was = runtime->verbose;
   fid_t f = PL_open_foreign_frame();
   term_t av = PL_new_term_refs(1);
@@ -1452,16 +1498,17 @@ bool cetta_set_verbose(cetta_t *runtime, bool verbose)
   return was;
 }
 
-cetta_status_t cetta_thread_attach(cetta_t *runtime)
-{ (void)runtime;
-  err_clear();
-  if ( PL_thread_attach_engine(NULL) < 0 )
-    return err_set(CETTA_ERROR, "this thread could not attach a Prolog engine");
-  return CETTA_OK;
+/* No runtime argument: there is one per process, so passing it said nothing. */
+bool cetta_thread_attach(void)
+{ if ( PL_thread_attach_engine(NULL) < 0 )
+  { err_set(CETTA_ERROR, "this thread could not attach a Prolog engine");
+    return false;
+  }
+  return true;
 }
 
-void cetta_thread_detach(cetta_t *runtime)
-{ (void)runtime;
+void cetta_thread_detach(void)
+{ show_ring_release();
   PL_thread_destroy_engine();
 }
 
@@ -1469,46 +1516,73 @@ void cetta_thread_detach(cetta_t *runtime)
  * Text
  * ================================================================== */
 
-cetta_status_t cetta_parse(cetta_t *runtime, const char *source,
-                           cetta_atom_t **out)
+/* No runtime argument on the text doors either: they need the ENGINE, and
+   there is one of those per process. Threading a handle through them was
+   ceremony that never chose anything. */
+cetta_atom *cetta_parse(const char *source)
 { fid_t f;
   term_t av;
-  cetta_status_t status;
+  cetta_atom *out = NULL;
 
-  (void)runtime;
-  err_clear();
-  *out = NULL;
-  if ( !source ) return err_set(CETTA_MISUSE, "cetta_parse needs source text");
+  if ( !source ) return err_null(CETTA_MISUSE, "cetta_parse needs source text");
 
   f = PL_open_foreign_frame();
   av = PL_new_term_refs(3);
   if ( !PL_put_string_chars(av, source) )
   { PL_discard_foreign_frame(f);
-    return err_set(CETTA_NOMEM, "out of memory holding the source");
+    return err_null(CETTA_NOMEM, "out of memory holding the source");
   }
-  status = call_bridge("petta_c_read", 3, av);
-  if ( status == CETTA_OK )
-  { *out = decode(av + 1, av + 2);
-    if ( !*out ) status = CETTA_UNSUPPORTED;
-  }
+  if ( call_bridge("metta_c_read", 3, av) == CETTA_OK )
+    out = decode(av + 1, av + 2);
   PL_discard_foreign_frame(f);
-  return status;
+  return out;
 }
 
-char *cetta_show(cetta_t *runtime, const cetta_atom_t *atom)
+char *cetta_show_dup(const cetta_atom *atom)
 { fid_t f;
   term_t av;
   char *text = NULL;
 
-  (void)runtime;
-  err_clear();
   f = PL_open_foreign_frame();
   av = PL_new_term_refs(3);
   if ( put_atom_named(atom, av, av + 1) &&
-       call_bridge("petta_c_show", 3, av) == CETTA_OK )
+       call_bridge("metta_c_show", 3, av) == CETTA_OK )
     text = term_text(av + 2, CVT_ATOM | CVT_STRING, NULL);
   PL_discard_foreign_frame(f);
   return text;
+}
+
+/* A rotating per-thread buffer, so the common use needs no free:
+
+       printf("%s -> %s\n", cetta_show(pattern), cetta_show(answer));
+
+   strerror(), inet_ntoa() and ctime() all hand back storage they own on the
+   same terms. The ring is CETTA_SHOW_SLOTS deep rather than one slot deep so
+   several renderings can be live in one printf, which one slot would not
+   survive. */
+static CETTA_TLS char *g_show[CETTA_SHOW_SLOTS];
+static CETTA_TLS unsigned g_show_at;
+
+const char *cetta_show(const cetta_atom *atom)
+{ char *text = cetta_show_dup(atom);
+  unsigned slot = g_show_at++ % CETTA_SHOW_SLOTS;
+
+  free(g_show[slot]);
+  g_show[slot] = text;
+  return text ? text : "<unwritable>";
+}
+
+/* The ring is bounded, so leaving it allocated would be harmless the way
+   strerror()'s buffer is. It is released anyway, at both points where this
+   thread says it is done with the engine, so a leak report has nothing of
+   this binding's in it at all rather than a small amount to explain. */
+static void show_ring_release(void)
+{ unsigned i;
+  for (i = 0; i < CETTA_SHOW_SLOTS; i++)
+  { free(g_show[i]);
+    g_show[i] = NULL;
+  }
+  g_show_at = 0;
 }
 
 void cetta_free(void *pointer)
@@ -1519,55 +1593,52 @@ void cetta_free(void *pointer)
  * Spaces
  * ================================================================== */
 
-cetta_space_t *cetta_self(cetta_t *runtime)
+cetta_space *cetta_self(cetta *runtime)
 { (void)runtime;
   return &g_self;
 }
 
-cetta_space_t *cetta_catalog(cetta_t *runtime)
+cetta_space *cetta_catalog(cetta *runtime)
 { (void)runtime;
   return &g_catalog;
 }
 
-const char *cetta_space_name(const cetta_space_t *space)
+const char *cetta_space_name(const cetta_space *space)
 { return space->name;
 }
 
-cetta_status_t cetta_space_open(cetta_t *runtime, const char *name,
-                                cetta_space_t **out)
-{ cetta_space_t *s;
+cetta_space *cetta_space_open(cetta *runtime, const char *name)
+{ cetta_space *s;
 
-  err_clear();
   if ( !name || name[0] != '&' )
-    return err_set(CETTA_MISUSE,
-                   "a space is named with a leading ampersand; %s is not",
-                   name ? name : "NULL");
-  if ( strcmp(name, "&self") == 0 )  { *out = &g_self;    return CETTA_OK; }
-  if ( strcmp(name, "&metta") == 0 ) { *out = &g_catalog; return CETTA_OK; }
+    return err_null(CETTA_MISUSE,
+                    "a space is named with a leading ampersand; %s is not",
+                    name ? name : "NULL");
+  if ( strcmp(name, "&self") == 0 )  return &g_self;
+  if ( strcmp(name, "&metta") == 0 ) return &g_catalog;
 
   if ( !(s = calloc(1, sizeof(*s))) )
-    return err_set(CETTA_NOMEM, "out of memory opening a space");
+    return err_null(CETTA_NOMEM, "out of memory opening a space");
   if ( !(s->name = strdup(name)) )
   { free(s);
-    return err_set(CETTA_NOMEM, "out of memory naming a space");
+    return err_null(CETTA_NOMEM, "out of memory naming a space");
   }
   s->runtime = runtime;
-  *out = s;
-  return CETTA_OK;
+  return s;
 }
 
-void cetta_space_free(cetta_space_t *space)
+void cetta_space_close(cetta_space *space)
 { if ( !space || space->borrowed ) return;
   free(space->name);
   free(space);
 }
 
-static cetta_status_t space_call(const char *pred, cetta_space_t *space,
-                                 const cetta_atom_t *atom, int arity,
+static cetta_status space_call(const char *pred, cetta_space *space,
+                                 const cetta_atom *atom, int arity,
                                  term_t *avp, fid_t *fp)
 { fid_t f = PL_open_foreign_frame();
   term_t av = PL_new_term_refs(arity);
-  cetta_status_t status;
+  cetta_status status;
 
   if ( !PL_put_atom_chars(av, space->name) ||
        ( atom && !put_atom(atom, av + 1) ) )
@@ -1586,48 +1657,58 @@ static cetta_status_t space_call(const char *pred, cetta_space_t *space,
   return status;
 }
 
-cetta_status_t cetta_add(cetta_space_t *space, const cetta_atom_t *atom)
-{ err_clear();
-  return space_call("petta_c_add", space, atom, 2, NULL, NULL);
+/* These TAKE their atom. Building one inline is the common shape, so the door
+   that consumes it owns it; a caller keeping a term hands over cetta_keep(t).
+   The atom is dropped whatever happens, including on failure, so no path
+   leaks it. */
+bool cetta_space_add(cetta_space *space, cetta_atom *atom)
+{ cetta_status status = space_call("metta_c_add", space, atom, 2, NULL, NULL);
+  cetta_drop(atom);
+  return status == CETTA_OK;
 }
 
-cetta_status_t cetta_remove(cetta_space_t *space, const cetta_atom_t *atom,
-                            bool *removed)
+bool cetta_space_del(cetta_space *space, cetta_atom *atom)
 { fid_t f;
   term_t av;
-  cetta_status_t status;
+  cetta_status status = space_call("metta_c_remove", space, atom, 3, &av, &f);
+  bool removed = false;
 
-  err_clear();
-  status = space_call("petta_c_remove", space, atom, 3, &av, &f);
-  if ( status == CETTA_OK && removed )
+  if ( status == CETTA_OK )
   { char *text = term_text(av + 2, CVT_ATOM, NULL);
-    *removed = text && strcmp(text, "true") == 0;
+    removed = text && strcmp(text, "true") == 0;
     free(text);
   }
   PL_discard_foreign_frame(f);
-  return status;
+  cetta_drop(atom);
+  return removed;
 }
 
-cetta_status_t cetta_space_count(cetta_space_t *space, size_t *out)
+size_t cetta_space_count(cetta_space *space)
 { fid_t f;
   term_t av;
-  cetta_status_t status;
-  int64_t n;
+  cetta_status status = space_call("metta_c_count", space, NULL, 2, &av, &f);
+  int64_t n = 0;
 
-  err_clear();
-  status = space_call("petta_c_count", space, NULL, 2, &av, &f);
-  if ( status == CETTA_OK )
-  { if ( PL_get_int64(av + 1, &n) ) *out = (size_t)n;
-    else status = err_set(CETTA_ERROR, "the space did not answer a count");
-  }
+  if ( status == CETTA_OK && !PL_get_int64(av + 1, &n) )
+    err_set(CETTA_ERROR, "the space did not answer a count");
   PL_discard_foreign_frame(f);
-  return status;
+  return status == CETTA_OK ? (size_t)n : 0;
 }
 
-cetta_status_t cetta_space_clear(cetta_space_t *space)
-{ err_clear();
-  return space_call("petta_c_clear", space, NULL, 1, NULL, NULL);
+bool cetta_space_wipe(cetta_space *space)
+{ return space_call("metta_c_clear", space, NULL, 1, NULL, NULL) == CETTA_OK;
 }
+
+/* The &self halves of the same verbs, which is what a `cetta *` receiver
+   reaches. Written out rather than generated so each one is greppable. */
+bool cetta_self_add(cetta *runtime, cetta_atom *atom)
+{ return cetta_space_add(cetta_self(runtime), atom); }
+bool cetta_self_del(cetta *runtime, cetta_atom *atom)
+{ return cetta_space_del(cetta_self(runtime), atom); }
+size_t cetta_self_count(cetta *runtime)
+{ return cetta_space_count(cetta_self(runtime)); }
+bool cetta_self_wipe(cetta *runtime)
+{ return cetta_space_wipe(cetta_self(runtime)); }
 
 /* ================================================================== *
  * Answers
@@ -1636,28 +1717,28 @@ cetta_status_t cetta_space_clear(cetta_space_t *space)
 /* A cursor is one of two things wearing one face: a table of answers a run
    already computed, or an engine suspended between them. */
 struct cetta_answers
-{ cetta_t      *runtime;
+{ cetta      *runtime;
   bool          lazy;
   int64_t       cursor_id;      /* lazy: the bridge's engine id     */
-  cetta_atom_t **rows;          /* eager: every answer, in order    */
+  cetta_atom **rows;          /* eager: every answer, in order    */
   char        **texts;
   size_t       *groups;
   size_t        n, at;
   bool          started, done;
-  cetta_atom_t *current;
+  cetta_atom *current;
   char         *current_text;
   size_t        current_group;
 };
 
-static cetta_answers_t *answers_alloc(cetta_t *runtime)
-{ cetta_answers_t *a = calloc(1, sizeof(*a));
+static cetta_answers *answers_alloc(cetta *runtime)
+{ cetta_answers *a = calloc(1, sizeof(*a));
   if ( !a ) err_set(CETTA_NOMEM, "out of memory opening a cursor");
   else a->runtime = runtime;
   return a;
 }
 
 /* Read the engine's Groups term: a list of groups, each a list of answers. */
-static cetta_status_t collect_groups(term_t groups, cetta_answers_t *out)
+static cetta_status collect_groups(term_t groups, cetta_answers *out)
 { term_t group = PL_new_term_ref();
   term_t gtail = PL_copy_term_ref(groups);
   term_t answer = PL_new_term_ref();
@@ -1673,11 +1754,11 @@ static cetta_status_t collect_groups(term_t groups, cetta_answers_t *out)
     while ( PL_get_list(atail, answer, atail) )
     { fid_t f = PL_open_foreign_frame();
       term_t av = PL_new_term_refs(4);
-      cetta_atom_t *atom = NULL;
+      cetta_atom *atom = NULL;
       char *text = NULL;
 
       if ( PL_unify(av, answer) &&
-           call_bridge("petta_c_answer_parts", 4, av) == CETTA_OK )
+           call_bridge("metta_c_answer_parts", 4, av) == CETTA_OK )
       { atom = decode(av + 1, av + 2);
         text = term_text(av + 3, CVT_ATOM | CVT_STRING, NULL);
       }
@@ -1705,15 +1786,14 @@ static cetta_status_t collect_groups(term_t groups, cetta_answers_t *out)
   return CETTA_OK;
 }
 
-static cetta_status_t run_or_load(cetta_t *runtime, const char *pred,
+static cetta_status run_or_load(cetta *runtime, const char *pred,
                                   const char *argument, const char *space,
-                                  cetta_answers_t **out)
+                                  cetta_answers **out)
 { fid_t f;
   term_t av;
-  cetta_answers_t *answers;
-  cetta_status_t status;
+  cetta_answers *answers;
+  cetta_status status;
 
-  err_clear();
   *out = NULL;   /* zeroed FIRST: a caller reusing one variable across calls
                     would otherwise still hold the last cursor's pointer after
                     a failure, and free it twice. */
@@ -1742,26 +1822,27 @@ static cetta_status_t run_or_load(cetta_t *runtime, const char *pred,
   return CETTA_OK;
 }
 
-cetta_status_t cetta_run(cetta_t *runtime, const char *source,
-                         cetta_answers_t **out)
-{ return run_or_load(runtime, "petta_c_run", source, "&self", out);
+cetta_answers *cetta_run(cetta *runtime, const char *source)
+{ cetta_answers *out = NULL;
+  run_or_load(runtime, "metta_c_run", source, "&self", &out);
+  return out;
 }
 
-cetta_status_t cetta_load(cetta_t *runtime, const char *path,
-                          cetta_answers_t **out)
-{ return run_or_load(runtime, "petta_c_load", path, "&self", out);
+cetta_answers *cetta_load(cetta *runtime, const char *path)
+{ cetta_answers *out = NULL;
+  run_or_load(runtime, "metta_c_load", path, "&self", &out);
+  return out;
 }
 
-static cetta_status_t open_cursor(cetta_space_t *space, const char *pred,
-                                  const cetta_atom_t *atom,
-                                  cetta_answers_t **out)
+static cetta_status open_cursor(cetta_space *space, const char *pred,
+                                  const cetta_atom *atom,
+                                  cetta_answers **out)
 { fid_t f;
   term_t av;
-  cetta_answers_t *answers;
-  cetta_status_t status;
+  cetta_answers *answers;
+  cetta_status status;
   int64_t id;
 
-  err_clear();
   *out = NULL;   /* see run_or_load: zeroed before anything can fail. */
   if ( !(answers = answers_alloc(space->runtime)) ) return CETTA_NOMEM;
 
@@ -1791,41 +1872,50 @@ static cetta_status_t open_cursor(cetta_space_t *space, const char *pred,
   return CETTA_OK;
 }
 
-cetta_status_t cetta_eval(cetta_space_t *space, const cetta_atom_t *goal,
-                          cetta_answers_t **out)
-{ return open_cursor(space, "petta_c_open_eval", goal, out);
+/* These TAKE their atom, on the same reasoning as the write verbs: a goal is
+   almost always built at the call site, and a door that consumes it is what
+   makes cetta_eval(m, cetta_expr("+", 1, 2)) leak nothing. */
+cetta_answers *cetta_space_eval(cetta_space *space, cetta_atom *goal)
+{ cetta_answers *out = NULL;
+  open_cursor(space, "metta_c_open_eval", goal, &out);
+  cetta_drop(goal);
+  return out;
 }
 
-cetta_status_t cetta_match(cetta_space_t *space, const cetta_atom_t *pattern,
-                           cetta_answers_t **out)
-{ return open_cursor(space, "petta_c_open_match", pattern, out);
+cetta_answers *cetta_space_match(cetta_space *space, cetta_atom *pattern)
+{ cetta_answers *out = NULL;
+  open_cursor(space, "metta_c_open_match", pattern, &out);
+  cetta_drop(pattern);
+  return out;
 }
 
-cetta_status_t cetta_space_atoms(cetta_space_t *space, cetta_answers_t **out)
-{ cetta_atom_t *any = cetta_var("_");
-  cetta_status_t status;
-  if ( !any ) return CETTA_NOMEM;
-  status = open_cursor(space, "petta_c_open_match", any, out);
-  cetta_release(any);
-  return status;
+cetta_answers *cetta_space_atoms(cetta_space *space)
+{ /* Every stored atom is the match a fresh variable makes. */
+  return cetta_space_match(space, cetta_var("_"));
 }
 
-static void clear_current(cetta_answers_t *answers)
+cetta_answers *cetta_self_eval(cetta *runtime, cetta_atom *goal)
+{ return cetta_space_eval(cetta_self(runtime), goal); }
+cetta_answers *cetta_self_match(cetta *runtime, cetta_atom *pattern)
+{ return cetta_space_match(cetta_self(runtime), pattern); }
+cetta_answers *cetta_self_atoms(cetta *runtime)
+{ return cetta_space_atoms(cetta_self(runtime)); }
+
+static void clear_current(cetta_answers *answers)
 { if ( answers->lazy )
-  { cetta_release(answers->current);
+  { cetta_drop(answers->current);
     free(answers->current_text);
   }
   answers->current = NULL;
   answers->current_text = NULL;
 }
 
-cetta_status_t cetta_answers_step(cetta_answers_t *answers)
+static cetta_status answers_step(cetta_answers *answers)
 { fid_t f;
   term_t av;
-  cetta_status_t status;
+  cetta_status status;
   term_t head, tail;
 
-  err_clear();
   if ( !answers ) return err_set(CETTA_MISUSE, "cetta_answers_step needs a cursor");
   if ( answers->done ) return CETTA_DONE;
 
@@ -1852,7 +1942,7 @@ cetta_status_t cetta_answers_step(cetta_answers_t *answers)
   { PL_discard_foreign_frame(f);
     return err_set(CETTA_NOMEM, "out of memory stepping a cursor");
   }
-  status = call_bridge("petta_c_next", 3, av);
+  status = call_bridge("metta_c_next", 3, av);
   if ( status != CETTA_OK )
   { PL_discard_foreign_frame(f);
     answers->done = true;
@@ -1869,7 +1959,7 @@ cetta_status_t cetta_answers_step(cetta_answers_t *answers)
 
   { term_t parts = PL_new_term_refs(4);
     if ( PL_unify(parts, head) &&
-         call_bridge("petta_c_answer_parts", 4, parts) == CETTA_OK )
+         call_bridge("metta_c_answer_parts", 4, parts) == CETTA_OK )
     { answers->current = decode(parts + 1, parts + 2);
       answers->current_text = term_text(parts + 3, CVT_ATOM | CVT_STRING, NULL);
     }
@@ -1884,19 +1974,122 @@ cetta_status_t cetta_answers_step(cetta_answers_t *answers)
   return CETTA_ROW;
 }
 
-const cetta_atom_t *cetta_answers_atom(const cetta_answers_t *answers)
-{ return answers ? answers->current : NULL;
+/* One call per answer instead of step-then-read, so the loop condition and
+   the value are the same expression. NULL ends the walk; cetta_ok() says
+   whether that was exhaustion or a failure. */
+const cetta_atom *cetta_next(cetta_answers *answers)
+{ if ( !answers ) return NULL;
+  return answers_step(answers) == CETTA_ROW ? answers->current : NULL;
 }
 
-const char *cetta_answers_text(const cetta_answers_t *answers)
+/* The first answer, owned, with the cursor closed behind it. Consuming the
+   cursor is what lets this compose in one expression. */
+cetta_atom *cetta_first(cetta_answers *answers)
+{ const cetta_atom *found;
+  cetta_atom *owned = NULL;
+
+  if ( !answers ) return NULL;
+  if ( (found = cetta_next(answers)) != NULL ) owned = cetta_keep(found);
+  cetta_answers_free(answers);
+  return owned;
+}
+
+/* Every answer as one owned array, for a caller who wants them all rather
+   than a walk. */
+cetta_atom **cetta_all(cetta_answers *answers, size_t *n_out)
+{ cetta_atom **items = NULL;
+  size_t n = 0, cap = 0;
+  const cetta_atom *found;
+
+  if ( n_out ) *n_out = 0;
+  if ( !answers ) return NULL;
+  while ( (found = cetta_next(answers)) != NULL )
+  { if ( n == cap )
+    { size_t grown_cap = cap ? cap * 2 : 8;
+      cetta_atom **grown = realloc(items, grown_cap * sizeof(*grown));
+      if ( !grown )
+      { cetta_atoms_free(items, n);
+        cetta_answers_free(answers);
+        return err_null(CETTA_NOMEM, "out of memory collecting answers");
+      }
+      items = grown;
+      cap = grown_cap;
+    }
+    items[n++] = cetta_keep(found);
+  }
+  cetta_answers_free(answers);
+  if ( n_out ) *n_out = n;
+  return items;
+}
+
+/* Exactly one, or a recorded failure. Pulling the second answer is what makes
+   the claim real, and it costs one step of a lazy cursor. */
+cetta_atom *cetta_one(cetta_answers *answers)
+{ const cetta_atom *found;
+  cetta_atom *owned = NULL;
+
+  if ( !answers ) return NULL;
+  if ( (found = cetta_next(answers)) != NULL ) owned = cetta_keep(found);
+  if ( !owned )
+  { if ( cetta_ok() ) err_set(CETTA_FAIL, "the question had no answer");
+  } else if ( cetta_next(answers) != NULL )
+  { err_set(CETTA_MISUSE,
+            "the question answered more than once, and cetta_one is a claim "
+            "that it would not; use cetta_first to take the first, or "
+            "cetta_each to walk them all");
+    cetta_drop(owned);
+    owned = NULL;
+  }
+  cetta_answers_free(answers);
+  return owned;
+}
+
+/* Ask, read, and let go, which is the shape almost every question has: the
+   caller wants the number, not an atom to look after. Each of these closes
+   the cursor and drops the atom, so nothing is left owned. */
+#define CETTA_ONE(name, type, read, zero)                                    \
+  type name(cetta_answers *answers)                                          \
+  { cetta_atom *a = cetta_one(answers);                                      \
+    type value;                                                              \
+    if ( !a ) return zero;                                                   \
+    value = read(a);                                                         \
+    cetta_drop(a);                                                           \
+    return value;                                                            \
+  }
+
+CETTA_ONE(cetta_one_int,   int64_t, cetta_int,   0)
+CETTA_ONE(cetta_one_float, double,  cetta_float, 0.0)
+CETTA_ONE(cetta_one_truth, bool,    cetta_truth, false)
+#undef CETTA_ONE
+
+/* The text goes into the same rotating buffer cetta_show() writes, so the
+   atom can be released here and the caller still has something to print. */
+const char *cetta_one_name(cetta_answers *answers)
+{ cetta_atom *a = cetta_one(answers);
+  const char *shown;
+
+  if ( !a ) return NULL;
+  shown = cetta_show(a);
+  cetta_drop(a);
+  return shown;
+}
+
+void cetta_atoms_free(cetta_atom **atoms, size_t count)
+{ size_t i;
+  if ( !atoms ) return;
+  for (i = 0; i < count; i++) cetta_drop(atoms[i]);
+  free(atoms);
+}
+
+const char *cetta_answer_text(const cetta_answers *answers)
 { return answers ? answers->current_text : NULL;
 }
 
-size_t cetta_answers_group(const cetta_answers_t *answers)
+size_t cetta_group(const cetta_answers *answers)
 { return answers ? answers->current_group : 0;
 }
 
-void cetta_answers_free(cetta_answers_t *answers)
+void cetta_answers_free(cetta_answers *answers)
 { size_t i;
   if ( !answers ) return;
 
@@ -1904,12 +2097,12 @@ void cetta_answers_free(cetta_answers_t *answers)
   { fid_t f = PL_open_foreign_frame();
     term_t av = PL_new_term_refs(1);
     if ( PL_put_int64(av, answers->cursor_id) )
-      call_bridge("petta_c_close", 1, av);
+      call_bridge("metta_c_close", 1, av);
     PL_discard_foreign_frame(f);
     clear_current(answers);
   } else
   { for (i = 0; i < answers->n; i++)
-    { cetta_release(answers->rows[i]);
+    { cetta_drop(answers->rows[i]);
       free(answers->texts[i]);
     }
     free(answers->rows);
@@ -1923,11 +2116,10 @@ void cetta_answers_free(cetta_answers_t *answers)
  * Bounding an evaluation
  * ================================================================== */
 
-cetta_status_t cetta_set_limits(cetta_t *runtime, const cetta_limits_t *limits)
-{ static const cetta_limits_t none = {0, 0, 0};
+bool cetta_limit(cetta *runtime, const cetta_limits *limits)
+{ static const cetta_limits none = {0, 0, 0};
 
-  err_clear();
-  if ( !runtime ) return err_set(CETTA_MISUSE, "cetta_set_limits needs a runtime");
+  if ( !runtime ) { err_set(CETTA_MISUSE, "cetta_limit needs a runtime"); return false; }
   runtime->limits = limits ? *limits : none;
 
   if ( runtime->limits.stack_bytes )
@@ -1935,34 +2127,37 @@ cetta_status_t cetta_set_limits(cetta_t *runtime, const cetta_limits_t *limits)
     snprintf(goal_text, sizeof(goal_text),
              "set_prolog_flag(stack_limit, %zu)", runtime->limits.stack_bytes);
     if ( !goal(goal_text) )
-      return err_set(CETTA_ERROR, "the stack ceiling %zu was refused",
-                     runtime->limits.stack_bytes);
+    { err_set(CETTA_ERROR, "the stack ceiling %zu was refused",
+              runtime->limits.stack_bytes);
+      return false;
+    }
   }
-  return CETTA_OK;
+  return true;
 }
 
-void cetta_get_limits(const cetta_t *runtime, cetta_limits_t *out)
-{ *out = runtime->limits;
+/* Returned by value. A three-scalar struct is cheaper to copy than to
+   out-parameter, and the call site reads as an expression. */
+cetta_limits cetta_limits_of(const cetta *runtime)
+{ return runtime->limits;
 }
 
 /* ================================================================== *
  * Measuring
  * ================================================================== */
 
-cetta_status_t cetta_stats(cetta_t *runtime, cetta_stats_t *out)
+cetta_stats cetta_stats_now(cetta *runtime)
 { fid_t f;
   term_t av, head, tail;
-  cetta_status_t status;
+  cetta_status status;
   double values[6] = {0, 0, 0, 0, 0, 0};
+  cetta_stats out = {0, 0, 0, 0, 0, 0};
   size_t i = 0;
 
   (void)runtime;
-  err_clear();
-  if ( !out ) return err_set(CETTA_MISUSE, "cetta_stats needs somewhere to put them");
 
   f = PL_open_foreign_frame();
   av = PL_new_term_refs(1);
-  status = call_bridge("petta_c_stats", 1, av);
+  status = call_bridge("metta_c_stats", 1, av);
   if ( status == CETTA_OK )
   { head = PL_new_term_ref();
     tail = PL_copy_term_ref(av);
@@ -1978,25 +2173,26 @@ cetta_status_t cetta_stats(cetta_t *runtime, cetta_stats_t *out)
                        "expected", i);
   }
   PL_discard_foreign_frame(f);
-  if ( status != CETTA_OK ) return status;
+  if ( status != CETTA_OK ) return out;
 
-  out->inferences  = (uint64_t)values[0];
-  out->cputime     = values[1];
-  out->gc_count    = (uint64_t)values[2];
-  out->gc_freed    = (uint64_t)values[3];
-  out->gc_time     = values[4] / 1000.0;   /* the engine reports milliseconds */
-  out->table_bytes = (uint64_t)values[5];
-  return CETTA_OK;
+  out.inferences  = (uint64_t)values[0];
+  out.cputime     = values[1];
+  out.gc_count    = (uint64_t)values[2];
+  out.gc_freed    = (uint64_t)values[3];
+  out.gc_time     = values[4] / 1000.0;   /* the engine reports milliseconds */
+  out.table_bytes = (uint64_t)values[5];
+  return out;
 }
 
-void cetta_stats_delta(const cetta_stats_t *before, const cetta_stats_t *after,
-                       cetta_stats_t *out)
-{ out->inferences  = after->inferences  - before->inferences;
-  out->cputime     = after->cputime     - before->cputime;
-  out->gc_count    = after->gc_count    - before->gc_count;
-  out->gc_freed    = after->gc_freed    - before->gc_freed;
-  out->gc_time     = after->gc_time     - before->gc_time;
-  out->table_bytes = after->table_bytes - before->table_bytes;
+cetta_stats cetta_stats_since(cetta_stats before, cetta_stats after)
+{ cetta_stats spent;
+  spent.inferences  = after.inferences  - before.inferences;
+  spent.cputime     = after.cputime     - before.cputime;
+  spent.gc_count    = after.gc_count    - before.gc_count;
+  spent.gc_freed    = after.gc_freed    - before.gc_freed;
+  spent.gc_time     = after.gc_time     - before.gc_time;
+  spent.table_bytes = after.table_bytes - before.table_bytes;
+  return spent;
 }
 
 /* ================================================================== *
@@ -2026,24 +2222,35 @@ static char *metta_name(const char *name)
   return out;
 }
 
-cetta_status_t cetta_op(cetta_t *runtime, const char *name, size_t arity,
-                        cetta_effect_t effect, cetta_op_fn fn, void *user)
+/* One struct argument, so the call site names what it is passing. Designated
+   initializers are what C has instead of keyword arguments, and five
+   positional parameters is exactly where they start paying. */
+bool cetta_def(cetta *runtime, cetta_op op)
 { fid_t f;
   term_t av;
-  cetta_status_t status;
+  cetta_status status;
   char *published;
-  const char *kind = cetta_effect_str(effect);
+  const char *name = op.name;
+  size_t arity = op.arity;
+  cetta_fn fn = op.fn;
+  void *user = op.user;
+  const char *kind = cetta_effect_str(op.effect);
   cetta_op_entry_t *slot;
 
-  err_clear();
   if ( !name || !fn )
-    return err_set(CETTA_MISUSE, "cetta_op needs a name and a function");
+  { err_set(CETTA_MISUSE, "cetta_def needs a name and a function");
+    return false;
+  }
   if ( !kind )
-    return err_set(CETTA_MISUSE,
-                   "an operation must name one of the five effect classes; "
-                   "%d is not one of them", (int)effect);
+  { err_set(CETTA_MISUSE,
+            "an operation must name one of the five effect classes; "
+            "%d is not one of them", (int)op.effect);
+    return false;
+  }
   if ( !(published = metta_name(name)) )
-    return err_set(CETTA_NOMEM, "out of memory naming an operation");
+  { err_set(CETTA_NOMEM, "out of memory naming an operation");
+    return false;
+  }
 
   f = PL_open_foreign_frame();
   av = PL_new_term_refs(3);
@@ -2052,27 +2259,29 @@ cetta_status_t cetta_op(cetta_t *runtime, const char *name, size_t arity,
        !PL_put_atom_chars(av + 2, kind) )
   { PL_discard_foreign_frame(f);
     free(published);
-    return err_set(CETTA_NOMEM, "out of memory registering an operation");
+    err_set(CETTA_NOMEM, "out of memory registering an operation");
+    return false;
   }
-  status = call_bridge("petta_c_register_op", 3, av);
+  status = call_bridge("metta_c_register_op", 3, av);
   PL_discard_foreign_frame(f);
   if ( status != CETTA_OK )
   { free(published);
-    return status;
+    return false;
   }
 
   if ( (slot = find_op(published, arity)) )
   { slot->fn = fn;
     slot->user = user;
     free(published);
-    return CETTA_OK;
+    return true;
   }
   if ( runtime->nops == runtime->cap_ops )
   { size_t cap = runtime->cap_ops ? runtime->cap_ops * 2 : 8;
     cetta_op_entry_t *grown = realloc(runtime->ops, cap * sizeof(*grown));
     if ( !grown )
     { free(published);
-      return err_set(CETTA_NOMEM, "out of memory recording an operation");
+      err_set(CETTA_NOMEM, "out of memory recording an operation");
+      return false;
     }
     runtime->ops = grown;
     runtime->cap_ops = cap;
@@ -2082,25 +2291,29 @@ cetta_status_t cetta_op(cetta_t *runtime, const char *name, size_t arity,
   slot->arity = arity;
   slot->fn = fn;
   slot->user = user;
-  return CETTA_OK;
+  return true;
 }
 
-cetta_status_t cetta_op_remove(cetta_t *runtime, const char *name)
+bool cetta_undef(cetta *runtime, const char *name)
 { fid_t f;
   term_t av;
-  cetta_status_t status;
+  cetta_status status;
   char *published;
   size_t i;
 
-  err_clear();
-  if ( !name ) return err_set(CETTA_MISUSE, "cetta_op_remove needs a name");
+  if ( !name )
+  { err_set(CETTA_MISUSE, "cetta_undef needs a name");
+    return false;
+  }
   if ( !(published = metta_name(name)) )
-    return err_set(CETTA_NOMEM, "out of memory naming an operation");
+  { err_set(CETTA_NOMEM, "out of memory naming an operation");
+    return false;
+  }
 
   f = PL_open_foreign_frame();
   av = PL_new_term_refs(1);
   status = PL_put_atom_chars(av, published)
-         ? call_bridge("petta_c_unregister_op", 1, av)
+         ? call_bridge("metta_c_unregister_op", 1, av)
          : err_set(CETTA_NOMEM, "out of memory withdrawing an operation");
   PL_discard_foreign_frame(f);
 
@@ -2111,5 +2324,5 @@ cetta_status_t cetta_op_remove(cetta_t *runtime, const char *name)
     } else i++;
   }
   free(published);
-  return status;
+  return status == CETTA_OK;
 }

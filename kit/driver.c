@@ -88,7 +88,7 @@ static const char *read_json_string(const char *p, char *out, size_t cap)
 }
 
 int main(int argc, char **argv)
-{ cetta_t *m;
+{ cetta *m;
   char *corpus;
   size_t length = 0;
   const char *p;
@@ -102,7 +102,7 @@ int main(int argc, char **argv)
   { fprintf(stderr, "cannot read %s\n", argv[1]);
     return 1;
   }
-  if ( cetta_open(NULL, &m) != CETTA_OK )
+  if ( !(m = cetta_open(NULL)) )
   { fprintf(stderr, "boot: %s\n", cetta_errmsg());
     return 1;
   }
@@ -110,8 +110,8 @@ int main(int argc, char **argv)
   printf("{\"programs\":[");
   for (p = corpus; (p = strstr(p, "\"source\"")) != NULL; )
   { static char source[4096];
-    cetta_answers_t *answers = NULL;
-    cetta_status_t status;
+    cetta_answers *answers;
+    const cetta_atom *atom;
     int first_answer = 1;
 
     p = strchr(p + 8, '"');
@@ -123,8 +123,9 @@ int main(int argc, char **argv)
     printf("{\"source\":");
     json_string(stdout, source);
 
-    status = cetta_run(m, source, &answers);
-    if ( status != CETTA_OK )
+    cetta_clear();
+    answers = cetta_run(m, source);
+    if ( !answers )
     { printf(",\"error\":");
       json_string(stdout, cetta_errmsg() ? cetta_errmsg() : "unknown");
       printf("}");
@@ -133,14 +134,14 @@ int main(int argc, char **argv)
     }
 
     printf(",\"answers\":[");
-    while ( cetta_answers_step(answers) == CETTA_ROW )
-    { const cetta_atom_t *atom = cetta_answers_atom(answers);
+    while ( (atom = cetta_next(answers)) != NULL )
+    {
       if ( !first_answer ) printf(",");
       first_answer = 0;
-      printf("{\"group\":%zu,\"kind\":", cetta_answers_group(answers));
-      json_string(stdout, cetta_kind_str(cetta_kind(atom)));
+      printf("{\"group\":%zu,\"kind\":", cetta_group(answers));
+      json_string(stdout, cetta_kind_str(cetta_kind_of(atom)));
       printf(",\"text\":");
-      json_string(stdout, cetta_answers_text(answers));
+      json_string(stdout, cetta_answer_text(answers));
       printf("}");
     }
     printf("]}");

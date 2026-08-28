@@ -8,126 +8,104 @@
  *   Future Enhancements: None
  */
 
+#define CETTA_SHORTHAND
 #include <cetta.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
-/* 1. A named function. `(hypot 3 4)` in MeTTa reaches this. */
-static cetta_status_t op_hypot(cetta_call_t *call, void *user)
-{ double a = 0, b = 0;
+/* 1. A named function. `(hypot 3.0 4.0)` in MeTTa reaches this.
+
+      The arguments are read first and checked once, which is ferror()'s
+      shape: cetta_clear() forgets any earlier failure, each read records its
+      own, and one test at the end covers them all. */
+static cetta_status op_hypot(cetta_call *call, void *user)
+{ double a, b;
   (void)user;
-  if ( cetta_float_value(cetta_call_arg(call, 0), &a) != CETTA_OK ||
-       cetta_float_value(cetta_call_arg(call, 1), &b) != CETTA_OK )
-  { cetta_call_error(call, "hypot wants two floats");
-    return CETTA_ERROR;
-  }
-  return cetta_call_return(call, cetta_float(hypot(a, b)));
+
+  cetta_clear();
+  a = cetta_float(cetta_arg(call, 0));
+  b = cetta_float(cetta_arg(call, 1));
+  if ( !cetta_ok() ) return cetta_fail(call, "hypot wants two numbers");
+  return cetta_answer(call, R(hypot(a, b)));
 }
 
 /* 2. A name C spells with underscores. It publishes as `word-count`, because
       each host reaches the meaning through its own casing convention. */
-static cetta_status_t op_word_count(cetta_call_t *call, void *user)
-{ const char *text = cetta_name(cetta_call_arg(call, 0));
+static cetta_status op_word_count(cetta_call *call, void *user)
+{ const char *text = cetta_name(cetta_arg(call, 0));
   int64_t words = 0;
   bool inside = false;
   (void)user;
 
-  if ( !text )
-  { cetta_call_error(call, "word_count wants a String");
-    return CETTA_ERROR;
-  }
+  if ( !text ) return cetta_fail(call, "word_count wants text");
   for (; *text; text++)
   { bool space = (*text == ' ' || *text == '\t' || *text == '\n');
     if ( !space && !inside ) { words++; inside = true; }
     else if ( space ) inside = false;
   }
-  return cetta_call_return(call, cetta_int(words));
+  return cetta_answer(call, N(words));
 }
 
 /* 3. A C value the language carries without ever serialising it. */
-typedef struct { double total; } account_t;
+typedef struct { double total; } account;
 
-static cetta_status_t op_deposit(cetta_call_t *call, void *user)
-{ const cetta_atom_t *handle = cetta_call_arg(call, 0);
-  account_t *account;
-  double amount = 0;
+static cetta_status op_deposit(cetta_call *call, void *user)
+{ const cetta_atom *handle = cetta_arg(call, 0);
+  account *acct;
+  double amount;
   (void)user;
 
-  if ( cetta_kind(handle) != CETTA_OBJECT ||
-       strcmp(cetta_object_type(handle), "account") != 0 )
-  { cetta_call_error(call, "deposit wants an account handle");
-    return CETTA_ERROR;
-  }
-  if ( cetta_float_value(cetta_call_arg(call, 1), &amount) != CETTA_OK )
-  { cetta_call_error(call, "deposit wants an amount");
-    return CETTA_ERROR;
-  }
-  account = cetta_object_value(handle);
-  account->total += amount;
-  return cetta_call_return(call, cetta_float(account->total));
-}
+  if ( cetta_kind_of(handle) != CETTA_OBJECT ||
+       strcmp(cetta_type(handle), "account") != 0 )
+    return cetta_fail(call, "deposit wants an account handle");
 
-static void drain(const char *label, cetta_answers_t *answers)
-{ if ( !answers )
-  { fprintf(stderr, "%s: %s\n", label, cetta_errmsg());
-    return;
-  }
-  while ( cetta_answers_step(answers) == CETTA_ROW )
-    printf("%s -> %s\n", label, cetta_answers_text(answers));
-  cetta_answers_free(answers);
+  cetta_clear();
+  amount = cetta_float(cetta_arg(call, 1));
+  if ( !cetta_ok() ) return cetta_fail(call, "deposit wants an amount");
+
+  acct = cetta_value(handle);
+  acct->total += amount;
+  return cetta_answer(call, R(acct->total));
 }
 
 int main(void)
-{ cetta_t *m;
-  cetta_answers_t *answers = NULL;
-  static account_t account = {0};
-  cetta_atom_t *handle;
+{ cetta *m = cetta_open(NULL);
+  static account acct = {0};
+  cetta_atom *handle;
 
-  if ( cetta_open(NULL, &m) != CETTA_OK )
-  { fprintf(stderr, "boot: %s\n", cetta_errmsg());
-    return 1;
-  }
+  if ( !m ) return fprintf(stderr, "boot: %s\n", cetta_errmsg()), 1;
 
   /* Each publication names its effect class. It is required, not advisory:
-     the engine reasons about caching and reordering from it. */
-  cetta_op(m, "hypot", 2, CETTA_PURE_STRUCTURAL, op_hypot, NULL);
-  cetta_op(m, "word_count", 1, CETTA_PURE_STRUCTURAL, op_word_count, NULL);
-  cetta_op(m, "deposit", 2, CETTA_WRITES_STATE, op_deposit, NULL);
+     the engine reasons about caching and reordering from it. Designated
+     initializers mean the call site says which field is which. */
+  cetta_def(m, (cetta_op){ .name = "hypot", .arity = 2,
+                           .effect = CETTA_PURE, .fn = op_hypot });
+  cetta_def(m, (cetta_op){ .name = "word_count", .arity = 1,
+                           .effect = CETTA_PURE, .fn = op_word_count });
+  cetta_def(m, (cetta_op){ .name = "deposit", .arity = 2,
+                           .effect = CETTA_WRITES, .fn = op_deposit });
 
-  cetta_run(m, "!(hypot 3.0 4.0)\n", &answers);
-  drain("hypot", answers);
-
-  answers = NULL;
-  cetta_run(m, "!(word-count \"the quick brown fox\")\n", &answers);
-  drain("word-count (published from word_count)", answers);
+  printf("hypot 3 4          -> %g\n",
+         cetta_one_float(cetta_run(m, "!(hypot 3.0 4.0)")));
+  printf("word-count         -> %lld\n",
+         (long long)cetta_one_int(cetta_run(m, "!(word-count \"the quick brown fox\")")));
 
   /* The account never becomes text. MeTTa holds the reference and hands it
-     back to deposit unchanged. */
-  handle = cetta_object(&account, "account", NULL);
-  { cetta_atom_t *goal = cetta_expr(3, cetta_sym("deposit"),
-                                    cetta_retain(handle), cetta_float(25.0));
-    answers = NULL;
-    cetta_eval(cetta_self(m), goal, &answers);
-    drain("deposit 25", answers);
-    cetta_release(goal);
-
-    goal = cetta_expr(3, cetta_sym("deposit"),
-                      cetta_retain(handle), cetta_float(17.5));
-    answers = NULL;
-    cetta_eval(cetta_self(m), goal, &answers);
-    drain("deposit 17.5", answers);
-    cetta_release(goal);
-  }
-  printf("the C struct itself now holds %.2f\n", account.total);
-  cetta_release(handle);
+     back to deposit unchanged, so the C struct is what actually changes. */
+  handle = cetta_object(&acct, "account", NULL);
+  printf("deposit 25         -> %g\n",
+         cetta_one_float(cetta_eval(m, E("deposit", cetta_keep(handle), 25.0))));
+  printf("deposit 17.5       -> %g\n",
+         cetta_one_float(cetta_eval(m, E("deposit", cetta_keep(handle), 17.5))));
+  printf("the C struct holds -> %.2f\n", acct.total);
+  cetta_drop(handle);
 
   /* A refusal from C reaches the caller as an engine error, not a wrong
      answer. */
-  answers = NULL;
-  if ( cetta_run(m, "!(hypot \"three\" 4.0)\n", &answers) != CETTA_OK )
-    printf("refused, as it should be: %s\n", cetta_errmsg());
-  cetta_answers_free(answers);
+  cetta_clear();
+  cetta_answers_free(cetta_run(m, "!(hypot \"three\" 4.0)"));
+  if ( !cetta_ok() ) printf("refused, as it should be: %s\n", cetta_errmsg());
 
   cetta_close(m);
   return 0;

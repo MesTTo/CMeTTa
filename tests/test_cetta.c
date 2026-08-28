@@ -10,6 +10,7 @@
  *   Future Enhancements: None
  */
 
+#define CETTA_SHORTHAND
 #include <cetta.h>
 
 #include <stdio.h>
@@ -39,730 +40,706 @@ static const char *current_case = "";
 #define CASE(name) current_case = (name)
 #endif
 
-/* ---------------------------------------------------------------- */
+/* ================================================================== *
+ * Atoms, which need no engine
+ * ================================================================== */
 
 static void test_atoms_need_no_engine(void)
-{ cetta_atom_t *sym, *str, *n, *f, *b, *v, *e, *unit;
+{ cetta_atom *sym, *text, *n, *f, *b, *v, *e, *unit;
 
   CASE("atoms are built and read without an engine");
 
-  sym = cetta_sym("foo");
-  str = cetta_str("foo");
-  CHECK(cetta_kind(sym) == CETTA_SYMBOL);
-  CHECK(cetta_kind(str) == CETTA_STRING);
+  sym = S("foo");
+  text = T("foo");
+  CHECK(cetta_kind_of(sym) == CETTA_SYMBOL);
+  CHECK(cetta_kind_of(text) == CETTA_TEXT);
   CHECK(strcmp(cetta_name(sym), "foo") == 0);
-  /* A symbol is not a string; folding them together is the ambiguity the
-     kinds exist to remove. */
-  CHECK(!cetta_eq(sym, str));
+  /* A symbol is not text; folding them together is the ambiguity the kinds
+     exist to remove. */
+  CHECK(!cetta_eq(sym, text));
 
-  n = cetta_int(42);
-  f = cetta_float(2.0);
-  b = cetta_bool(true);
-  CHECK(cetta_kind(n) == CETTA_INT);
-  CHECK(cetta_kind(f) == CETTA_FLOAT);
-  CHECK(cetta_kind(b) == CETTA_BOOL);
+  n = N(42);
+  f = R(2.0);
+  b = B(true);
+  CHECK(cetta_kind_of(n) == CETTA_INT);
+  CHECK(cetta_kind_of(f) == CETTA_FLOAT);
+  CHECK(cetta_kind_of(b) == CETTA_BOOL);
   /* 2 and 2.0 are different atoms, which is why C splits the one wire tag. */
-  { cetta_atom_t *two = cetta_int(2);
+  { cetta_atom *two = N(2);
     CHECK(!cetta_eq(two, f));
-    cetta_release(two);
+    cetta_drop(two);
   }
   /* A boolean is not a symbol that spells it. */
-  { cetta_atom_t *spelled = cetta_sym("True");
+  { cetta_atom *spelled = S("True");
     CHECK(!cetta_eq(b, spelled));
-    cetta_release(spelled);
+    cetta_drop(spelled);
   }
 
-  v = cetta_var("x");
-  CHECK(cetta_kind(v) == CETTA_VARIABLE);
+  v = V("x");
+  CHECK(cetta_kind_of(v) == CETTA_VARIABLE);
 
-  e = cetta_expr(3, cetta_sym("+"), cetta_int(1), cetta_int(2));
-  CHECK(cetta_kind(e) == CETTA_EXPR);
+  e = E("+", 1, 2);
+  CHECK(cetta_kind_of(e) == CETTA_EXPR);
   CHECK(cetta_len(e) == 3);
-  CHECK(cetta_kind(cetta_child(e, 0)) == CETTA_SYMBOL);
-  CHECK(cetta_child(e, 3) == NULL);
+  CHECK(cetta_kind_of(cetta_at(e, 0)) == CETTA_SYMBOL);
+  CHECK(cetta_at(e, 3) == NULL);
+  CHECK(cetta_kind_of(cetta_at(e, 3)) == CETTA_NONE);
 
   unit = cetta_unit();
-  CHECK(cetta_kind(unit) == CETTA_EXPR);
+  CHECK(cetta_kind_of(unit) == CETTA_EXPR);
   CHECK(cetta_len(unit) == 0);
   /* Unit is not the empty string. */
-  { cetta_atom_t *empty = cetta_str("");
+  { cetta_atom *empty = T("");
     CHECK(!cetta_eq(unit, empty));
-    cetta_release(empty);
+    cetta_drop(empty);
   }
 
-  cetta_release(sym); cetta_release(str); cetta_release(n); cetta_release(f);
-  cetta_release(b); cetta_release(v); cetta_release(e); cetta_release(unit);
+  cetta_drop(sym); cetta_drop(text); cetta_drop(n); cetta_drop(f);
+  cetta_drop(b); cetta_drop(v); cetta_drop(e); cetta_drop(unit);
+}
+
+static void test_the_builder_coerces_each_child_by_its_c_type(void)
+{ cetta_atom *e, *nested;
+
+  CASE("cetta_expr coerces by C type and counts its own arguments");
+  /* No count is written anywhere, and no child names a constructor. */
+  e = E("edge", "a", 1, 2.5, V("y"));
+  CHECK(cetta_len(e) == 5);
+  CHECK(cetta_kind_of(cetta_at(e, 0)) == CETTA_SYMBOL);   /* a bare string  */
+  CHECK(cetta_kind_of(cetta_at(e, 1)) == CETTA_SYMBOL);   /* ...is a symbol */
+  CHECK(cetta_kind_of(cetta_at(e, 2)) == CETTA_INT);
+  CHECK(cetta_kind_of(cetta_at(e, 3)) == CETTA_FLOAT);
+  CHECK(cetta_kind_of(cetta_at(e, 4)) == CETTA_VARIABLE);
+  cetta_drop(e);
+
+  CASE("an atom argument passes through, so expressions nest");
+  nested = E("f", E("g", 1), T("two"));
+  CHECK(cetta_len(nested) == 3);
+  CHECK(cetta_kind_of(cetta_at(nested, 1)) == CETTA_EXPR);
+  CHECK(cetta_kind_of(cetta_at(nested, 2)) == CETTA_TEXT);
+  cetta_drop(nested);
+
+  CASE("every integer width reaches the same Number");
+  { short s = 7; long l = 7; long long ll = 7; unsigned u = 7;
+    cetta_atom *a = E("f", s), *b = E("f", l), *c = E("f", ll), *d = E("f", u);
+    CHECK(cetta_eq(a, b) && cetta_eq(b, c) && cetta_eq(c, d));
+    cetta_drop(a); cetta_drop(b); cetta_drop(c); cetta_drop(d);
+  }
 }
 
 static void test_a_failed_child_does_not_leak_its_siblings(void)
-{ cetta_atom_t *bad;
+{ cetta_atom *bad;
   CASE("a NULL child fails the whole expression");
-  /* cetta_space_ref refuses a name with no ampersand, so the middle child is
-     NULL and the outer constructor must release the two that succeeded
-     rather than building something half-formed. Run under a leak checker this
-     is the case that proves the steal-on-failure rule. */
-  bad = cetta_expr(3, cetta_sym("f"), cetta_space_ref("nope"), cetta_int(1));
+  /* cetta_spaceref refuses a name with no ampersand, so the middle child is
+     NULL and the outer constructor must drop the two that succeeded rather
+     than building something half-formed. Under a leak checker this is the
+     case that proves the take-on-failure rule. */
+  cetta_clear();
+  bad = E("f", cetta_spaceref("nope"), 1);
   CHECK(bad == NULL);
-  CHECK(cetta_errmsg() != NULL);
+  CHECK(!cetta_ok());
 }
 
 static void test_refusals_are_named(void)
-{ cetta_atom_t *wide;
+{ cetta_atom *wide;
 
   CASE("a value C has no type for is refused by name");
+  cetta_clear();
   CHECK(cetta_bigint("12x3") == NULL);
-  CHECK(cetta_errmsg() != NULL);
-  CHECK(cetta_rational(1, 0) == NULL);
-  CHECK(cetta_space_ref("kb") == NULL);
+  CHECK(!cetta_ok());
+  CHECK(cetta_ratio(1, 0) == NULL);
+  CHECK(cetta_spaceref("kb") == NULL);
 
+  cetta_clear();
   wide = cetta_bigint("170141183460469231731687303715884105728");
   CHECK(wide != NULL);
-  CHECK(cetta_kind(wide) == CETTA_BIGINT);
-  cetta_release(wide);
+  CHECK(cetta_kind_of(wide) == CETTA_BIGINT);
+  CHECK(cetta_ok());
+  cetta_drop(wide);
 }
 
-/* Enough churn that a reference miscounted by one shows up as a leak or a use
-   after free under valgrind, rather than as nothing at all. */
-static void test_reference_counting_holds_under_churn(cetta_t *m)
+static void test_reading_promotes_only_where_it_is_lossless(void)
+{ cetta_atom *i = N(7), *f = R(2.5), *r = cetta_ratio(1, 4), *huge;
+
+  CASE("an Int reads as a double, because nothing is lost");
+  cetta_clear();
+  CHECK(cetta_float(i) == 7.0);
+  CHECK(cetta_ok());
+
+  CASE("a Float does NOT read as an Int, because rounding is not reading");
+  cetta_clear();
+  CHECK(cetta_int(f) == 0);
+  CHECK(!cetta_ok());
+
+  CASE("a Rational reads as its quotient");
+  cetta_clear();
+  CHECK(cetta_float(r) == 0.25);
+  CHECK(cetta_ok());
+
+  CASE("an Int too wide for a double is refused rather than rounded");
+  huge = N(9007199254740993LL);           /* 2^53 + 1 */
+  cetta_clear();
+  CHECK(cetta_float(huge) == 0.0);
+  CHECK(!cetta_ok());
+  CHECK(cetta_error() == CETTA_UNSUPPORTED);
+  /* And it still reads exactly as what it is. */
+  cetta_clear();
+  CHECK(cetta_int(huge) == 9007199254740993LL);
+  CHECK(cetta_ok());
+
+  cetta_drop(i); cetta_drop(f); cetta_drop(r); cetta_drop(huge);
+}
+
+static void test_the_error_state_is_errno_shaped(void)
+{ CASE("a failure sticks until it is cleared, so a run is checked once");
+  cetta_clear();
+  CHECK(cetta_ok());
+  CHECK(cetta_errmsg() == NULL);
+  CHECK(cetta_error() == CETTA_OK);
+
+  cetta_drop(cetta_bigint("nope"));
+  CHECK(!cetta_ok());
+  CHECK(cetta_errmsg() != NULL);
+
+  /* A success afterwards does NOT clear it, which is the whole point: three
+     reads can be checked with one test. */
+  cetta_drop(S("fine"));
+  CHECK(!cetta_ok());
+
+  cetta_clear();
+  CHECK(cetta_ok());
+}
+
+static void test_reference_counting_holds_under_churn(void)
 { int i;
-  CASE("building, sharing and releasing atoms leaks nothing");
+  CASE("building, sharing and dropping atoms leaks nothing");
   for (i = 0; i < 2000; i++)
-  { cetta_atom_t *leaf = cetta_sym("leaf");
-    cetta_atom_t *shared = cetta_retain(leaf);
-    cetta_atom_t *inner = cetta_expr(2, cetta_retain(leaf), cetta_int(i));
-    cetta_atom_t *outer = cetta_expr(3, cetta_sym("f"), inner,
-                                     cetta_str("text"));
-    const cetta_atom_t *borrowed = cetta_child(outer, 1);
-    cetta_atom_t *kept = cetta_retain(borrowed);
+  { cetta_atom *leaf = S("leaf");
+    cetta_atom *shared = cetta_keep(leaf);
+    cetta_atom *outer = E("f", E(cetta_keep(leaf), i), T("text"));
+    const cetta_atom *borrowed = cetta_at(outer, 1);
+    cetta_atom *kept = cetta_keep(borrowed);
 
-    if ( i == 0 )
-    { char *shown = cetta_show(m, outer);
-      CHECK(shown != NULL);
-      cetta_free(shown);
-    }
-    cetta_release(kept);
-    cetta_release(outer);
-    cetta_release(shared);
-    cetta_release(leaf);
-  }
-  /* And an object's release callback runs exactly once, however many
-     references crossed into the engine and back. */
-  { static int released = 0;
-    cetta_atom_t *object;
-    struct { int n; } payload = {0};
-    (void)payload;
-    released = 0;
-    object = cetta_object(&released, "probe", NULL);
-    for (i = 0; i < 100; i++)
-    { cetta_atom_t *copy = cetta_retain(object);
-      cetta_release(copy);
-    }
-    CHECK(cetta_object_value(object) == &released);
-    cetta_release(object);
+    if ( i == 0 ) CHECK(cetta_show(outer) != NULL);
+    cetta_drop(kept);
+    cetta_drop(outer);
+    cetta_drop(shared);
+    cetta_drop(leaf);
   }
 }
 
-static void test_text_crosses_through_the_engine_reader(cetta_t *m)
-{ cetta_atom_t *parsed = NULL;
-  char *shown;
+/* ================================================================== *
+ * Text, running, and the cursor
+ * ================================================================== */
+
+static void test_text_crosses_through_the_engine_reader(void)
+{ cetta_atom *parsed;
 
   CASE("parse and show use the engine's own reader and writer");
-  CHECK(cetta_parse(m, "(+ 1 2)", &parsed) == CETTA_OK);
-  CHECK(parsed && cetta_kind(parsed) == CETTA_EXPR);
+  parsed = cetta_parse("(+ 1 2)");
+  CHECK(parsed && cetta_kind_of(parsed) == CETTA_EXPR);
   CHECK(cetta_len(parsed) == 3);
+  CHECK(strcmp(cetta_show(parsed), "(+ 1 2)") == 0);
+  cetta_drop(parsed);
 
-  shown = cetta_show(m, parsed);
-  CHECK(shown && strcmp(shown, "(+ 1 2)") == 0);
-  cetta_free(shown);
-  cetta_release(parsed);
+  CASE("show hands back storage it owns, so it drops into printf");
+  { cetta_atom *a = S("alpha"), *b = S("beta");
+    /* Both renderings must still be readable in one call, which one slot
+       could not manage. */
+    const char *sa = cetta_show(a), *sb = cetta_show(b);
+    CHECK(strcmp(sa, "alpha") == 0);
+    CHECK(strcmp(sb, "beta") == 0);
+    cetta_drop(a); cetta_drop(b);
+  }
 
-  /* A variable keeps the name its source gave it. */
-  CHECK(cetta_parse(m, "(f $x $x)", &parsed) == CETTA_OK);
-  CHECK(cetta_kind(cetta_child(parsed, 1)) == CETTA_VARIABLE);
-  CHECK(strcmp(cetta_name(cetta_child(parsed, 1)), "x") == 0);
-  CHECK(cetta_eq(cetta_child(parsed, 1), cetta_child(parsed, 2)));
-  cetta_release(parsed);
+  CASE("a variable keeps the name its source gave it");
+  parsed = cetta_parse("(f $x $x)");
+  CHECK(cetta_kind_of(cetta_at(parsed, 1)) == CETTA_VARIABLE);
+  CHECK(strcmp(cetta_name(cetta_at(parsed, 1)), "x") == 0);
+  CHECK(cetta_eq(cetta_at(parsed, 1), cetta_at(parsed, 2)));
+  cetta_drop(parsed);
 
-  CASE("unreadable source is an error, not a wrong answer");
-  CHECK(cetta_parse(m, "(unclosed", &parsed) != CETTA_OK);
-  CHECK(cetta_errmsg() != NULL);
+  CASE("unreadable source is a refusal, not a wrong answer");
+  cetta_clear();
+  CHECK(cetta_parse("(unclosed") == NULL);
+  CHECK(!cetta_ok());
 }
 
-static void test_run_groups_answers_by_form(cetta_t *m)
-{ cetta_answers_t *answers;
-  int seen = 0;
+static void test_run_groups_answers_by_form(cetta *m)
+{ int seen = 0;
   size_t last_group = 0;
 
   CASE("run groups its answers by ! form, in source order");
-  CHECK(cetta_run(m,
-                  "(= (twice $x) (* 2 $x))\n"
-                  "!(twice 21)\n"
-                  "!(superpose (a b))\n", &answers) == CETTA_OK);
-  while ( cetta_answers_step(answers) == CETTA_ROW )
-  { last_group = cetta_answers_group(answers);
+  cetta_each_cursor (a, it, cetta_run(m,
+        "(= (twice $x) (* 2 $x))\n"
+        "!(twice 21)\n"
+        "!(superpose (a b))\n"))
+  { last_group = cetta_group(it);
     if ( seen == 0 )
-    { int64_t v = 0;
-      CHECK(cetta_int_value(cetta_answers_atom(answers), &v) == CETTA_OK);
-      CHECK(v == 42);
+    { CHECK(cetta_int(a) == 42);
       CHECK(last_group == 0);
     }
     if ( seen == 1 )
-    { CHECK(cetta_kind(cetta_answers_atom(answers)) == CETTA_SYMBOL);
+    { CHECK(cetta_kind_of(a) == CETTA_SYMBOL);
       CHECK(last_group == 1);
     }
+    CHECK(cetta_answer_text(it) != NULL);
     seen++;
   }
   CHECK(seen == 3);
   CHECK(last_group == 1);
-  cetta_answers_free(answers);
 }
 
-static void test_eval_is_lazy(cetta_t *m)
-{ cetta_answers_t *answers;
-  cetta_atom_t *goal;
-  int pulled = 0;
+static void test_the_walk_closes_its_cursor_on_break(cetta *m)
+{ int pulled = 0;
 
   CASE("eval computes one answer per step over an endless generator");
   /* Endless on purpose: an eager door cannot return from this at all, so the
-     case passing IS the laziness proof. */
-  CHECK(cetta_run(m, "(= (from $n) (superpose ($n (from (+ $n 1)))))\n",
-                  &answers) == CETTA_OK);
-  cetta_answers_free(answers);
+     case passing IS the laziness proof, and `break` leaving the cursor closed
+     is what makes it safe to write. */
+  cetta_answers_free(cetta_run(m,
+      "(= (from $n) (superpose ($n (from (+ $n 1)))))"));
 
-  goal = cetta_expr(2, cetta_sym("from"), cetta_int(0));
-  CHECK(cetta_eval(cetta_self(m), goal, &answers) == CETTA_OK);
-  while ( pulled < 3 && cetta_answers_step(answers) == CETTA_ROW )
-    pulled++;
+  cetta_each (a, cetta_eval(m, E("from", 0)))
+  { CHECK(cetta_int(a) == pulled);
+    if ( ++pulled == 3 ) break;
+  }
   CHECK(pulled == 3);
-  /* Abandoned rather than drained: the rest stays uncomputed. */
-  cetta_answers_free(answers);
-  cetta_release(goal);
+
+  CASE("two walks nest without their cursors colliding");
+  { int pairs = 0;
+    cetta_each (x, cetta_eval(m, E("superpose", E("a", "b"))))
+    { cetta_each (y, cetta_eval(m, E("superpose", E("c", "d"))))
+      { (void)x; (void)y; pairs++; }
+    }
+    CHECK(pairs == 4);
+  }
 }
 
-static void test_a_cursor_is_idempotent_at_its_end(cetta_t *m)
-{ cetta_answers_t *answers;
-  cetta_atom_t *goal;
+static void test_one_and_first_make_different_claims(cetta *m)
+{ cetta_atom *a;
 
-  CASE("stepping past the end keeps answering DONE");
-  goal = cetta_expr(3, cetta_sym("+"), cetta_int(1), cetta_int(2));
-  CHECK(cetta_eval(cetta_self(m), goal, &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  CHECK(cetta_answers_step(answers) == CETTA_DONE);
-  CHECK(cetta_answers_step(answers) == CETTA_DONE);
-  CHECK(cetta_answers_atom(answers) == NULL);
-  cetta_answers_free(answers);
-  cetta_release(goal);
+  CASE("cetta_one is a claim that there is exactly one answer");
+  cetta_clear();
+  CHECK(cetta_one_int(cetta_eval(m, E("+", 1, 2))) == 3);
+  CHECK(cetta_ok());
+
+  CASE("cetta_one refuses a question that answered twice");
+  cetta_clear();
+  a = cetta_one(cetta_eval(m, E("superpose", E("a", "b"))));
+  CHECK(a == NULL);
+  CHECK(cetta_error() == CETTA_MISUSE);
+
+  CASE("cetta_first takes the first and makes no such claim");
+  cetta_clear();
+  a = cetta_first(cetta_eval(m, E("superpose", E("a", "b"))));
+  CHECK(a != NULL);
+  CHECK(cetta_ok());
+  cetta_drop(a);
+
+  CASE("cetta_one on no answers at all is a recorded failure");
+  cetta_clear();
+  CHECK(cetta_one(cetta_eval(m, E("empty"))) == NULL);
+  CHECK(!cetta_ok());
+
+  CASE("cetta_all collects every answer as one owned array");
+  { size_t n = 0;
+    cetta_atom **all = cetta_all(cetta_eval(m, E("superpose", E(1, 2, 3))), &n);
+    CHECK(n == 3);
+    CHECK(all != NULL && cetta_int(all[0]) + cetta_int(all[1]) + cetta_int(all[2]) == 6);
+    cetta_atoms_free(all, n);
+  }
 }
 
-static void test_spaces_store_and_query(cetta_t *m)
-{ cetta_space_t *kb;
-  cetta_answers_t *answers;
-  cetta_atom_t *fact, *pattern;
-  size_t count = 0;
-  bool removed = false;
+/* ================================================================== *
+ * Spaces
+ * ================================================================== */
+
+static void test_spaces_store_and_query(cetta *m)
+{ cetta_space *kb;
   int matched = 0;
 
   CASE("a space stores, counts, matches and removes");
-  CHECK(cetta_space_open(m, "&cetta-kb", &kb) == CETTA_OK);
+  kb = cetta_space_open(m, "&cetta-kb");
+  CHECK(kb != NULL);
   CHECK(strcmp(cetta_space_name(kb), "&cetta-kb") == 0);
 
-  fact = cetta_expr(3, cetta_sym("edge"), cetta_sym("a"), cetta_sym("b"));
-  CHECK(cetta_add(kb, fact) == CETTA_OK);
-  CHECK(cetta_space_count(kb, &count) == CETTA_OK);
-  CHECK(count == 1);
+  CHECK(cetta_add(kb, E("edge", "a", "b")));
+  CHECK(cetta_count(kb) == 1);
 
-  pattern = cetta_expr(3, cetta_sym("edge"), cetta_sym("a"), cetta_var("y"));
-  CHECK(cetta_match(kb, pattern, &answers) == CETTA_OK);
-  while ( cetta_answers_step(answers) == CETTA_ROW )
-  { const cetta_atom_t *got = cetta_answers_atom(answers);
-    CHECK(cetta_len(got) == 3);
+  cetta_each (got, cetta_match(kb, E("edge", "a", V("y"))))
+  { CHECK(cetta_len(got) == 3);
     /* The pattern's variable arrives bound in the answer. */
-    CHECK(cetta_kind(cetta_child(got, 2)) == CETTA_SYMBOL);
-    CHECK(strcmp(cetta_name(cetta_child(got, 2)), "b") == 0);
+    CHECK(strcmp(cetta_name(cetta_at(got, 2)), "b") == 0);
     matched++;
   }
   CHECK(matched == 1);
-  cetta_answers_free(answers);
 
-  CHECK(cetta_remove(kb, fact, &removed) == CETTA_OK);
-  CHECK(removed == true);
-  CHECK(cetta_space_count(kb, &count) == CETTA_OK);
-  CHECK(count == 0);
+  CHECK(cetta_del(kb, E("edge", "a", "b")) == true);
+  CHECK(cetta_count(kb) == 0);
+  CHECK(cetta_del(kb, E("edge", "a", "b")) == false);
 
-  CHECK(cetta_add(kb, fact) == CETTA_OK);
-  CHECK(cetta_space_clear(kb) == CETTA_OK);
-  CHECK(cetta_space_count(kb, &count) == CETTA_OK);
-  CHECK(count == 0);
-
-  cetta_release(pattern);
-  cetta_release(fact);
-  cetta_space_free(kb);
+  CHECK(cetta_add(kb, E("edge", "a", "b")));
+  CHECK(cetta_wipe(kb));
+  CHECK(cetta_count(kb) == 0);
+  cetta_space_close(kb);
 }
 
-/* The answer to `!(id x)`, whose whole form comes back because (id x) is
-   irreducible here, so the argument is its last child. */
-static const cetta_atom_t *carried_argument(const cetta_atom_t *got)
-{ return cetta_kind(got) == CETTA_EXPR ? cetta_child(got, cetta_len(got) - 1)
-                                       : got;
+static void test_one_verb_takes_either_receiver(cetta *m)
+{ cetta_space *kb;
+  size_t before;
+
+  CASE("the same verb points at a runtime or at a space");
+  before = cetta_count(m);                    /* a cetta *  means &self   */
+  CHECK(cetta_add(m, E("cetta-receiver-probe", 1)));
+  CHECK(cetta_count(m) == before + 1);
+
+  kb = cetta_space_open(m, "&cetta-receiver");
+  CHECK(cetta_count(kb) == 0);                /* a cetta_space * means it */
+  CHECK(cetta_add(kb, E("cetta-receiver-probe", 1)));
+  CHECK(cetta_count(kb) == 1);
+  /* The two receivers are different stores, which is the point. */
+  CHECK(cetta_count(m) == before + 1);
+
+  CHECK(cetta_del(m, E("cetta-receiver-probe", 1)));
+  CHECK(cetta_wipe(kb));
+  cetta_space_close(kb);
 }
 
-static void test_a_user_space_decodes_as_a_space(cetta_t *m)
-{ cetta_answers_t *answers;
-  CASE("a space the engine made decodes as CETTA_SPACE, not a symbol");
-  CHECK(cetta_run(m, "!(new-space)\n", &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  CHECK(cetta_kind(cetta_answers_atom(answers)) == CETTA_SPACE);
-  CHECK(cetta_name(cetta_answers_atom(answers))[0] == '&');
-  cetta_answers_free(answers);
-
-  /* The ampersand alone decides nothing: `p` is a species and this name is
-     no space, which is what the engine's own get-metatype answers for it.
-     CODEC.md states the rule. */
-  CASE("an ampersand name that is no space stays a symbol");
-  CHECK(cetta_run(m, "!(id &not-a-space)\n", &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  CHECK(cetta_kind(carried_argument(cetta_answers_atom(answers)))
-        == CETTA_SYMBOL);
-  cetta_answers_free(answers);
-
-  /* A State cell wears the same &-handle spelling a space does and is not
-     one. The wider is-space/2 test calls it a space; this seat asks the
-     species question instead and gets the symbol its own text spells. */
-  CASE("a State cell is not decoded as a space");
-  CHECK(cetta_run(m, "!(new-state 5)\n", &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  CHECK(cetta_kind(cetta_answers_atom(answers)) == CETTA_SYMBOL);
-  CHECK(strncmp(cetta_name(cetta_answers_atom(answers)), "&state-#", 8) == 0);
-  cetta_answers_free(answers);
-}
-
-/* --- published C functions --------------------------------------- */
-
-static cetta_status_t op_double(cetta_call_t *call, void *user)
-{ int64_t v = 0;
-  (void)user;
-  if ( cetta_call_arity(call) != 1 ) return CETTA_FAIL;
-  if ( cetta_int_value(cetta_call_arg(call, 0), &v) != CETTA_OK )
-  { cetta_call_error(call, "double wants a Number");
-    return CETTA_ERROR;
+static void test_a_user_space_decodes_as_a_space(cetta *m)
+{ CASE("a space the engine made decodes as CETTA_SPACE, not a symbol");
+  cetta_each (a, cetta_run(m, "!(new-space)"))
+  { CHECK(cetta_kind_of(a) == CETTA_SPACE);
+    CHECK(cetta_name(a)[0] == '&');
   }
-  return cetta_call_return(call, cetta_int(v * 2));
+
+  CASE("an ampersand name that is no space stays a symbol");
+  cetta_each (a, cetta_run(m, "!(id &not-a-space)"))
+  { const cetta_atom *arg = cetta_kind_of(a) == CETTA_EXPR
+                          ? cetta_at(a, cetta_len(a) - 1) : a;
+    CHECK(cetta_kind_of(arg) == CETTA_SYMBOL);
+  }
 }
 
-static cetta_status_t op_tag_it(cetta_call_t *call, void *user)
-{ const char *tag = user;
-  return cetta_call_return(call,
-           cetta_expr(2, cetta_sym(tag),
-                      cetta_retain(cetta_call_arg(call, 0))));
+/* ================================================================== *
+ * Published C functions
+ * ================================================================== */
+
+static cetta_status op_double(cetta_call *call, void *user)
+{ int64_t v;
+  (void)user;
+  if ( cetta_arity(call) != 1 ) return CETTA_FAIL;
+  cetta_clear();
+  v = cetta_int(cetta_arg(call, 0));
+  if ( !cetta_ok() ) return cetta_fail(call, "double wants a Number");
+  return cetta_answer(call, N(v * 2));
 }
 
-static void test_a_c_function_is_callable_from_metta(cetta_t *m)
-{ cetta_answers_t *answers;
-  int64_t v = 0;
+static cetta_status op_tag_it(cetta_call *call, void *user)
+{ return cetta_answer(call, E((const char *)user,
+                              cetta_keep(cetta_arg(call, 0))));
+}
 
-  CASE("a published C function answers a MeTTa call");
-  CHECK(cetta_op(m, "cdouble", 1, CETTA_PURE_STRUCTURAL, op_double, NULL)
-        == CETTA_OK);
-  CHECK(cetta_run(m, "!(cdouble 21)\n", &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  CHECK(cetta_int_value(cetta_answers_atom(answers), &v) == CETTA_OK);
-  CHECK(v == 42);
-  cetta_answers_free(answers);
+static void test_a_c_function_is_callable_from_metta(cetta *m)
+{ CASE("a published C function answers a MeTTa call");
+  CHECK(cetta_def(m, (cetta_op){ .name = "cdouble", .arity = 1,
+                                 .effect = CETTA_PURE, .fn = op_double }));
+  CHECK(cetta_one_int(cetta_run(m, "!(cdouble 21)")) == 42);
 
   CASE("a C name spelled with underscores reaches MeTTa with hyphens");
-  CHECK(cetta_op(m, "tag_it", 1, CETTA_PURE_STRUCTURAL, op_tag_it,
-                 (void *)"tagged") == CETTA_OK);
-  CHECK(cetta_run(m, "!(tag-it 7)\n", &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  { const cetta_atom_t *got = cetta_answers_atom(answers);
-    CHECK(cetta_kind(got) == CETTA_EXPR);
+  CHECK(cetta_def(m, (cetta_op){ .name = "tag_it", .arity = 1,
+                                 .effect = CETTA_PURE, .fn = op_tag_it,
+                                 .user = (void *)"tagged" }));
+  { cetta_atom *got = cetta_one(cetta_run(m, "!(tag-it 7)"));
+    CHECK(got && cetta_kind_of(got) == CETTA_EXPR);
     CHECK(cetta_len(got) == 2);
-    CHECK(strcmp(cetta_name(cetta_child(got, 0)), "tagged") == 0);
+    CHECK(strcmp(cetta_name(cetta_at(got, 0)), "tagged") == 0);
+    cetta_drop(got);
   }
-  cetta_answers_free(answers);
 
   CASE("a C function's refusal reaches the caller as an error");
-  CHECK(cetta_run(m, "!(cdouble \"not a number\")\n", &answers) != CETTA_OK ||
-        cetta_answers_step(answers) != CETTA_ROW);
-  CHECK(cetta_errmsg() != NULL);
+  cetta_clear();
+  cetta_answers_free(cetta_run(m, "!(cdouble \"not a number\")"));
+  CHECK(!cetta_ok());
 
   CASE("an operation must name one of the five effect classes");
-  CHECK(cetta_op(m, "bogus", 1, (cetta_effect_t)99, op_double, NULL)
-        == CETTA_MISUSE);
+  cetta_clear();
+  CHECK(!cetta_def(m, (cetta_op){ .name = "bogus", .arity = 1,
+                                  .effect = (cetta_effect)99, .fn = op_double }));
+  CHECK(cetta_error() == CETTA_MISUSE);
 
   CASE("a withdrawn name is data again");
-  CHECK(cetta_op_remove(m, "cdouble") == CETTA_OK);
-  CHECK(cetta_run(m, "!(cdouble 21)\n", &answers) == CETTA_OK);
-  if ( cetta_answers_step(answers) == CETTA_ROW )
-    CHECK(cetta_kind(cetta_answers_atom(answers)) == CETTA_EXPR);
-  cetta_answers_free(answers);
-  CHECK(cetta_op_remove(m, "tag_it") == CETTA_OK);
+  CHECK(cetta_undef(m, "cdouble"));
+  cetta_each (a, cetta_run(m, "!(cdouble 21)"))
+      CHECK(cetta_kind_of(a) == CETTA_EXPR);
+  CHECK(cetta_undef(m, "tag_it"));
 }
 
-/* --- a C value crossing MeTTa untouched -------------------------- */
+typedef struct { int bumps; } counter;
 
-typedef struct { int bumps; } counter_t;
-static int counter_freed = 0;
-
-static void counter_release(void *value)
-{ counter_freed++;
-  (void)value;
-}
-
-static cetta_status_t op_bump(cetta_call_t *call, void *user)
-{ const cetta_atom_t *handle = cetta_call_arg(call, 0);
-  counter_t *c;
+static cetta_status op_bump(cetta_call *call, void *user)
+{ const cetta_atom *handle = cetta_arg(call, 0);
+  counter *c;
   (void)user;
-  if ( cetta_kind(handle) != CETTA_OBJECT )
-  { cetta_call_error(call, "bump wants the counter it was given");
-    return CETTA_ERROR;
-  }
-  CHECK(strcmp(cetta_object_type(handle), "counter") == 0);
-  c = cetta_object_value(handle);
+  if ( cetta_kind_of(handle) != CETTA_OBJECT )
+    return cetta_fail(call, "bump wants the counter it was given");
+  CHECK(strcmp(cetta_type(handle), "counter") == 0);
+  c = cetta_value(handle);
   c->bumps++;
-  return cetta_call_return(call, cetta_int(c->bumps));
+  return cetta_answer(call, N(c->bumps));
 }
 
-static void test_a_c_value_crosses_by_reference(cetta_t *m)
-{ static counter_t counter = {0};
-  cetta_atom_t *handle;
-  cetta_space_t *self = cetta_self(m);
-  cetta_answers_t *answers;
-  cetta_atom_t *goal;
-  int64_t v = 0;
+static void test_a_c_value_crosses_by_reference(cetta *m)
+{ static counter c = {0};
+  cetta_atom *handle;
 
   CASE("a live C value crosses MeTTa and comes back the same object");
-  CHECK(cetta_op(m, "bump", 1, CETTA_WRITES_STATE, op_bump, NULL) == CETTA_OK);
-  handle = cetta_object(&counter, "counter", counter_release);
+  CHECK(cetta_def(m, (cetta_op){ .name = "bump", .arity = 1,
+                                 .effect = CETTA_WRITES, .fn = op_bump }));
+  handle = cetta_object(&c, "counter", NULL);
   CHECK(handle != NULL);
-  CHECK(cetta_kind(handle) == CETTA_OBJECT);
-  CHECK(cetta_object_value(handle) == &counter);
-
-  goal = cetta_expr(2, cetta_sym("bump"), cetta_retain(handle));
-  CHECK(cetta_eval(self, goal, &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  CHECK(cetta_int_value(cetta_answers_atom(answers), &v) == CETTA_OK);
-  CHECK(v == 1);
-  cetta_answers_free(answers);
+  CHECK(cetta_kind_of(handle) == CETTA_OBJECT);
+  CHECK(cetta_value(handle) == &c);
 
   /* State behind the handle survives across MeTTa calls. */
-  CHECK(cetta_eval(self, goal, &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  CHECK(cetta_int_value(cetta_answers_atom(answers), &v) == CETTA_OK);
-  CHECK(v == 2);
-  cetta_answers_free(answers);
-  CHECK(counter.bumps == 2);
+  CHECK(cetta_one_int(cetta_eval(m, E("bump", cetta_keep(handle)))) == 1);
+  CHECK(cetta_one_int(cetta_eval(m, E("bump", cetta_keep(handle)))) == 2);
+  CHECK(c.bumps == 2);
 
-  cetta_release(goal);
-  cetta_release(handle);
-  CHECK(cetta_op_remove(m, "bump") == CETTA_OK);
+  cetta_drop(handle);
+  CHECK(cetta_undef(m, "bump"));
 }
 
-static cetta_status_t fn_triple(cetta_call_t *call, void *user)
-{ int64_t v = 0;
+static cetta_status fn_triple(cetta_call *call, void *user)
+{ int64_t v;
   (void)user;
-  if ( cetta_int_value(cetta_call_arg(call, 0), &v) != CETTA_OK )
-    return CETTA_FAIL;
-  return cetta_call_return(call, cetta_int(v * 3));
+  cetta_clear();
+  v = cetta_int(cetta_arg(call, 0));
+  if ( !cetta_ok() ) return CETTA_FAIL;
+  return cetta_answer(call, N(v * 3));
 }
 
-static void test_a_function_value_is_applicable(cetta_t *m)
-{ cetta_atom_t *fn, *goal;
-  cetta_answers_t *answers;
-  int64_t v = 0;
+static void test_a_function_value_is_applicable(cetta *m)
+{ cetta_atom *fn;
 
   CASE("a C function carried as a value is applied where it lands");
   fn = cetta_function(fn_triple, NULL, NULL);
   CHECK(fn != NULL);
-  goal = cetta_expr(2, cetta_retain(fn), cetta_int(5));
-  CHECK(cetta_eval(cetta_self(m), goal, &answers) == CETTA_OK);
-  if ( cetta_answers_step(answers) == CETTA_ROW )
-  { CHECK(cetta_int_value(cetta_answers_atom(answers), &v) == CETTA_OK);
-    CHECK(v == 15);
-  } else
-    CHECK(!"a function value produced no answer");
-  cetta_answers_free(answers);
-  cetta_release(goal);
-  cetta_release(fn);
+  CHECK(cetta_one_int(cetta_eval(m, E(cetta_keep(fn), 5))) == 15);
+  cetta_drop(fn);
 }
 
-static void test_an_engine_error_reaches_c_as_words(cetta_t *m)
-{ cetta_answers_t *answers = NULL;
+/* ================================================================== *
+ * Errors, wide values, bounds and counters
+ * ================================================================== */
 
-  /* A raise, not a value. MeTTa keeps most failures AS values -- (car-atom 5)
+static void test_an_engine_error_reaches_c_as_words(cetta *m)
+{ /* A raise, not a value. MeTTa keeps most failures AS values -- (car-atom 5)
      answers unit and (+ 1 foo) answers itself unreduced -- so the case needs
-     something that genuinely throws, and a failed assertion does
-     [measured 2026-08-27]. */
+     something that genuinely throws, and a failed assertion does. */
   CASE("an engine exception crosses as CETTA_ERROR and readable words");
-  CHECK(cetta_run(m, "!(assertEqual 1 2)\n", &answers) == CETTA_ERROR);
-  CHECK(cetta_errmsg() != NULL);
+  cetta_clear();
+  CHECK(cetta_run(m, "!(assertEqual 1 2)") == NULL);
+  CHECK(cetta_error() == CETTA_ERROR);
   CHECK(cetta_errmsg() && strstr(cetta_errmsg(), "ssertion") != NULL);
-  cetta_answers_free(answers);
 
-  /* And the runtime is still usable afterwards: an error is an answer about
-     one call, not a broken engine. */
-  CHECK(cetta_run(m, "!(+ 1 2)\n", &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  cetta_answers_free(answers);
+  CASE("the runtime is still usable after one call raised");
+  cetta_clear();
+  CHECK(cetta_one_int(cetta_run(m, "!(+ 1 2)")) == 3);
+  CHECK(cetta_ok());
 
   CASE("an error kept as a VALUE stays an ordinary answer");
-  CHECK(cetta_run(m, "!(Error foo bar)\n", &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  CHECK(cetta_kind(cetta_answers_atom(answers)) == CETTA_EXPR);
-  CHECK(strcmp(cetta_name(cetta_child(cetta_answers_atom(answers), 0)),
-               "Error") == 0);
-  cetta_answers_free(answers);
+  { cetta_atom *got = cetta_one(cetta_run(m, "!(Error foo bar)"));
+    CHECK(got && cetta_kind_of(got) == CETTA_EXPR);
+    CHECK(strcmp(cetta_name(cetta_at(got, 0)), "Error") == 0);
+    cetta_drop(got);
+  }
 }
 
-static void test_a_wide_integer_keeps_its_digits(cetta_t *m)
-{ cetta_answers_t *answers;
-  const cetta_atom_t *got;
+static void test_a_wide_integer_keeps_its_digits(cetta *m)
+{ cetta_atom *got;
 
   CASE("an integer past int64 arrives as BIGINT with its exact digits");
-  CHECK(cetta_run(m, "!(* 9223372036854775807 4)\n", &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  got = cetta_answers_atom(answers);
-  CHECK(cetta_kind(got) == CETTA_BIGINT);
+  got = cetta_one(cetta_run(m, "!(* 9223372036854775807 4)"));
+  CHECK(got && cetta_kind_of(got) == CETTA_BIGINT);
   CHECK(strcmp(cetta_name(got), "36893488147419103228") == 0);
-  { int64_t ignored;
-    /* And it refuses to pretend it fits. */
-    CHECK(cetta_int_value(got, &ignored) == CETTA_MISUSE);
-  }
-  cetta_answers_free(answers);
+  /* And it refuses to pretend it fits. */
+  cetta_clear();
+  CHECK(cetta_int(got) == 0);
+  CHECK(!cetta_ok());
+  cetta_drop(got);
 }
 
-static void test_variable_identity_survives_the_round_trip(cetta_t *m)
-{ cetta_atom_t *same, *different;
+static void test_variable_identity_survives_the_round_trip(void)
+{ cetta_atom *same, *different;
   char *a, *b;
 
-  CASE("two occurrences of one name are one variable, and two names are two");
-  same = cetta_expr(3, cetta_sym("f"), cetta_var("x"), cetta_var("x"));
-  different = cetta_expr(3, cetta_sym("f"), cetta_var("x"), cetta_var("y"));
-  a = cetta_show(m, same);
-  b = cetta_show(m, different);
+  CASE("two occurrences of one name are one variable, two names are two");
+  same = E("f", V("x"), V("x"));
+  different = E("f", V("x"), V("y"));
+  a = cetta_show_dup(same);
+  b = cetta_show_dup(different);
   CHECK(a && b && strcmp(a, b) != 0);
   CHECK(a && strcmp(a, "(f $x $x)") == 0);
   cetta_free(a);
   cetta_free(b);
-  cetta_release(same);
-  cetta_release(different);
+  cetta_drop(same);
+  cetta_drop(different);
 }
 
-/* Drain a bounded cursor over `head` applied to 0 and answer how many rows
-   arrived. The ceiling is a BACKSTOP, not the mechanism under test: the bound
-   should stop these long before it. It is here so that a broken bound FAILS in
-   seconds instead of hanging the gate, which is what happened while C16 was
-   still open: one check.sh run sat on this case for 18 minutes and two more
-   gate runs piled up behind it.
-
-   The message is copied out here rather than read by the caller: every door
-   clears the last error on entry, so releasing the cursor erases what stopped
-   it. */
-static int rows_before_the_bound(cetta_t *m, const char *head,
-                                 cetta_status_t *status, char *said,
-                                 size_t said_size)
-{ cetta_answers_t *answers = NULL;
-  cetta_atom_t *goal = cetta_expr(2, cetta_sym(head), cetta_int(0));
+static void test_a_bound_stops_a_runaway_and_says_so(cetta *m)
+{ cetta_limits bounded = {0}, none = {0};
   int pulled = 0;
 
-  *status = CETTA_OK;
-  said[0] = '\0';
-  CHECK(cetta_eval(cetta_self(m), goal, &answers) == CETTA_OK);
-  while ( pulled < 200000 &&
-          (*status = cetta_answers_step(answers)) == CETTA_ROW ) pulled++;
-  CHECK(pulled < 200000);
-  if ( cetta_errmsg() ) snprintf(said, said_size, "%s", cetta_errmsg());
-  cetta_answers_free(answers);
-  cetta_release(goal);
-  return pulled;
-}
-
-static void test_a_bound_stops_a_runaway_and_says_so(cetta_t *m)
-{ cetta_answers_t *answers = NULL;
-  cetta_limits_t bounded = {0}, none = {0};
-  cetta_status_t cheap_status, dear_status;
-  char cheap_said[256], dear_said[256];
-  int cheap, dear;
-
   CASE("an inference bound stops an endless evaluation as CETTA_LIMIT");
-  /* Defined while nothing is bounded, and beside (from $n) which
-     test_eval_is_lazy already installed. */
-  answers = NULL;
-  CHECK(cetta_run(m,
-                  "(= (burn $n) (if (== $n 0) 0 (burn (- $n 1))))\n"
-                  "(= (slow $n) (superpose ((burn 100) (slow (+ $n 1)))))\n",
-                  &answers) == CETTA_OK);
-  cetta_answers_free(answers);
-
+  /* Sized from the measurement, not guessed: an answer of (from $n) costs
+     roughly 40 engine inferences, so 20,000 buys a few hundred answers and
+     then stops. The budget is CUMULATIVE across steps. */
   bounded.inferences = 20000;
-  CHECK(cetta_set_limits(m, &bounded) == CETTA_OK);
+  CHECK(cetta_limit(m, &bounded));
 
-  /* Two endless generators under ONE budget. (from 0) answers cheaply;
-     (slow 0) burns a hundred reductions per answer. Neither ends, so only the
-     bound can stop them.
-
-     The row COUNTS are what decides this case, and the discriminating question
-     is whether they move with what an answer costs. A meter outside the engine
-     charges a fixed amount per pull, so it buys the same number of rows for
-     both however much work the engine did; this file used to hold one, and it
-     bought 4,000 rows of each at this budget, a ratio of exactly 1.0. A budget
-     built into the engine goal buys what the answers really cost: 1,233 rows
-     of (from) against 9 of (slow), 137x apart
-     [measured 2026-08-27: ai-tmp/cb_cetta_probe.c both ways; commit=6da1b0dacc500fc7691a66722ba58f52ab2df081].
-     The 10x threshold sits an order of magnitude above the meter this replaces
-     and an order below what was measured. */
-  cheap = rows_before_the_bound(m, "from", &cheap_status,
-                                cheap_said, sizeof cheap_said);
-  dear = rows_before_the_bound(m, "slow", &dear_status,
-                               dear_said, sizeof dear_said);
-  CHECK(cheap_status == CETTA_LIMIT);
-  CHECK(dear_status == CETTA_LIMIT);
-  CHECK(cheap > 0);
-  CHECK(dear > 0);
-  CHECK(cheap > 10 * dear);
-  /* A bound is not a fault, and the words say which bound it was. */
-  CHECK(strstr(cheap_said, "inference") != NULL);
-  CHECK(strstr(dear_said, "inference") != NULL);
-
-  CASE("a budget the first answer cannot afford stops before any row");
-  bounded.inferences = 500;
-  CHECK(cetta_set_limits(m, &bounded) == CETTA_OK);
-  CHECK(rows_before_the_bound(m, "slow", &dear_status,
-                              dear_said, sizeof dear_said) == 0);
-  CHECK(dear_status == CETTA_LIMIT);
-
-  CASE("a budget above the whole cost drains instead of stopping");
-  /* Finite this time, because "drains" is the assertion. 200 answers of
-     (from) cost about 3,000 engine inferences, well inside this budget. A
-     bound that fires here would be firing on work that was never done. */
-  bounded.inferences = 2000000;
-  CHECK(cetta_set_limits(m, &bounded) == CETTA_OK);
-  answers = NULL;
-  CHECK(cetta_run(m, "!(take 200 (from 0))\n", &answers) == CETTA_OK);
-  { int drained = 0;
-    while ( cetta_answers_step(answers) == CETTA_ROW ) drained++;
-    CHECK(drained == 200);
+  cetta_clear();
+  /* The ceiling is a BACKSTOP: the bound should stop this long before
+     200,000 answers, and it is here so a broken bound FAILS the case in
+     seconds instead of hanging the gate. */
+  cetta_each (a, cetta_eval(m, E("from", 0)))
+  { (void)a;
+    if ( ++pulled >= 200000 ) break;
   }
-  cetta_answers_free(answers);
-
-  bounded.inferences = 20000;
-  CHECK(cetta_set_limits(m, &bounded) == CETTA_OK);
+  CHECK(pulled > 0);
+  CHECK(pulled < 200000);
+  CHECK(cetta_error() == CETTA_LIMIT);
+  CHECK(cetta_errmsg() && strstr(cetta_errmsg(), "inference") != NULL);
 
   CASE("the same bound applied to a whole run");
-  answers = NULL;
-  CHECK(cetta_run(m, "!(from 0)\n", &answers) == CETTA_LIMIT);
-  /* And the failing door left nothing to release. */
-  CHECK(answers == NULL);
-  cetta_answers_free(answers);
+  cetta_clear();
+  CHECK(cetta_run(m, "!(from 0)") == NULL);
+  CHECK(cetta_error() == CETTA_LIMIT);
 
   CASE("clearing the bounds restores unbounded evaluation");
-  CHECK(cetta_set_limits(m, &none) == CETTA_OK);
-  { cetta_limits_t back;
-    cetta_get_limits(m, &back);
-    CHECK(back.inferences == 0 && back.seconds == 0);
-  }
-  answers = NULL;
-  CHECK(cetta_run(m, "!(+ 1 2)\n", &answers) == CETTA_OK);
-  CHECK(cetta_answers_step(answers) == CETTA_ROW);
-  cetta_answers_free(answers);
+  CHECK(cetta_limit(m, &none));
+  CHECK(cetta_limits_of(m).inferences == 0);
+  cetta_clear();
+  CHECK(cetta_one_int(cetta_run(m, "!(+ 1 2)")) == 3);
+  CHECK(cetta_ok());
 }
 
-static void test_the_counters_measure_engine_work(cetta_t *m)
-{ cetta_stats_t before, after, spent;
-  cetta_answers_t *answers;
+static void test_the_counters_measure_engine_work(cetta *m)
+{ cetta_stats before, after, spent;
 
   CASE("the engine's counters move with the work, and the same way twice");
-  CHECK(cetta_stats(m, &before) == CETTA_OK);
-  CHECK(cetta_run(m, "!(superpose (1 2 3 4 5))\n", &answers) == CETTA_OK);
-  while ( cetta_answers_step(answers) == CETTA_ROW ) { /* drain */ }
-  cetta_answers_free(answers);
-  CHECK(cetta_stats(m, &after) == CETTA_OK);
-  cetta_stats_delta(&before, &after, &spent);
+  before = cetta_stats_now(m);
+  cetta_each (x, cetta_run(m, "!(superpose (1 2 3 4 5))")) (void)x;
+  after = cetta_stats_now(m);
+  spent = cetta_stats_since(before, after);
   CHECK(spent.inferences > 0);
   CHECK(after.cputime >= before.cputime);
 
   /* Inferences are deterministic where wall clock is not, which is the whole
      reason this tree gates on them: the same workload twice costs the same. */
-  { cetta_stats_t a1, b1, s1, a2, b2, s2;
-    CHECK(cetta_stats(m, &b1) == CETTA_OK);
-    CHECK(cetta_run(m, "!(superpose (1 2 3 4 5))\n", &answers) == CETTA_OK);
-    while ( cetta_answers_step(answers) == CETTA_ROW ) { /* drain */ }
-    cetta_answers_free(answers);
-    CHECK(cetta_stats(m, &a1) == CETTA_OK);
-    cetta_stats_delta(&b1, &a1, &s1);
+  { cetta_stats b1, a1, b2, a2;
+    b1 = cetta_stats_now(m);
+    cetta_each (x, cetta_run(m, "!(superpose (1 2 3 4 5))")) (void)x;
+    a1 = cetta_stats_now(m);
 
-    CHECK(cetta_stats(m, &b2) == CETTA_OK);
-    CHECK(cetta_run(m, "!(superpose (1 2 3 4 5))\n", &answers) == CETTA_OK);
-    while ( cetta_answers_step(answers) == CETTA_ROW ) { /* drain */ }
-    cetta_answers_free(answers);
-    CHECK(cetta_stats(m, &a2) == CETTA_OK);
-    cetta_stats_delta(&b2, &a2, &s2);
+    b2 = cetta_stats_now(m);
+    cetta_each (x, cetta_run(m, "!(superpose (1 2 3 4 5))")) (void)x;
+    a2 = cetta_stats_now(m);
 
-    CHECK(s1.inferences == s2.inferences);
+    CHECK(cetta_stats_since(b1, a1).inferences ==
+          cetta_stats_since(b2, a2).inferences);
   }
 }
 
-static void test_verbosity_reaches_the_engines_own_door(cetta_t *m)
+static void test_verbosity_reaches_the_engines_own_door(cetta *m)
 { bool was;
 
-  /* cetta_set_verbose() records the new setting only when the Prolog call
-     came back CETTA_OK, so a round trip that reports back what was just set
-     is proof the call ran. It is worth its own case because the predicate it
-     reaches moved: bridge.pl used to define petta_c_set_silent/1 in `user`,
+  /* cetta_verbose() records the new setting only when the Prolog call came
+     back CETTA_OK, so a round trip that reports back what was just set is
+     proof the call ran. It is worth its own case because the predicate it
+     reaches moved: bridge.pl used to define metta_c_set_silent/1 in `user`,
      and this now calls engine/filereader.pl's metta_host_set_silent/1, which
-     reaches `user` by EXPORT rather than by being defined there (C2). If that
-     import ever stopped resolving, call_bridge would fail and the reads below
-     would keep answering the old value.
+     reaches `user` by EXPORT rather than by being defined there.
 
      Whether the engine then keeps its diagnostics off this process's stdout
      is asserted where a test can see a file descriptor after the process has
-     flushed it: extensions/python/tests/ch21_another_language_at_the_seam/test_c_binding.py's
-     test_the_c_binding_suite_passes reads THIS binary's streams. */
-  CASE("cetta_set_verbose reaches the engine's published verbosity door");
-  was = cetta_set_verbose(m, true);
-  CHECK(cetta_set_verbose(m, false) == true);
-  CHECK(cetta_set_verbose(m, was) == false);
+     flushed it: the Python seat's C-binding test reads THIS binary's
+     streams. */
+  CASE("cetta_verbose reaches the engine's published verbosity door");
+  was = cetta_verbose(m, true);
+  CHECK(cetta_verbose(m, false) == true);
+  CHECK(cetta_verbose(m, was) == false);
 }
 
-static void test_reopening_is_the_same_runtime(cetta_t *m)
-{ cetta_t *again = NULL;
-  CASE("a second open hands back the one runtime this process has");
-  CHECK(cetta_open(NULL, &again) == CETTA_OK);
-  CHECK(again == m);
-  { cetta_config_t other = { .path = "/definitely/not/here" };
-    CHECK(cetta_open(&other, &again) == CETTA_MISUSE);
+static void test_reopening_is_the_same_runtime(cetta *m)
+{ CASE("a second open hands back the one runtime this process has");
+  cetta_clear();
+  CHECK(cetta_open(NULL) == m);
+  CHECK(cetta_ok());
+  { cetta_config other = { .path = "/definitely/not/here" };
+    CHECK(cetta_open(&other) == NULL);
+    CHECK(cetta_error() == CETTA_MISUSE);
     CHECK(cetta_errmsg() != NULL);
   }
 }
 
-int main(void)
-{ cetta_t *m;
+#ifdef CETTA_HAS_AUTO
+static void test_scope_cleanup_releases_on_every_exit(cetta *m)
+{ CASE("CETTA_AUTO releases whatever way the block is left");
+  { CETTA_AUTO cetta_atom *held = cetta_one(cetta_eval(m, E("+", 1, 1)));
+    CHECK(cetta_int(held) == 2);
+  } /* dropped here */
 
-  if ( cetta_open(NULL, &m) != CETTA_OK )
+  { CETTA_AUTO_ASK cetta_answers *r = cetta_run(m, "!(superpose (1 2 3))");
+    CHECK(cetta_next(r) != NULL);
+  } /* closed here, with two answers still uncomputed */
+
+  /* And a value can be handed out of such a block without being released. */
+  { cetta_atom *escaped;
+    { CETTA_AUTO cetta_atom *tmp = S("kept");
+      escaped = CETTA_TAKE(tmp);
+    }
+    CHECK(escaped && strcmp(cetta_name(escaped), "kept") == 0);
+    cetta_drop(escaped);
+  }
+}
+#endif
+
+int main(void)
+{ cetta *m = cetta_open(NULL);
+
+  if ( !m )
   { fprintf(stderr, "cannot boot the engine: %s\n", cetta_errmsg());
     return 1;
   }
 
   test_atoms_need_no_engine();
+  test_the_builder_coerces_each_child_by_its_c_type();
   test_a_failed_child_does_not_leak_its_siblings();
   test_refusals_are_named();
-  test_reference_counting_holds_under_churn(m);
-  test_text_crosses_through_the_engine_reader(m);
+  test_reading_promotes_only_where_it_is_lossless();
+  test_the_error_state_is_errno_shaped();
+  test_reference_counting_holds_under_churn();
+  test_text_crosses_through_the_engine_reader();
   test_run_groups_answers_by_form(m);
-  test_eval_is_lazy(m);
-  test_a_cursor_is_idempotent_at_its_end(m);
+  test_the_walk_closes_its_cursor_on_break(m);
+  test_one_and_first_make_different_claims(m);
   test_spaces_store_and_query(m);
+  test_one_verb_takes_either_receiver(m);
   test_a_user_space_decodes_as_a_space(m);
   test_a_c_function_is_callable_from_metta(m);
   test_a_c_value_crosses_by_reference(m);
   test_a_function_value_is_applicable(m);
   test_an_engine_error_reaches_c_as_words(m);
   test_a_wide_integer_keeps_its_digits(m);
-  test_variable_identity_survives_the_round_trip(m);
+  test_variable_identity_survives_the_round_trip();
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_the_counters_measure_engine_work(m);
   test_verbosity_reaches_the_engines_own_door(m);
   test_reopening_is_the_same_runtime(m);
+#ifdef CETTA_HAS_AUTO
+  test_scope_cleanup_releases_on_every_exit(m);
+#endif
 
   printf("%d checks, %d failures\n", checks, failures);
   cetta_close(m);

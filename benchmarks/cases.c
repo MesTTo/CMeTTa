@@ -127,12 +127,12 @@ static int control_send(const char *command)
 
 /* What one case needs between setup and teardown. */
 typedef struct workload
-{ cetta_t         *m;
-  cetta_space_t   *space;
-  cetta_answers_t *cursor;
-  cetta_atom_t    *atom;
-  cetta_atom_t   **facts;
-  cetta_atom_t   **patterns;
+{ cetta         *m;
+  cetta_space     *space;
+  cetta_answers *cursor;
+  cetta_atom    *atom;
+  cetta_atom   **facts;
+  cetta_atom   **patterns;
   const char      *source;
   size_t           n;
   /* cetta_self() is borrowed and cetta_space_open() is owned, so teardown has
@@ -142,12 +142,11 @@ typedef struct workload
 
 /* A term with one of most kinds in it, so a crossing measures the encoder and
    the decoder across their branches rather than across one. */
-static cetta_atom_t *sample_term(void)
-{ return cetta_expr(4,
-           cetta_sym("edge"),
-           cetta_expr(3, cetta_sym("node"), cetta_sym("a"), cetta_int(1)),
-           cetta_expr(3, cetta_sym("node"), cetta_sym("b"), cetta_float(2.5)),
-           cetta_expr(2, cetta_sym("label"), cetta_str("x")));
+static cetta_atom *sample_term(void)
+{ return cetta_expr("edge",
+           cetta_expr("node", "a", 1),
+           cetta_expr("node", "b", 2.5),
+           cetta_expr("label", cetta_text("x")));
 }
 
 static const char SAMPLE_SOURCE[] =
@@ -162,40 +161,41 @@ static const char SAMPLE_SOURCE[] =
    is still reported, because consulting the engine is the part it CAN see.
    The proof of "usable" rather than merely "open" is one evaluated form. */
 static int case_boot(workload_t *w)
-{ cetta_answers_t *answers = NULL;
+{ cetta_answers *answers = NULL;
   int64_t value = 0;
 
-  if ( cetta_run(w->m, "!(+ 1 2)\n", &answers) != CETTA_OK )
-    return fail("boot: the engine booted but could not evaluate");
-  if ( cetta_answers_step(answers) != CETTA_ROW ||
-       cetta_int_value(cetta_answers_atom(answers), &value) != CETTA_OK ||
-       value != 3 )
-  { cetta_answers_free(answers);
-    fprintf(stderr, "cases: boot: the engine answered something other than 3\n");
+  (void)answers;
+  cetta_clear();
+  value = cetta_one_int(cetta_run(w->m, "!(+ 1 2)\n"));
+  if ( !cetta_ok() || value != 3 )
+  { fprintf(stderr, "cases: boot: the engine answered something other than 3\n");
     return 1;
   }
-  cetta_answers_free(answers);
   sink += (unsigned long long)value;
   return 0;
 }
 
 /* cursor-step: one metta_c_next per step, which is the door a C host pulls an
    answer through. Mostly ENGINE work driven from C -- the engine computes one
-   answer, then this binding decodes it into a cetta_atom_t and renders its
+   answer, then this binding decodes it into a cetta_atom and renders its
    text -- so the inference count is meaningful here and is pinned. It still
    does not decide: the decode and the text are C, and the inference counter
    cannot see either. instructions:u and CPU time decide; inferences catch a
    change in what the engine did per answer. */
 static int case_cursor_step(workload_t *w)
 { size_t i;
+  /* Cleared ONCE and checked ONCE, which is what the errno shape is for: a
+     per-iteration cetta_clear() would price a check this loop does not need
+     and measured +5 instructions an answer for nothing. */
+  cetta_clear();
   for (i = 0; i < w->n; i++)
-  { int64_t value = 0;
-    if ( cetta_answers_step(w->cursor) != CETTA_ROW )
+  { const cetta_atom *answer = cetta_next(w->cursor);
+    if ( !answer )
       return fail("cursor-step: the generator stopped answering");
-    if ( cetta_int_value(cetta_answers_atom(w->cursor), &value) != CETTA_OK )
-      return fail("cursor-step: an answer was not the integer the generator yields");
-    sink += (unsigned long long)value;
+    sink += (unsigned long long)cetta_int(answer);
   }
+  if ( !cetta_ok() )
+    return fail("cursor-step: an answer was not the integer the generator yields");
   return 0;
 }
 
@@ -208,8 +208,8 @@ static int case_cursor_step(workload_t *w)
 static int case_term_in(workload_t *w)
 { size_t i;
   for (i = 0; i < w->n; i++)
-  { char *text = cetta_show(w->m, w->atom);
-    if ( !text ) return fail("term-in: cetta_show refused the term");
+  { char *text = cetta_show_dup(w->atom);
+    if ( !text ) return fail("term-in: cetta_show_dup refused the term");
     sink += (unsigned char)text[0];
     cetta_free(text);
   }
@@ -218,17 +218,16 @@ static int case_term_in(workload_t *w)
 
 /* term-out: a term crossing FROM the engine OUT to C. cetta_parse runs the
    engine's reader and then decodes the resulting Prolog term into a
-   cetta_atom_t, which is this direction's mirror of term-in: same term, same
+   cetta_atom, which is this direction's mirror of term-in: same term, same
    engine text door, opposite crossing. Decided by the same pair and for the
    same reason -- decode is C and retires nothing. */
 static int case_term_out(workload_t *w)
 { size_t i;
   for (i = 0; i < w->n; i++)
-  { cetta_atom_t *atom = NULL;
-    if ( cetta_parse(w->m, w->source, &atom) != CETTA_OK || !atom )
-      return fail("term-out: cetta_parse refused the source");
+  { cetta_atom *atom = cetta_parse(w->source);
+    if ( !atom ) return fail("term-out: cetta_parse refused the source");
     sink += cetta_len(atom);
-    cetta_release(atom);
+    cetta_drop(atom);
   }
   return 0;
 }
@@ -242,18 +241,23 @@ static int case_term_out(workload_t *w)
 static int case_space_pair(workload_t *w)
 { size_t i;
   for (i = 0; i < w->n; i++)
-  { cetta_answers_t *answers = NULL;
-    int64_t value = 0;
-    if ( cetta_add(w->space, w->facts[i]) != CETTA_OK )
+  { cetta_answers *answers;
+    const cetta_atom *row;
+    int64_t value;
+    /* The facts and patterns are owned by the workload and reused every
+       iteration, so each pass hands the door a NEW reference rather than the
+       only one. */
+    cetta_clear();
+    if ( !cetta_add(w->space, cetta_keep(w->facts[i])) )
       return fail("space-pair: cetta_add refused a fact");
-    if ( cetta_match(w->space, w->patterns[i], &answers) != CETTA_OK )
+    if ( !(answers = cetta_match(w->space, cetta_keep(w->patterns[i]))) )
       return fail("space-pair: cetta_match refused a pattern");
-    if ( cetta_answers_step(answers) != CETTA_ROW )
+    if ( !(row = cetta_next(answers)) )
     { cetta_answers_free(answers);
       return fail("space-pair: the fact just added did not match");
     }
-    if ( cetta_int_value(cetta_child(cetta_answers_atom(answers), 2), &value)
-         != CETTA_OK )
+    value = cetta_int(cetta_at(row, 2));
+    if ( !cetta_ok() )
     { cetta_answers_free(answers);
       return fail("space-pair: the matched fact carried no integer");
     }
@@ -277,13 +281,12 @@ static int case_space_pair(workload_t *w)
 static int case_error_ball(workload_t *w)
 { size_t i;
   for (i = 0; i < w->n; i++)
-  { cetta_answers_t *answers = NULL;
+  { cetta_answers *answers;
     const char *said;
-    if ( cetta_eval(w->space, w->atom, &answers) != CETTA_OK )
-    { cetta_answers_free(answers);
+    cetta_clear();
+    if ( !(answers = cetta_eval(w->space, cetta_keep(w->atom))) )
       return fail("error-ball: the goal could not be opened");
-    }
-    if ( cetta_answers_step(answers) != CETTA_ERROR )
+    if ( cetta_next(answers) != NULL || cetta_error() != CETTA_ERROR )
     { cetta_answers_free(answers);
       fprintf(stderr, "cases: error-ball: the goal did not raise\n");
       return 1;
@@ -305,23 +308,23 @@ static int case_error_ball(workload_t *w)
  * ------------------------------------------------------------------ */
 
 static int setup_cursor_step(workload_t *w)
-{ cetta_answers_t *answers = NULL;
-  cetta_atom_t *goal;
-  if ( cetta_run(w->m, "(= (from $n) (superpose ($n (from (+ $n 1)))))\n",
-                 &answers) != CETTA_OK )
+{ cetta_answers *answers;
+  cetta_atom *goal;
+  if ( !(answers = cetta_run(w->m,
+           "(= (from $n) (superpose ($n (from (+ $n 1)))))\n")) )
     return fail("cursor-step: the generator could not be defined");
   cetta_answers_free(answers);
-  if ( !(goal = cetta_expr(2, cetta_sym("from"), cetta_int(0))) )
+  if ( !(goal = cetta_expr("from", 0)) )
     return fail("cursor-step: the goal could not be built");
   w->atom = goal;
-  if ( cetta_eval(cetta_self(w->m), goal, &w->cursor) != CETTA_OK )
+  if ( !(w->cursor = cetta_eval(w->m, cetta_keep(goal))) )
     return fail("cursor-step: the cursor could not be opened");
   return 0;
 }
 
 static int setup_space_pair(workload_t *w)
 { size_t i;
-  if ( cetta_space_open(w->m, "&cetta-bench", &w->space) != CETTA_OK )
+  if ( !(w->space = cetta_space_open(w->m, "&cetta-bench")) )
     return fail("space-pair: the space could not be opened");
   w->owns_space = true;
   w->facts = calloc(w->n, sizeof(*w->facts));
@@ -331,10 +334,8 @@ static int setup_space_pair(workload_t *w)
     return 1;
   }
   for (i = 0; i < w->n; i++)
-  { w->facts[i] = cetta_expr(3, cetta_sym("fact"), cetta_int((int64_t)i),
-                             cetta_int((int64_t)i * 2));
-    w->patterns[i] = cetta_expr(3, cetta_sym("fact"), cetta_int((int64_t)i),
-                                cetta_var("v"));
+  { w->facts[i] = cetta_expr("fact", (int64_t)i, (int64_t)i * 2);
+    w->patterns[i] = cetta_expr("fact", (int64_t)i, cetta_var("v"));
     if ( !w->facts[i] || !w->patterns[i] )
       return fail("space-pair: a fixture atom could not be built");
   }
@@ -343,8 +344,7 @@ static int setup_space_pair(workload_t *w)
 
 static int setup_error_ball(workload_t *w)
 { w->space = cetta_self(w->m);
-  if ( !(w->atom = cetta_expr(3, cetta_sym("assertEqual"), cetta_int(1),
-                              cetta_int(2))) )
+  if ( !(w->atom = cetta_expr("assertEqual", 1, 2)) )
     return fail("error-ball: the goal could not be built");
   return 0;
 }
@@ -352,15 +352,15 @@ static int setup_error_ball(workload_t *w)
 static void teardown(workload_t *w)
 { size_t i;
   cetta_answers_free(w->cursor);
-  cetta_release(w->atom);
+  cetta_drop(w->atom);
   if ( w->facts || w->patterns )
     for (i = 0; i < w->n; i++)
-    { if ( w->facts ) cetta_release(w->facts[i]);
-      if ( w->patterns ) cetta_release(w->patterns[i]);
+    { if ( w->facts ) cetta_drop(w->facts[i]);
+      if ( w->patterns ) cetta_drop(w->patterns[i]);
     }
   free(w->facts);
   free(w->patterns);
-  if ( w->owns_space ) cetta_space_free(w->space);
+  if ( w->owns_space ) cetta_space_close(w->space);
 }
 
 /* ------------------------------------------------------------------ *
@@ -403,7 +403,7 @@ static void usage(void)
 int main(int argc, char **argv)
 { const bench_case_t *chosen;
   workload_t w;
-  cetta_stats_t before, after, spent;
+  cetta_stats before, after, spent;
   long iterations;
   bool controlled = false;
   int status = 0;
@@ -433,7 +433,7 @@ int main(int argc, char **argv)
   w.source = SAMPLE_SOURCE;
   if ( controlled && control_open() != 0 ) return 2;
 
-  if ( cetta_open(NULL, &w.m) != CETTA_OK ) return fail("boot");
+  if ( !(w.m = cetta_open(NULL)) ) return fail("boot");
   /* term-in and term-out share one fixture and neither needs the engine to
      build it, which is why it is here rather than behind a setup hook. */
   if ( !chosen->setup && !chosen->whole_process && !(w.atom = sample_term()) )
@@ -444,13 +444,12 @@ int main(int argc, char **argv)
      so its `before` stays the zeroed struct and the delta reports what the
      engine retired from process start. Every other case samples the pair
      around its own region. */
-  if ( !chosen->whole_process && cetta_stats(w.m, &before) != CETTA_OK )
-    return fail("stats");
+  if ( !chosen->whole_process ) before = cetta_stats_now(w.m);
   if ( control_send("enable\n") != 0 ) { teardown(&w); return 2; }
   status = chosen->run(&w);
   if ( control_send("disable\n") != 0 ) { teardown(&w); return 2; }
-  if ( cetta_stats(w.m, &after) != CETTA_OK ) return fail("stats");
-  cetta_stats_delta(&before, &after, &spent);
+  after = cetta_stats_now(w.m);
+  spent = cetta_stats_since(before, after);
 
   teardown(&w);
   if ( status == 0 )
