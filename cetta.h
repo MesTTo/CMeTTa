@@ -764,7 +764,7 @@ typedef struct mt_limits {
    0 / 86 / 1,404 / 7,118 answers. Answers scaling with the budget is the
    property that matters, and the one a per-step meter cannot produce
    [tested: tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
-   commit=WORKTREE].
+   commit=a8ea956cecbe8af67a7dd340f00c74dd94dbfb7c].
    The wall bound applies per step, so time the host spends between steps does
    not count against it. An eager mt_run() is bounded as one call. */
 MT_API bool mt_limit(metta *runtime, mt_limits limits);
