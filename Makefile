@@ -13,7 +13,7 @@
 #   PLBASE used to compile against -I/include and fail on a missing
 #   SWI-Prolog.h. `make clean` needs no toolchain and is exempt, so a machine
 #   that cannot build this can still tidy up after one that could.
-# Decides: the engine tree is baked in as CETTA_ENGINE_PATH so a linked program
+# Decides: the engine tree is baked in as MT_ENGINE_PATH so a linked program
 #   boots with no environment set, and $METTA_PATH still overrides it at run
 #   time. A checkout that moves needs a rebuild, which is the same bargain
 #   setup.py makes when it copies the runtime into the Python wheel.
@@ -48,7 +48,7 @@ endif
 CC      ?= cc
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -fPIC -I. -I$(PLBASE)/include \
-           -DCETTA_ENGINE_PATH='"$(ENGINE_PATH)"'
+           -DMT_ENGINE_PATH='"$(ENGINE_PATH)"'
 LDFLAGS += -L$(PLLIBDIR) -Wl,-rpath,$(PLLIBDIR)
 LDLIBS  += -lswipl
 

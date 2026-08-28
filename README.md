@@ -5,19 +5,19 @@ and reads terms as C values, runs programs, pulls answers one at a time, and
 publishes C functions the language can call.
 
 ```c
-#define CETTA_SHORTHAND
+#define MT_SHORTHAND
 #include <cetta.h>
 #include <stdio.h>
 
 int main(void)
-{ cetta *m = cetta_open(NULL);
+{ metta *m = mt_open(NULL);
 
-  cetta_each (a, cetta_run(m, "(= (double $x) (* 2 $x))\n!(double 21)"))
-      printf("%s\n", cetta_show(a));                 /* 42 */
+  mt_each (a, mt_run(m, "(= (double $x) (* 2 $x))\n!(double 21)"))
+      printf("%s\n", mt_show(a));                 /* 42 */
 
-  printf("%lld\n", (long long)cetta_one_int(cetta_eval(m, E("+", 1, 2))));
+  printf("%lld\n", (long long)mt_one_int(mt_eval(m, E("+", 1, 2))));
 
-  cetta_close(m);
+  mt_close(m);
 }
 ```
 
@@ -47,54 +47,54 @@ Everything below is one of these five. They are in `cetta.h` too, at the top.
 term to TAKES it, so the common shape leaks nothing and needs no cleanup line:
 
 ```c
-cetta_add(kb, cetta_expr("edge", "a", "b"));
+mt_add(kb, mt_expr("edge", "a", "b"));
 ```
 
-To pass a term you mean to keep, hand over a new reference with `cetta_keep()`.
+To pass a term you mean to keep, hand over a new reference with `mt_keep()`.
 That is the one thing to remember:
 
 ```c
-cetta_atom *p = cetta_expr("edge", "a", cetta_var("y"));
-while (...) cetta_each (row, cetta_match(kb, cetta_keep(p))) ...
-cetta_drop(p);
+mt_atom *p = mt_expr("edge", "a", mt_var("y"));
+while (...) mt_each (row, mt_match(kb, mt_keep(p))) ...
+mt_drop(p);
 ```
 
 **2. Errors are `errno`-shaped.** A function that produces a value returns it,
-or NULL. `cetta_error()` and `cetta_errmsg()` say what went wrong, and like
+or NULL. `mt_error()` and `mt_errmsg()` say what went wrong, and like
 `errno` they are set on failure and not cleared on success, so a run of calls
 is checked once rather than one `if` per call:
 
 ```c
-cetta_clear();
-double x = cetta_float(cetta_arg(c, 0));
-double y = cetta_float(cetta_arg(c, 1));
-if ( !cetta_ok() ) return cetta_fail(c, "wanted two numbers");
+mt_clear();
+double x = mt_float(mt_arg(c, 0));
+double y = mt_float(mt_arg(c, 1));
+if ( !mt_ok() ) return mt_fail(c, "wanted two numbers");
 ```
 
-**3. One verb, either receiver.** `cetta_eval`, `cetta_match`, `cetta_atoms`,
-`cetta_add`, `cetta_del`, `cetta_count` and `cetta_wipe` each take a `cetta *`,
-meaning its `&self`, or a `cetta_space *`. `_Generic` picks, the way `tgmath.h`
+**3. One verb, either receiver.** `mt_eval`, `mt_match`, `mt_atoms`,
+`mt_add`, `mt_del`, `mt_count` and `mt_wipe` each take a `metta *`,
+meaning its `&self`, or a `mt_space *`. `_Generic` picks, the way `tgmath.h`
 does; the pair it picks between is declared beside each one.
 
 **4. A Number splits four ways, and reading promotes only where it is
-lossless.** `CETTA_INT`, `CETTA_FLOAT`, `CETTA_BIGINT` and `CETTA_RATIONAL`,
-because C has types where the wire codec has one tag. `cetta_float()` of an Int
-answers that integer; `cetta_int()` of a Float does not round; an Int past 2^53
-is refused by `cetta_float()` rather than silently rounded.
+lossless.** `MT_INT`, `MT_FLOAT`, `MT_BIGINT` and `MT_RATIONAL`,
+because C has types where the wire codec has one tag. `mt_float()` of an Int
+answers that integer; `mt_int()` of a Float does not round; an Int past 2^53
+is refused by `mt_float()` rather than silently rounded.
 
-**5. A bare C string in term position is a symbol.** `cetta_expr("+", 1, 2)` is
+**5. A bare C string in term position is a symbol.** `mt_expr("+", 1, 2)` is
 `(+ 1 2)`, not `("+" 1 2)`. MeTTa writes a symbol bare and a string quoted; in
 C everything is quoted, so the default is the one MeTTa writes bare. Text is
-`cetta_text("...")`.
+`mt_text("...")`.
 
 ## Building terms
 
 No count to keep in step, no constructor per child:
 
 ```c
-cetta_expr("+", 1, 2)                        /* (+ 1 2)        */
-cetta_expr("edge", "a", cetta_var("y"))      /* (edge a $y)    */
-cetta_expr("f", cetta_expr("g", 1), 2.5)     /* (f (g 1) 2.5)  */
+mt_expr("+", 1, 2)                     /* (+ 1 2)       */
+mt_expr("edge", "a", mt_var("y"))      /* (edge a $y)   */
+mt_expr("f", mt_expr("g", 1), 2.5)     /* (f (g 1) 2.5) */
 ```
 
 `_Generic` reads each argument's C type: an integer becomes a Number, a float a
@@ -102,76 +102,102 @@ Number, a bare string a Symbol, and an atom itself. If any child fails the
 whole call fails and drops the ones it was given, so a failure part-way through
 a nested build cannot leave you holding half a term.
 
-`#define CETTA_SHORTHAND` before the include for the one-letter builders,
+`#define MT_SHORTHAND` before the include for the one-letter builders,
 `S() V() T() N() R() B() E()`. They are opt-in because those are short names in
 C's single flat namespace. The long names always work.
 
 | kind | what it is |
 |---|---|
-| `CETTA_SYMBOL` | a name that denotes itself |
-| `CETTA_TEXT` | grounded text |
-| `CETTA_INT` | an exact integer that fits `int64_t` |
-| `CETTA_FLOAT` | a float; `2` and `2.0` are different atoms |
-| `CETTA_BIGINT` | an exact integer too wide for `int64_t`, read as digits |
-| `CETTA_RATIONAL` | an exact ratio |
-| `CETTA_BOOL` | `True` or `False`, which are not symbols |
-| `CETTA_VARIABLE` | a variable; the name is an identity within its term |
-| `CETTA_EXPR` | an expression; the empty one is unit |
-| `CETTA_SPACE` | an executable space reference |
-| `CETTA_OBJECT` | a live C value crossing by reference |
-| `CETTA_HANDLE` | a native engine value held by reference |
+| `MT_SYMBOL` | a name that denotes itself |
+| `MT_TEXT` | grounded text |
+| `MT_INT` | an exact integer that fits `int64_t` |
+| `MT_FLOAT` | a float; `2` and `2.0` are different atoms |
+| `MT_BIGINT` | an exact integer too wide for `int64_t`, read as digits |
+| `MT_RATIONAL` | an exact ratio |
+| `MT_BOOL` | `True` or `False`, which are not symbols |
+| `MT_VARIABLE` | a variable; the name is an identity within its term |
+| `MT_EXPR` | an expression; the empty one is unit |
+| `MT_SPACE` | an executable space reference |
+| `MT_OBJECT` | a live C value crossing by reference |
+| `MT_HANDLE` | a native engine value held by reference |
 
-Building and reading them starts no engine. `cetta_parse()` and `cetta_show()`
+Building and reading them starts no engine. `mt_parse()` and `mt_show()`
 do, because text goes through the engine's own reader and writer rather than a
-second one grown here. `cetta_show()` writes into a per-thread rotating buffer
+second one grown here. `mt_show()` writes into a per-thread rotating buffer
 so it drops straight into `printf`, which is the contract `strerror()` already
-gave C; `cetta_show_dup()` gives you a copy to keep.
+gave C; `mt_show_dup()` gives you a copy to keep.
 
 ## Answers are stepped, not drained
 
-`cetta_eval()` computes one answer per step, so an endless generator is
-ordinary. `cetta_each` closes the cursor however the loop is left, `break`
+`mt_eval()` computes one answer per step, so an endless generator is
+ordinary. `mt_each` closes the cursor however the loop is left, `break`
 included:
 
 ```c
-cetta_each (a, cetta_eval(m, E("from", 0)))
-{ printf("%lld\n", (long long)cetta_int(a));
+mt_each (a, mt_eval(m, E("from", 0)))
+{ printf("%lld\n", (long long)mt_int(a));
   if ( ++taken == 5 ) break;          /* the sixth is never computed */
 }
 ```
 
-Use `cetta_each_cursor (a, it, ...)` when the body needs the cursor itself, for
-`cetta_group(it)` or `cetta_answer_text(it)`.
+Use `mt_each_cursor (a, it, ...)` when the body needs the cursor itself, for
+`mt_group(it)`, `mt_answer_text(it)` or `mt_bound(it, "y")`.
+
+`mt_bound` is what saves you counting children. The cursor keeps the pattern it
+was opened with, so a binding comes back under the name you wrote:
+
+```c
+mt_each_cursor (row, it, mt_match(kb, E("edge", "a", V("y"))))
+    printf("y = %s\n", mt_show(mt_bound(it, "y")));
+```
+
+rather than `mt_at(row, 2)` and a comment explaining why 2. It works at any
+depth in the pattern and costs one walk of the term, no engine call. The Python
+seat spells the same thing `row.y`.
 
 When you want one value rather than a walk:
 
 | door | what it claims |
 |---|---|
-| `cetta_one(r)` | EXACTLY one answer, owned; refuses zero or many |
-| `cetta_first(r)` | the first, owned; claims nothing about the rest |
-| `cetta_one_int(r)`, `_float`, `_truth`, `_name` | the value, no atom in your hands |
-| `cetta_all(r, &n)` | every answer as one owned array |
+| `mt_one(r)` | EXACTLY one answer, owned; refuses zero or many |
+| `mt_first(r)` | the first, owned; claims nothing about the rest |
+| `mt_one_int(r)`, `_float`, `_truth`, `_name` | the value, no atom in your hands |
+| `mt_all(r, &n)` | every answer as one owned array |
 
 Each consumes the cursor. `one` and `first` draw the same line the Python seat
 draws between `one()` and `first()`.
 
-`cetta_run()` is the eager door, because running a program means running it;
-its answers carry `cetta_group()` saying which `!` form produced each.
+`mt_run()` is the eager door, because running a program means running it;
+its answers carry `mt_group()` saying which `!` form produced each. When the
+point is the effect rather than the answers, `mt_do(m, src)` runs and discards:
+
+```c
+mt_do(m, "(= (double $x) (* 2 $x))");
+```
+
+## Printing a number
+
+`mt_int` answers an `int64_t`, and printing one portably wants `<inttypes.h>`:
+
+```c
+printf("%" PRId64 "\n", mt_int(a));       /* or cast to long long */
+printf("%s\n", mt_show(a));                /* or let the engine write it */
+```
 
 ## Publishing C functions
 
 ```c
-static cetta_status op_hypot(cetta_call *call, void *user)
+static mt_status op_hypot(mt_call *call, void *user)
 { double a, b;
-  cetta_clear();
-  a = cetta_float(cetta_arg(call, 0));
-  b = cetta_float(cetta_arg(call, 1));
-  if ( !cetta_ok() ) return cetta_fail(call, "hypot wants two numbers");
-  return cetta_answer(call, R(hypot(a, b)));
+  mt_clear();
+  a = mt_float(mt_arg(call, 0));
+  b = mt_float(mt_arg(call, 1));
+  if ( !mt_ok() ) return mt_fail(call, "hypot wants two numbers");
+  return mt_answer(call, R(hypot(a, b)));
 }
 
-cetta_def(m, (cetta_op){ .name = "hypot", .arity = 2,
-                         .effect = CETTA_PURE, .fn = op_hypot });
+mt_def(m, (mt_op){ .name = "hypot", .arity = 2,
+                   .effect = MT_PURE, .fn = op_hypot });
 ```
 
 `(hypot 3.0 4.0)` now answers `5.0`. Designated initializers are what C has
@@ -188,13 +214,13 @@ name outside C's identifier grammar crosses untouched, which is the escape for
 A C value can cross MeTTa untouched and come back the same object:
 
 ```c
-cetta_atom *handle = cetta_object(&account, "account", NULL);
+mt_atom *handle = mt_object(&account, "account", NULL);
 ```
 
 and a C function can be a value rather than a name, applied wherever it lands:
 
 ```c
-cetta_atom *f = cetta_function(fn_triple, NULL, NULL);   /* ($f 5) is 15 */
+mt_atom *f = mt_function(fn_triple, NULL, NULL);   /* ($f 5) is 15 */
 ```
 
 ## Bounding and measuring
@@ -203,12 +229,12 @@ An embedded engine that cannot be stopped is a hazard, so bounds are part of
 the surface:
 
 ```c
-cetta_limit(m, &(cetta_limits){ .seconds = 2.0, .inferences = 1000000 });
-if ( !cetta_run(m, "!(from 0)") && cetta_error() == CETTA_LIMIT )
-    fprintf(stderr, "%s\n", cetta_errmsg());   /* you stopped it */
+mt_limit(m, &(mt_limits){ .seconds = 2.0, .inferences = 1000000 });
+if ( !mt_run(m, "!(from 0)") && mt_error() == MT_LIMIT )
+    fprintf(stderr, "%s\n", mt_errmsg());   /* you stopped it */
 ```
 
-`CETTA_LIMIT` is its own status precisely because a bound is not a fault. On a
+`MT_LIMIT` is its own status precisely because a bound is not a fault. On a
 lazy cursor the inference bound is a cumulative budget for the whole cursor,
 metered step by step, so a big budget really does buy more steps than a small
 one. The wall bound applies per step, so time the host spends between steps
@@ -219,9 +245,9 @@ Measuring uses the engine's own counters, and inferences are deterministic
 where wall clock is not:
 
 ```c
-cetta_stats before = cetta_stats_now(m);
+mt_stats before = mt_stats_now(m);
 /* ... work ... */
-cetta_stats spent = cetta_stats_since(before, cetta_stats_now(m));
+mt_stats spent = mt_stats_since(before, mt_stats_now(m));
 printf("%llu inferences\n", (unsigned long long)spent.inferences);
 ```
 
@@ -230,28 +256,28 @@ shape `getrusage()` already gave it.
 
 ## Scope cleanup
 
-Where GCC and Clang have it, `CETTA_AUTO` releases a variable however the block
+Where GCC and Clang have it, `MT_AUTO` releases a variable however the block
 is left, `return` and `goto` included. This is systemd's `_cleanup_` and the
 kernel's `__free`:
 
 ```c
-#ifdef CETTA_HAS_AUTO
-  CETTA_AUTO cetta_atom *held = cetta_one(cetta_eval(m, E("+", 1, 1)));
-  CETTA_AUTO_ASK cetta_answers *r = cetta_run(m, "!(superpose (1 2 3))");
+#ifdef MT_HAS_AUTO
+  MT_AUTO mt_atom *held = mt_one(mt_eval(m, E("+", 1, 1)));
+  MT_AUTO_ASK mt_answers *r = mt_run(m, "!(superpose (1 2 3))");
 #endif
 ```
 
-`CETTA_TAKE(p)` hands a value out of such a variable without it being released.
+`MT_TAKE(p)` hands a value out of such a variable without it being released.
 
 ## Threads
 
 One runtime per process, because `PL_initialise()` sets up the process's single
-Prolog heap. A second `cetta_open()` with a matching configuration hands back
+Prolog heap. A second `mt_open()` with a matching configuration hands back
 the same runtime; one with a different path fails.
 
 A thread other than the one that opened the runtime calls
-`cetta_thread_attach()` before it touches the engine and
-`cetta_thread_detach()` before it exits. Building and reading atoms needs
+`mt_thread_attach()` before it touches the engine and
+`mt_thread_detach()` before it exits. Building and reading atoms needs
 neither, and the error state is per-thread.
 
 The operation table is not guarded: publish every operation before the threads

@@ -88,7 +88,7 @@ static const char *read_json_string(const char *p, char *out, size_t cap)
 }
 
 int main(int argc, char **argv)
-{ cetta *m;
+{ metta *m;
   char *corpus;
   size_t length = 0;
   const char *p;
@@ -102,16 +102,16 @@ int main(int argc, char **argv)
   { fprintf(stderr, "cannot read %s\n", argv[1]);
     return 1;
   }
-  if ( !(m = cetta_open(NULL)) )
-  { fprintf(stderr, "boot: %s\n", cetta_errmsg());
+  if ( !(m = mt_open(NULL)) )
+  { fprintf(stderr, "boot: %s\n", mt_errmsg());
     return 1;
   }
 
   printf("{\"programs\":[");
   for (p = corpus; (p = strstr(p, "\"source\"")) != NULL; )
   { static char source[4096];
-    cetta_answers *answers;
-    const cetta_atom *atom;
+    mt_answers *answers;
+    const mt_atom *atom;
     int first_answer = 1;
 
     p = strchr(p + 8, '"');
@@ -123,33 +123,33 @@ int main(int argc, char **argv)
     printf("{\"source\":");
     json_string(stdout, source);
 
-    cetta_clear();
-    answers = cetta_run(m, source);
+    mt_clear();
+    answers = mt_run(m, source);
     if ( !answers )
     { printf(",\"error\":");
-      json_string(stdout, cetta_errmsg() ? cetta_errmsg() : "unknown");
+      json_string(stdout, mt_errmsg() ? mt_errmsg() : "unknown");
       printf("}");
-      cetta_answers_free(answers);
+      mt_answers_free(answers);
       continue;
     }
 
     printf(",\"answers\":[");
-    while ( (atom = cetta_next(answers)) != NULL )
+    while ( (atom = mt_next(answers)) != NULL )
     {
       if ( !first_answer ) printf(",");
       first_answer = 0;
-      printf("{\"group\":%zu,\"kind\":", cetta_group(answers));
-      json_string(stdout, cetta_kind_str(cetta_kind_of(atom)));
+      printf("{\"group\":%zu,\"kind\":", mt_group(answers));
+      json_string(stdout, mt_kind_str(mt_kind_of(atom)));
       printf(",\"text\":");
-      json_string(stdout, cetta_answer_text(answers));
+      json_string(stdout, mt_answer_text(answers));
       printf("}");
     }
     printf("]}");
-    cetta_answers_free(answers);
+    mt_answers_free(answers);
   }
   printf("]}\n");
 
   free(corpus);
-  cetta_close(m);
+  mt_close(m);
   return 0;
 }

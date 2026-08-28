@@ -30,7 +30,7 @@
  * Owns resources: one runtime, closed before returning; every atom, cursor and
  *   text this file builds is released on the path that built it.
  *
- * Decides: one process per case. cetta_open() is once per process by
+ * Decides: one process per case. mt_open() is once per process by
  *   construction (PL_initialise sets up the process's single Prolog heap), so
  *   a second case in the same process would measure a warmed engine while the
  *   first measured a cold one.
@@ -54,7 +54,7 @@ static volatile unsigned long long sink;
 
 static int fail(const char *what)
 { fprintf(stderr, "cases: %s: %s\n", what,
-          cetta_errmsg() ? cetta_errmsg() : "(no error text)");
+          mt_errmsg() ? mt_errmsg() : "(no error text)");
   return 1;
 }
 
@@ -127,26 +127,26 @@ static int control_send(const char *command)
 
 /* What one case needs between setup and teardown. */
 typedef struct workload
-{ cetta         *m;
-  cetta_space     *space;
-  cetta_answers *cursor;
-  cetta_atom    *atom;
-  cetta_atom   **facts;
-  cetta_atom   **patterns;
+{ metta         *m;
+  mt_space     *space;
+  mt_answers *cursor;
+  mt_atom    *atom;
+  mt_atom   **facts;
+  mt_atom   **patterns;
   const char      *source;
   size_t           n;
-  /* cetta_self() is borrowed and cetta_space_open() is owned, so teardown has
+  /* mt_self() is borrowed and mt_space_open() is owned, so teardown has
      to be told which one it holds. */
   bool             owns_space;
 } workload_t;
 
 /* A term with one of most kinds in it, so a crossing measures the encoder and
    the decoder across their branches rather than across one. */
-static cetta_atom *sample_term(void)
-{ return cetta_expr("edge",
-           cetta_expr("node", "a", 1),
-           cetta_expr("node", "b", 2.5),
-           cetta_expr("label", cetta_text("x")));
+static mt_atom *sample_term(void)
+{ return mt_expr("edge",
+           mt_expr("node", "a", 1),
+           mt_expr("node", "b", 2.5),
+           mt_expr("label", mt_text("x")));
 }
 
 static const char SAMPLE_SOURCE[] =
@@ -161,13 +161,13 @@ static const char SAMPLE_SOURCE[] =
    is still reported, because consulting the engine is the part it CAN see.
    The proof of "usable" rather than merely "open" is one evaluated form. */
 static int case_boot(workload_t *w)
-{ cetta_answers *answers = NULL;
+{ mt_answers *answers = NULL;
   int64_t value = 0;
 
   (void)answers;
-  cetta_clear();
-  value = cetta_one_int(cetta_run(w->m, "!(+ 1 2)\n"));
-  if ( !cetta_ok() || value != 3 )
+  mt_clear();
+  value = mt_one_int(mt_run(w->m, "!(+ 1 2)\n"));
+  if ( !mt_ok() || value != 3 )
   { fprintf(stderr, "cases: boot: the engine answered something other than 3\n");
     return 1;
   }
@@ -177,7 +177,7 @@ static int case_boot(workload_t *w)
 
 /* cursor-step: one metta_c_next per step, which is the door a C host pulls an
    answer through. Mostly ENGINE work driven from C -- the engine computes one
-   answer, then this binding decodes it into a cetta_atom and renders its
+   answer, then this binding decodes it into a mt_atom and renders its
    text -- so the inference count is meaningful here and is pinned. It still
    does not decide: the decode and the text are C, and the inference counter
    cannot see either. instructions:u and CPU time decide; inferences catch a
@@ -185,21 +185,21 @@ static int case_boot(workload_t *w)
 static int case_cursor_step(workload_t *w)
 { size_t i;
   /* Cleared ONCE and checked ONCE, which is what the errno shape is for: a
-     per-iteration cetta_clear() would price a check this loop does not need
+     per-iteration mt_clear() would price a check this loop does not need
      and measured +5 instructions an answer for nothing. */
-  cetta_clear();
+  mt_clear();
   for (i = 0; i < w->n; i++)
-  { const cetta_atom *answer = cetta_next(w->cursor);
+  { const mt_atom *answer = mt_next(w->cursor);
     if ( !answer )
       return fail("cursor-step: the generator stopped answering");
-    sink += (unsigned long long)cetta_int(answer);
+    sink += (unsigned long long)mt_int(answer);
   }
-  if ( !cetta_ok() )
+  if ( !mt_ok() )
     return fail("cursor-step: an answer was not the integer the generator yields");
   return 0;
 }
 
-/* term-in: a term crossing FROM C INTO the engine. cetta_show encodes a C atom
+/* term-in: a term crossing FROM C INTO the engine. mt_show encodes a C atom
    into a Prolog term and asks the engine to write it, which is the only public
    door that crosses in this direction without also storing or evaluating
    something. Decided by instructions:u and CPU time: the encode is pure C and
@@ -208,26 +208,26 @@ static int case_cursor_step(workload_t *w)
 static int case_term_in(workload_t *w)
 { size_t i;
   for (i = 0; i < w->n; i++)
-  { char *text = cetta_show_dup(w->atom);
-    if ( !text ) return fail("term-in: cetta_show_dup refused the term");
+  { char *text = mt_show_dup(w->atom);
+    if ( !text ) return fail("term-in: mt_show_dup refused the term");
     sink += (unsigned char)text[0];
-    cetta_free(text);
+    mt_free(text);
   }
   return 0;
 }
 
-/* term-out: a term crossing FROM the engine OUT to C. cetta_parse runs the
+/* term-out: a term crossing FROM the engine OUT to C. mt_parse runs the
    engine's reader and then decodes the resulting Prolog term into a
-   cetta_atom, which is this direction's mirror of term-in: same term, same
+   mt_atom, which is this direction's mirror of term-in: same term, same
    engine text door, opposite crossing. Decided by the same pair and for the
    same reason -- decode is C and retires nothing. */
 static int case_term_out(workload_t *w)
 { size_t i;
   for (i = 0; i < w->n; i++)
-  { cetta_atom *atom = cetta_parse(w->source);
-    if ( !atom ) return fail("term-out: cetta_parse refused the source");
-    sink += cetta_len(atom);
-    cetta_drop(atom);
+  { mt_atom *atom = mt_parse(w->source);
+    if ( !atom ) return fail("term-out: mt_parse refused the source");
+    sink += mt_len(atom);
+    mt_drop(atom);
   }
   return 0;
 }
@@ -241,28 +241,28 @@ static int case_term_out(workload_t *w)
 static int case_space_pair(workload_t *w)
 { size_t i;
   for (i = 0; i < w->n; i++)
-  { cetta_answers *answers;
-    const cetta_atom *row;
+  { mt_answers *answers;
+    const mt_atom *row;
     int64_t value;
     /* The facts and patterns are owned by the workload and reused every
        iteration, so each pass hands the door a NEW reference rather than the
        only one. */
-    cetta_clear();
-    if ( !cetta_add(w->space, cetta_keep(w->facts[i])) )
-      return fail("space-pair: cetta_add refused a fact");
-    if ( !(answers = cetta_match(w->space, cetta_keep(w->patterns[i]))) )
-      return fail("space-pair: cetta_match refused a pattern");
-    if ( !(row = cetta_next(answers)) )
-    { cetta_answers_free(answers);
+    mt_clear();
+    if ( !mt_add(w->space, mt_keep(w->facts[i])) )
+      return fail("space-pair: mt_add refused a fact");
+    if ( !(answers = mt_match(w->space, mt_keep(w->patterns[i]))) )
+      return fail("space-pair: mt_match refused a pattern");
+    if ( !(row = mt_next(answers)) )
+    { mt_answers_free(answers);
       return fail("space-pair: the fact just added did not match");
     }
-    value = cetta_int(cetta_at(row, 2));
-    if ( !cetta_ok() )
-    { cetta_answers_free(answers);
+    value = mt_int(mt_at(row, 2));
+    if ( !mt_ok() )
+    { mt_answers_free(answers);
       return fail("space-pair: the matched fact carried no integer");
     }
     sink += (unsigned long long)value;
-    cetta_answers_free(answers);
+    mt_answers_free(answers);
   }
   return 0;
 }
@@ -281,24 +281,24 @@ static int case_space_pair(workload_t *w)
 static int case_error_ball(workload_t *w)
 { size_t i;
   for (i = 0; i < w->n; i++)
-  { cetta_answers *answers;
+  { mt_answers *answers;
     const char *said;
-    cetta_clear();
-    if ( !(answers = cetta_eval(w->space, cetta_keep(w->atom))) )
+    mt_clear();
+    if ( !(answers = mt_eval(w->space, mt_keep(w->atom))) )
       return fail("error-ball: the goal could not be opened");
-    if ( cetta_next(answers) != NULL || cetta_error() != CETTA_ERROR )
-    { cetta_answers_free(answers);
+    if ( mt_next(answers) != NULL || mt_error() != MT_ERROR )
+    { mt_answers_free(answers);
       fprintf(stderr, "cases: error-ball: the goal did not raise\n");
       return 1;
     }
-    said = cetta_errmsg();
+    said = mt_errmsg();
     if ( !said || !*said )
-    { cetta_answers_free(answers);
+    { mt_answers_free(answers);
       fprintf(stderr, "cases: error-ball: the ball rendered to nothing\n");
       return 1;
     }
     sink += (unsigned char)said[0];
-    cetta_answers_free(answers);
+    mt_answers_free(answers);
   }
   return 0;
 }
@@ -308,23 +308,23 @@ static int case_error_ball(workload_t *w)
  * ------------------------------------------------------------------ */
 
 static int setup_cursor_step(workload_t *w)
-{ cetta_answers *answers;
-  cetta_atom *goal;
-  if ( !(answers = cetta_run(w->m,
+{ mt_answers *answers;
+  mt_atom *goal;
+  if ( !(answers = mt_run(w->m,
            "(= (from $n) (superpose ($n (from (+ $n 1)))))\n")) )
     return fail("cursor-step: the generator could not be defined");
-  cetta_answers_free(answers);
-  if ( !(goal = cetta_expr("from", 0)) )
+  mt_answers_free(answers);
+  if ( !(goal = mt_expr("from", 0)) )
     return fail("cursor-step: the goal could not be built");
   w->atom = goal;
-  if ( !(w->cursor = cetta_eval(w->m, cetta_keep(goal))) )
+  if ( !(w->cursor = mt_eval(w->m, mt_keep(goal))) )
     return fail("cursor-step: the cursor could not be opened");
   return 0;
 }
 
 static int setup_space_pair(workload_t *w)
 { size_t i;
-  if ( !(w->space = cetta_space_open(w->m, "&cetta-bench")) )
+  if ( !(w->space = mt_space_open(w->m, "&cetta-bench")) )
     return fail("space-pair: the space could not be opened");
   w->owns_space = true;
   w->facts = calloc(w->n, sizeof(*w->facts));
@@ -334,8 +334,8 @@ static int setup_space_pair(workload_t *w)
     return 1;
   }
   for (i = 0; i < w->n; i++)
-  { w->facts[i] = cetta_expr("fact", (int64_t)i, (int64_t)i * 2);
-    w->patterns[i] = cetta_expr("fact", (int64_t)i, cetta_var("v"));
+  { w->facts[i] = mt_expr("fact", (int64_t)i, (int64_t)i * 2);
+    w->patterns[i] = mt_expr("fact", (int64_t)i, mt_var("v"));
     if ( !w->facts[i] || !w->patterns[i] )
       return fail("space-pair: a fixture atom could not be built");
   }
@@ -343,24 +343,24 @@ static int setup_space_pair(workload_t *w)
 }
 
 static int setup_error_ball(workload_t *w)
-{ w->space = cetta_self(w->m);
-  if ( !(w->atom = cetta_expr("assertEqual", 1, 2)) )
+{ w->space = mt_self(w->m);
+  if ( !(w->atom = mt_expr("assertEqual", 1, 2)) )
     return fail("error-ball: the goal could not be built");
   return 0;
 }
 
 static void teardown(workload_t *w)
 { size_t i;
-  cetta_answers_free(w->cursor);
-  cetta_drop(w->atom);
+  mt_answers_free(w->cursor);
+  mt_drop(w->atom);
   if ( w->facts || w->patterns )
     for (i = 0; i < w->n; i++)
-    { if ( w->facts ) cetta_drop(w->facts[i]);
-      if ( w->patterns ) cetta_drop(w->patterns[i]);
+    { if ( w->facts ) mt_drop(w->facts[i]);
+      if ( w->patterns ) mt_drop(w->patterns[i]);
     }
   free(w->facts);
   free(w->patterns);
-  if ( w->owns_space ) cetta_space_close(w->space);
+  if ( w->owns_space ) mt_space_close(w->space);
 }
 
 /* ------------------------------------------------------------------ *
@@ -403,7 +403,7 @@ static void usage(void)
 int main(int argc, char **argv)
 { const bench_case_t *chosen;
   workload_t w;
-  cetta_stats before, after, spent;
+  mt_stats before, after, spent;
   long iterations;
   bool controlled = false;
   int status = 0;
@@ -433,7 +433,7 @@ int main(int argc, char **argv)
   w.source = SAMPLE_SOURCE;
   if ( controlled && control_open() != 0 ) return 2;
 
-  if ( !(w.m = cetta_open(NULL)) ) return fail("boot");
+  if ( !(w.m = mt_open(NULL)) ) return fail("boot");
   /* term-in and term-out share one fixture and neither needs the engine to
      build it, which is why it is here rather than behind a setup hook. */
   if ( !chosen->setup && !chosen->whole_process && !(w.atom = sample_term()) )
@@ -444,12 +444,12 @@ int main(int argc, char **argv)
      so its `before` stays the zeroed struct and the delta reports what the
      engine retired from process start. Every other case samples the pair
      around its own region. */
-  if ( !chosen->whole_process ) before = cetta_stats_now(w.m);
+  if ( !chosen->whole_process ) before = mt_stats_now(w.m);
   if ( control_send("enable\n") != 0 ) { teardown(&w); return 2; }
   status = chosen->run(&w);
   if ( control_send("disable\n") != 0 ) { teardown(&w); return 2; }
-  after = cetta_stats_now(w.m);
-  spent = cetta_stats_since(before, after);
+  after = mt_stats_now(w.m);
+  spent = mt_stats_since(before, after);
 
   teardown(&w);
   if ( status == 0 )
@@ -458,6 +458,6 @@ int main(int argc, char **argv)
     printf("inferences %llu\n", (unsigned long long)spent.inferences);
     printf("checksum %llu\n", (unsigned long long)sink);
   }
-  cetta_close(w.m);
+  mt_close(w.m);
   return status;
 }
