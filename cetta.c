@@ -667,7 +667,7 @@ static PL_blob_t mt_object_blob =
    "FATAL ERROR: Too many stacked strings" once the ring fills
    [measured 2026-08-27, draining a bounded endless generator; tested:
    tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
-   commit=56dcac4afc074dce9e401174c65cedc3071075ae]. Releasing from
+   commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]. Releasing from
    the mark is safe because the text is copied out before the release. */
 static char *term_text(term_t t, int cvt, size_t *len_out)
 { char *copy = NULL;
@@ -878,7 +878,7 @@ static mt_atom *decode(term_t t, term_t names)
      [measured 2026-08-27: a mt_object reached the refusal branch and the
      dispatcher answered "No permission to read argument `<counter>'";
      tested: tests/test_cetta.c, test_a_c_value_crosses_by_reference;
-     commit=56dcac4afc074dce9e401174c65cedc3071075ae].
+     commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3].
      The PL_BLOB_TEXT mask is the other half: without it an ordinary symbol
      reads as a native value instead. */
   { void *blob;

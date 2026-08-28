@@ -129,7 +129,7 @@ CASES = (
     # This is the one case measured as a WHOLE PROCESS: a control window opened
     # inside main() would start after the loader had already run.
     Case("boot", "boots", 1, whole_process=True),
-    # cursor-step. One cetta_answers_step, which is one metta_c_next plus the
+    # cursor-step. One mt_next, which is one metta_c_next plus the
     # decode of its answer into a C atom and the render of its text. DECIDED BY
     # instructions:u AND CPU TIME, and this case is the counter rule in one
     # number: the engine retires 10 inferences per answer while the process
@@ -138,13 +138,13 @@ CASES = (
     # -- it catches a change in the engine's per-answer reduction -- but it
     # cannot referee the C half at all.
     Case("cursor-step", "steps", 200_000),
-    # term-in. A term crossing FROM C INTO the engine: cetta_show encodes a C
+    # term-in. A term crossing FROM C INTO the engine: mt_show_dup encodes a C
     # atom into a Prolog term and asks the engine to write it, the only public
     # door that crosses this way without also storing or evaluating something.
     # DECIDED BY instructions:u AND CPU TIME; the encode is pure C and retires
     # nothing, so the inference pin here prices only the writer on the far side.
     Case("term-in", "crossings", 60_000),
-    # term-out. The mirror: cetta_parse runs the engine's reader and decodes
+    # term-out. The mirror: mt_parse runs the engine's reader and decodes
     # the resulting Prolog term into a C atom. Same term, same text door,
     # opposite crossing, and the pair is what makes the two rows comparable.
     # DECIDED BY instructions:u AND CPU TIME, for the same reason.
