@@ -1455,6 +1455,38 @@ metta *mt_open(const mt_config *config)
     return err_null(MT_ERROR, "the engine refused its argv");
   }
 
+  /* The purge FIRST, and this seat is the one that has to ask for it. A host
+     consulting engine/main.pl gets it, which is what the Python seat does;
+     this seat cannot, because main.pl's initialization(main, main) fires on
+     consult and prints its demo into a host's output. The engine's units are
+     consulted by umbrellas, so engine/spaces/foreign.pl compiles into
+     engine/spaces.qlf and SWI's staleness check, which compares an artifact
+     against its immediate source, never sees a unit edit: without this a C
+     program runs the previous compile and nothing says so
+     [tested: tests/checks/check_qlf_freshness.py; commit=WORKTREE].
+
+     It also makes the boot CHEAPER, which is not why it is here but is most of
+     what it does to the counters. qlf_boot sets encoding(utf8), and this seat
+     consults the engine with an explicit .pl so the umbrella is read from
+     SOURCE; without the flag that read goes through the locale's multibyte
+     conversion. Boot measures 1,961,762,311 retired instructions with neither,
+     1,735,405,359 with the encoding flag alone and 1,761,830,644 with
+     qlf_boot, so the flag is worth -11.5% and the purge machinery costs about
+     26M of it back, plus 6,955 inferences for globbing the artifact set and
+     reading its stamp [measured 2026-08-29, min-of-three per arm, one arm per
+     mechanism]. The purge is what makes this correct and the encoding comes
+     with it; neither is worth having alone. */
+  snprintf(buf, bufsz, "consult('%s/engine/qlf_boot.pl')", path);
+  if ( !goal(buf) )
+  { void *refused =
+      err_null(MT_ERROR,
+              "the engine's artifact freshness check would not load from %s; "
+              "set config.path or METTA_PATH to the tree holding engine/",
+              path);
+    free(path); free(buf);
+    return refused;
+  }
+
   snprintf(buf, bufsz, "consult('%s/engine/metta.pl')", path);
   if ( !goal(buf) )
   { void *refused =
