@@ -170,7 +170,36 @@ CASES = (
 BY_NAME = {case.name: case for case in CASES}
 
 
-def counter_configuration() -> dict[str, bool]:
+def loaded_seats() -> list[str]:
+    """Which seats a boot with the `extensions` token actually loads.
+
+    ASKED, not modelled. Whether a seat loads is the loader's decision over its
+    control file's needs -- an artefact on disk, a Prolog library on the search
+    path, a predicate some host registered first, another seat -- and a second
+    implementation of that rule here would be a copy that drifts from the one
+    that decides. One boot costs about a seventh of a second, once per run.
+    """
+    answer = subprocess.run(
+        [
+            "swipl", "-q",
+            "-g", "findall(S, metta_extension_loaded(S), Ss), sort(Ss, Sorted), "
+                  "forall(member(Seat, Sorted), format('~w~n', [Seat]))",
+            "-t", "halt",
+            str(ROOT / "engine" / "metta.pl"), "--", "extensions",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if answer.returncode != 0:
+        detail = (answer.stderr or answer.stdout).strip()
+        msg = f"could not ask the engine which seats load: {detail}"
+        raise SystemExit(msg)
+    return sorted(line for line in answer.stdout.split() if line)
+
+
+def counter_configuration() -> dict[str, bool | list[str]]:
     """The artifacts that move THIS seat's counters, for the baseline stamp.
 
     Deterministic counters only compare within one configuration. The engine's
@@ -187,11 +216,24 @@ def counter_configuration() -> dict[str, bool]:
     SWI_HOME_DIR: an override set in this process cannot reach the run it would
     describe, so stamping it would refuse a comparison over a difference that
     changed no number.
+
+    The SEATS are the fourth key, and the one this stamp was missing. A C host
+    boots with the `extensions` token, so every seat whose declared needs hold
+    loads into the process being measured: the MORK backend alone costs 23,155
+    inferences at boot and two per space operation, because its provider joins
+    the ownership seam every add and match consults. These pins were first taken
+    in a worktree that had no MORK artifacts, and against a tree that has them
+    the difference reads as a 1.56% boot regression and a 3.77% space-pair one
+    that no code caused [measured 2026-08-28: boot 1,493,506 inferences with
+    seats [node, python] against 1,516,661 with [mork, node, python], same tree,
+    same command]. Reading the seats rather than the artifacts keeps the key
+    true for a seat that is present and unbuildable, and for one added later.
     """
     return {
         "c_reader": (ROOT / "engine" / "reader.so").is_file(),
         "c_writer": (ROOT / "engine" / "writer.so").is_file(),
         "c_json": (ROOT / "engine" / "json_codec.so").is_file(),
+        "seats": loaded_seats(),
     }
 
 
