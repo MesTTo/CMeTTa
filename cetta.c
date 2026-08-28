@@ -1475,7 +1475,15 @@ metta *mt_open(const mt_config *config)
      26M of it back, plus 6,955 inferences for globbing the artifact set and
      reading its stamp [measured 2026-08-29, min-of-three per arm, one arm per
      mechanism]. The purge is what makes this correct and the encoding comes
-     with it; neither is worth having alone. */
+     with it; neither is worth having alone.
+
+     Concurrent opens are safe, which is the question deleting files at boot
+     invites. Six hello processes started at once against a STALE artifact set,
+     so all six purge and regenerate together, all answered correctly; qlf_boot
+     publishes its stamp through a temporary file and rename/2 for that reason,
+     and the Python seat has run the same shape through main.pl all along
+     [measured 2026-08-29: 6/6, examples/hello, set made stale by touching
+     engine/spaces/foreign.pl]. */
   snprintf(buf, bufsz, "consult('%s/engine/qlf_boot.pl')", path);
   if ( !goal(buf) )
   { void *refused =
