@@ -708,7 +708,7 @@ static void test_verbosity_reaches_the_engines_own_door(cetta_t *m)
   /* cetta_set_verbose() records the new setting only when the Prolog call
      came back CETTA_OK, so a round trip that reports back what was just set
      is proof the call ran. It is worth its own case because the predicate it
-     reaches moved: bridge.pl used to define petta_c_set_silent/1 in `user`,
+     reaches moved: bridge.pl used to define metta_c_set_silent/1 in `user`,
      and this now calls engine/filereader.pl's metta_host_set_silent/1, which
      reaches `user` by EXPORT rather than by being defined there (C2). If that
      import ever stopped resolving, call_bridge would fail and the reads below

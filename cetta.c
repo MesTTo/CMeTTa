@@ -650,7 +650,7 @@ static cetta_status_t call_bridge(const char *name, int arity, term_t av);
 
 /* Whether this atom is a space, asked of the engine and of the term itself:
    no text conversion, and no list of names to rebuild per answer.
-   petta_c_space_operand/1 is metta_space_operand/1, the test the engine's own
+   metta_c_space_operand/1 is metta_space_operand/1, the test the engine's own
    metatype_of/2 consults, so this seat, the Python seat and get-metatype
    classify one atom alike. Asking the engine per atom is a question only an
    in-process seat can afford, and it is the reason this seat exists.
@@ -675,7 +675,7 @@ static bool is_space(term_t t)
   int rc;
 
   if ( !space_operand )
-    space_operand = PL_predicate("petta_c_space_operand", 1, "user");
+    space_operand = PL_predicate("metta_c_space_operand", 1, "user");
   f = PL_open_foreign_frame();
   rc = PL_call_predicate(NULL, PL_Q_NORMAL, space_operand, t);
   PL_discard_foreign_frame(f);
@@ -784,7 +784,7 @@ static cetta_atom_t *decode_number(term_t t)
     cetta_atom_t *a = NULL;
     int64_t num, den;
     if ( PL_unify(av, t) &&
-         call_bridge("petta_c_rational_parts", 3, av) == CETTA_OK &&
+         call_bridge("metta_c_rational_parts", 3, av) == CETTA_OK &&
          PL_get_int64(av + 1, &num) && PL_get_int64(av + 2, &den) )
       a = cetta_rational(num, den);
     else
@@ -1033,7 +1033,7 @@ static bool put_atom_named(const cetta_atom_t *a, term_t out, term_t names)
 static void render_ball(term_t ball)
 { fid_t f = PL_open_foreign_frame();
   term_t av = PL_new_term_refs(2);
-  predicate_t p = PL_predicate("petta_c_error_text", 2, "user");
+  predicate_t p = PL_predicate("metta_c_error_text", 2, "user");
   qid_t q;
 
   if ( PL_unify(av, ball) &&
@@ -1066,7 +1066,7 @@ static void render_ball(term_t ball)
 static bool ball_is_limit(term_t ball)
 { fid_t f = PL_open_foreign_frame();
   term_t av = PL_new_term_refs(3);
-  predicate_t p = PL_predicate("petta_c_limit_ball", 3, "user");
+  predicate_t p = PL_predicate("metta_c_limit_ball", 3, "user");
   qid_t q;
   bool yes = false;
 
@@ -1486,7 +1486,7 @@ cetta_status_t cetta_parse(cetta_t *runtime, const char *source,
   { PL_discard_foreign_frame(f);
     return err_set(CETTA_NOMEM, "out of memory holding the source");
   }
-  status = call_bridge("petta_c_read", 3, av);
+  status = call_bridge("metta_c_read", 3, av);
   if ( status == CETTA_OK )
   { *out = decode(av + 1, av + 2);
     if ( !*out ) status = CETTA_UNSUPPORTED;
@@ -1505,7 +1505,7 @@ char *cetta_show(cetta_t *runtime, const cetta_atom_t *atom)
   f = PL_open_foreign_frame();
   av = PL_new_term_refs(3);
   if ( put_atom_named(atom, av, av + 1) &&
-       call_bridge("petta_c_show", 3, av) == CETTA_OK )
+       call_bridge("metta_c_show", 3, av) == CETTA_OK )
     text = term_text(av + 2, CVT_ATOM | CVT_STRING, NULL);
   PL_discard_foreign_frame(f);
   return text;
@@ -1588,7 +1588,7 @@ static cetta_status_t space_call(const char *pred, cetta_space_t *space,
 
 cetta_status_t cetta_add(cetta_space_t *space, const cetta_atom_t *atom)
 { err_clear();
-  return space_call("petta_c_add", space, atom, 2, NULL, NULL);
+  return space_call("metta_c_add", space, atom, 2, NULL, NULL);
 }
 
 cetta_status_t cetta_remove(cetta_space_t *space, const cetta_atom_t *atom,
@@ -1598,7 +1598,7 @@ cetta_status_t cetta_remove(cetta_space_t *space, const cetta_atom_t *atom,
   cetta_status_t status;
 
   err_clear();
-  status = space_call("petta_c_remove", space, atom, 3, &av, &f);
+  status = space_call("metta_c_remove", space, atom, 3, &av, &f);
   if ( status == CETTA_OK && removed )
   { char *text = term_text(av + 2, CVT_ATOM, NULL);
     *removed = text && strcmp(text, "true") == 0;
@@ -1615,7 +1615,7 @@ cetta_status_t cetta_space_count(cetta_space_t *space, size_t *out)
   int64_t n;
 
   err_clear();
-  status = space_call("petta_c_count", space, NULL, 2, &av, &f);
+  status = space_call("metta_c_count", space, NULL, 2, &av, &f);
   if ( status == CETTA_OK )
   { if ( PL_get_int64(av + 1, &n) ) *out = (size_t)n;
     else status = err_set(CETTA_ERROR, "the space did not answer a count");
@@ -1626,7 +1626,7 @@ cetta_status_t cetta_space_count(cetta_space_t *space, size_t *out)
 
 cetta_status_t cetta_space_clear(cetta_space_t *space)
 { err_clear();
-  return space_call("petta_c_clear", space, NULL, 1, NULL, NULL);
+  return space_call("metta_c_clear", space, NULL, 1, NULL, NULL);
 }
 
 /* ================================================================== *
@@ -1677,7 +1677,7 @@ static cetta_status_t collect_groups(term_t groups, cetta_answers_t *out)
       char *text = NULL;
 
       if ( PL_unify(av, answer) &&
-           call_bridge("petta_c_answer_parts", 4, av) == CETTA_OK )
+           call_bridge("metta_c_answer_parts", 4, av) == CETTA_OK )
       { atom = decode(av + 1, av + 2);
         text = term_text(av + 3, CVT_ATOM | CVT_STRING, NULL);
       }
@@ -1744,12 +1744,12 @@ static cetta_status_t run_or_load(cetta_t *runtime, const char *pred,
 
 cetta_status_t cetta_run(cetta_t *runtime, const char *source,
                          cetta_answers_t **out)
-{ return run_or_load(runtime, "petta_c_run", source, "&self", out);
+{ return run_or_load(runtime, "metta_c_run", source, "&self", out);
 }
 
 cetta_status_t cetta_load(cetta_t *runtime, const char *path,
                           cetta_answers_t **out)
-{ return run_or_load(runtime, "petta_c_load", path, "&self", out);
+{ return run_or_load(runtime, "metta_c_load", path, "&self", out);
 }
 
 static cetta_status_t open_cursor(cetta_space_t *space, const char *pred,
@@ -1793,19 +1793,19 @@ static cetta_status_t open_cursor(cetta_space_t *space, const char *pred,
 
 cetta_status_t cetta_eval(cetta_space_t *space, const cetta_atom_t *goal,
                           cetta_answers_t **out)
-{ return open_cursor(space, "petta_c_open_eval", goal, out);
+{ return open_cursor(space, "metta_c_open_eval", goal, out);
 }
 
 cetta_status_t cetta_match(cetta_space_t *space, const cetta_atom_t *pattern,
                            cetta_answers_t **out)
-{ return open_cursor(space, "petta_c_open_match", pattern, out);
+{ return open_cursor(space, "metta_c_open_match", pattern, out);
 }
 
 cetta_status_t cetta_space_atoms(cetta_space_t *space, cetta_answers_t **out)
 { cetta_atom_t *any = cetta_var("_");
   cetta_status_t status;
   if ( !any ) return CETTA_NOMEM;
-  status = open_cursor(space, "petta_c_open_match", any, out);
+  status = open_cursor(space, "metta_c_open_match", any, out);
   cetta_release(any);
   return status;
 }
@@ -1852,7 +1852,7 @@ cetta_status_t cetta_answers_step(cetta_answers_t *answers)
   { PL_discard_foreign_frame(f);
     return err_set(CETTA_NOMEM, "out of memory stepping a cursor");
   }
-  status = call_bridge("petta_c_next", 3, av);
+  status = call_bridge("metta_c_next", 3, av);
   if ( status != CETTA_OK )
   { PL_discard_foreign_frame(f);
     answers->done = true;
@@ -1869,7 +1869,7 @@ cetta_status_t cetta_answers_step(cetta_answers_t *answers)
 
   { term_t parts = PL_new_term_refs(4);
     if ( PL_unify(parts, head) &&
-         call_bridge("petta_c_answer_parts", 4, parts) == CETTA_OK )
+         call_bridge("metta_c_answer_parts", 4, parts) == CETTA_OK )
     { answers->current = decode(parts + 1, parts + 2);
       answers->current_text = term_text(parts + 3, CVT_ATOM | CVT_STRING, NULL);
     }
@@ -1904,7 +1904,7 @@ void cetta_answers_free(cetta_answers_t *answers)
   { fid_t f = PL_open_foreign_frame();
     term_t av = PL_new_term_refs(1);
     if ( PL_put_int64(av, answers->cursor_id) )
-      call_bridge("petta_c_close", 1, av);
+      call_bridge("metta_c_close", 1, av);
     PL_discard_foreign_frame(f);
     clear_current(answers);
   } else
@@ -1962,7 +1962,7 @@ cetta_status_t cetta_stats(cetta_t *runtime, cetta_stats_t *out)
 
   f = PL_open_foreign_frame();
   av = PL_new_term_refs(1);
-  status = call_bridge("petta_c_stats", 1, av);
+  status = call_bridge("metta_c_stats", 1, av);
   if ( status == CETTA_OK )
   { head = PL_new_term_ref();
     tail = PL_copy_term_ref(av);
@@ -2054,7 +2054,7 @@ cetta_status_t cetta_op(cetta_t *runtime, const char *name, size_t arity,
     free(published);
     return err_set(CETTA_NOMEM, "out of memory registering an operation");
   }
-  status = call_bridge("petta_c_register_op", 3, av);
+  status = call_bridge("metta_c_register_op", 3, av);
   PL_discard_foreign_frame(f);
   if ( status != CETTA_OK )
   { free(published);
@@ -2100,7 +2100,7 @@ cetta_status_t cetta_op_remove(cetta_t *runtime, const char *name)
   f = PL_open_foreign_frame();
   av = PL_new_term_refs(1);
   status = PL_put_atom_chars(av, published)
-         ? call_bridge("petta_c_unregister_op", 1, av)
+         ? call_bridge("metta_c_unregister_op", 1, av)
          : err_set(CETTA_NOMEM, "out of memory withdrawing an operation");
   PL_discard_foreign_frame(f);
 
