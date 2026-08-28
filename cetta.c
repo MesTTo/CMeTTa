@@ -1463,7 +1463,7 @@ metta *mt_open(const mt_config *config)
      engine/spaces.qlf and SWI's staleness check, which compares an artifact
      against its immediate source, never sees a unit edit: without this a C
      program runs the previous compile and nothing says so
-     [tested: tests/checks/check_qlf_freshness.py; commit=WORKTREE].
+     [tested: tests/checks/check_qlf_freshness.py; commit=888a73c7d231188cd90fafcb8b0cce3799ef5e97].
 
      It also makes the boot CHEAPER, which is not why it is here but is most of
      what it does to the counters. qlf_boot sets encoding(utf8), and this seat
