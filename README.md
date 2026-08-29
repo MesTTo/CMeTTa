@@ -228,6 +228,16 @@ A C value can cross MeTTa untouched and come back the same object:
 mt_atom *handle = mt_object(&account, "account", NULL);
 ```
 
+Each call makes ONE value, and this seat does not intern: two `mt_object` calls
+on the same pointer are two atoms that answer `False` to `==` and fail to
+`unify`, where the Node seat interns by identity and Python answers `True`. Wrap
+once and pass the atom. The blob is released by SWI's garbage collector through
+the `mt_free_fn` you hand it, so not interning costs no memory; what it costs is
+that comparison. `get-type` answers `%Undefined%` for one, because this seat
+declares no `seam:host_object/1`, the seam by which a host tells the engine a
+value is its own; `mt_type()` is how C reads the name back, and MeTTa is not
+told it.
+
 and a C function can be a value rather than a name, applied wherever it lands:
 
 ```c
