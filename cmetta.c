@@ -4,12 +4,12 @@
  *
  * Assumes:
  *   - SWI-Prolog 10 with threads [source: PLVERSION 100113]
- *   - extensions/cetta/bridge.pl is loaded by extensions/cetta/extension.pl, which
+ *   - extensions/cmetta/bridge.pl is loaded by extensions/cmetta/extension.pl, which
  *     the engine globs at boot, and which finds this file because mt_open()
  *     registers '$mt_present'/0 BEFORE it consults engine/metta.pl
  *   - a term handed out by the bridge is valid only inside the foreign frame
  *     the call opened, so every decode completes before the frame is discarded
- *     [source: SWI-Prolog.h:432-435; C1 in ai-cetta-c-constraints.md]
+ *     [source: SWI-Prolog.h:432-435; C1 in ai-cmetta-c-constraints.md]
  *
  * Guarantees:
  *   - no Prolog exception crosses into a caller: every query runs under
@@ -19,7 +19,7 @@
  *     stringified into something that cannot go home again
  *   - an ampersand-prefixed atom becomes MT_SPACE only when the engine
  *     says it is a space, which is a question this seat can ask and the
- *     out-of-process seats cannot [C5 in ai-cetta-c-constraints.md]
+ *     out-of-process seats cannot [C5 in ai-cmetta-c-constraints.md]
  *
  * Owns resources: the process's Prolog runtime, released by mt_close(); the
  *   op table; one malloc'ed box per live mt_object, released when both the
@@ -43,7 +43,7 @@
 /* strdup is POSIX 2008 rather than C11, and -std=c11 hides it. */
 #define _POSIX_C_SOURCE 200809L
 
-#include "cetta.h"
+#include "cmetta.h"
 
 #include <SWI-Prolog.h>
 #include <SWI-Stream.h>
@@ -66,7 +66,7 @@ static_assert(MT_SHOW_SLOTS > 1,
               "one slot cannot survive two mt_show() calls in one printf, "
               "which is the whole reason the buffer rotates");
 static_assert(MT_OK == 0,
-              "mt_ok() is a comparison against MT_OK, and cetta_clear() zeroes "
+              "mt_ok() is a comparison against MT_OK, and cmetta_clear() zeroes "
               "the status to mean success");
 
 /* SWI takes a foreign predicate as pl_function_t, which is void *. ISO C does
@@ -666,7 +666,7 @@ static PL_blob_t mt_object_blob =
   /* The SEAT's spelling, because bridge.pl names this type in blob/2 and the
      two must agree. Like the four foreign predicates above, it is a contract
      with the Prolog half rather than part of the C API's prefix. */
-  .name    = "cetta_object",
+  .name    = "cmetta_object",
   .release = object_release_blob,
   .write   = object_write
 };
@@ -683,7 +683,7 @@ static PL_blob_t mt_object_blob =
    for thousands of conversions. Without the pair, SWI dies with
    "FATAL ERROR: Too many stacked strings" once the ring fills
    [measured 2026-08-27, draining a bounded endless generator; tested:
-   tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
+   tests/test_cmetta.c, test_a_bound_stops_a_runaway_and_says_so;
    commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]. Releasing from
    the mark is safe because the text is copied out before the release. */
 static char *term_text(term_t t, int cvt, size_t *len_out)
@@ -724,7 +724,7 @@ static mt_status call_bridge(const char *name, int arity, term_t av);
    3,062,228,470 resolving once, so 1,150 saved of 3,358 and +1.46% over
    asking nothing on a workload that is nothing but symbol decoding]. A static
    is safe because this binding is one runtime per process by construction
-   (PL_initialise is process-wide, see cetta.h's "Fails when") and a
+   (PL_initialise is process-wide, see cmetta.h's "Fails when") and a
    predicate_t stays valid for the life of that process. */
 static bool is_space(term_t t)
 { static predicate_t space_operand = NULL;
@@ -894,7 +894,7 @@ static mt_atom *decode(term_t t, term_t names)
      atom nor anything else and falls off the end
      [measured 2026-08-27: a mt_object reached the refusal branch and the
      dispatcher answered "No permission to read argument `<counter>'";
-     tested: tests/test_cetta.c, test_a_c_value_crosses_by_reference;
+     tested: tests/test_cmetta.c, test_a_c_value_crosses_by_reference;
      commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3].
      The PL_BLOB_TEXT mask is the other half: without it an ordinary symbol
      reads as a native value instead. */
@@ -1197,7 +1197,7 @@ static mt_status call_bridge(const char *name, int arity, term_t av)
  * Foreign predicates the bridge calls back into
  * ================================================================== */
 
-static foreign_t pl_cetta_present(void)
+static foreign_t pl_cmetta_present(void)
 { return TRUE;
 }
 
@@ -1298,7 +1298,7 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
     term_t ball = PL_new_term_ref();
     if ( PL_unify_term(ball,
                        PL_FUNCTOR_CHARS, "error", 2,
-                         PL_FUNCTOR_CHARS, "cetta_operation_failed", 2,
+                         PL_FUNCTOR_CHARS, "cmetta_operation_failed", 2,
                            PL_UTF8_CHARS, name,
                            PL_UTF8_CHARS, why,
                          PL_FUNCTOR_CHARS, "context", 2,
@@ -1327,7 +1327,7 @@ static mt_op_entry_t *find_op(const char *name, size_t arity)
   return NULL;
 }
 
-static foreign_t pl_cetta_dispatch(term_t name, term_t args, term_t result)
+static foreign_t pl_cmetta_dispatch(term_t name, term_t args, term_t result)
 { char *text;
   size_t len;
   mt_op_entry_t *op;
@@ -1341,7 +1341,7 @@ static foreign_t pl_cetta_dispatch(term_t name, term_t args, term_t result)
 
   op = find_op(text, arity);
   if ( !op )
-  { rc = PL_existence_error("cetta_operation", name);
+  { rc = PL_existence_error("cmetta_operation", name);
     free(text);
     return rc;
   }
@@ -1359,12 +1359,12 @@ static mt_box_t *blob_box(term_t t)
   return NULL;
 }
 
-static foreign_t pl_cetta_object_callable(term_t t)
+static foreign_t pl_cmetta_object_callable(term_t t)
 { mt_box_t *box = blob_box(t);
   return ( box && box->apply ) ? TRUE : FALSE;
 }
 
-static foreign_t pl_cetta_apply(term_t t, term_t args, term_t result)
+static foreign_t pl_cmetta_apply(term_t t, term_t args, term_t result)
 { mt_box_t *box = blob_box(t);
   if ( !box || !box->apply ) return FALSE;
   return run_call(box->type ? box->type : "function",
@@ -1389,7 +1389,7 @@ static char *default_path(void)
 }
 
 metta *mt_open(const mt_config *config)
-{ static char *argv[] = { (char *)"cetta", (char *)"-q",
+{ static char *argv[] = { (char *)"cmetta", (char *)"-q",
                           (char *)"--no-signals", NULL };
   mt_config defaults = {0};
   char *path;
@@ -1420,14 +1420,14 @@ metta *mt_open(const mt_config *config)
   /* Registered BEFORE the consult, because engine/metta.pl reads
      extensions/ * /extension.pl while it loads and this seat's control file
      declares needs(predicate('$mt_present'/0)). */
-  PL_register_foreign("$cetta_present", 0,
-                      as_pl_function((mt_anyfn)pl_cetta_present), 0);
-  PL_register_foreign("$cetta_dispatch", 3,
-                      as_pl_function((mt_anyfn)pl_cetta_dispatch), 0);
-  PL_register_foreign("$cetta_object_callable", 1,
-                      as_pl_function((mt_anyfn)pl_cetta_object_callable), 0);
-  PL_register_foreign("$cetta_apply", 3,
-                      as_pl_function((mt_anyfn)pl_cetta_apply), 0);
+  PL_register_foreign("$cmetta_present", 0,
+                      as_pl_function((mt_anyfn)pl_cmetta_present), 0);
+  PL_register_foreign("$cmetta_dispatch", 3,
+                      as_pl_function((mt_anyfn)pl_cmetta_dispatch), 0);
+  PL_register_foreign("$cmetta_object_callable", 1,
+                      as_pl_function((mt_anyfn)pl_cmetta_object_callable), 0);
+  PL_register_foreign("$cmetta_apply", 3,
+                      as_pl_function((mt_anyfn)pl_cmetta_apply), 0);
   PL_register_blob_type(&mt_object_blob);
 
   bufsz = strlen(path) + 128;

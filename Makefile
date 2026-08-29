@@ -1,4 +1,4 @@
-# Purpose: build libcetta, the C binding, against the SWI-Prolog this box has.
+# Purpose: build libcmetta, the C binding, against the SWI-Prolog this box has.
 # Assumes: swipl is on PATH and reports its own layout through
 #   --dump-runtime-variables, which is how SWI tells a build where its headers
 #   and libswipl live without a pkg-config file. That assumption is CHECKED
@@ -7,7 +7,7 @@
 #   swipl-ld is not the tool for this seat: it builds an extension loaded INTO
 #   SWI, and this one goes the other way, calling PL_initialise to embed SWI in
 #   a C program.
-# Guarantees: `make` produces libcetta.so plus the examples; `make test` runs
+# Guarantees: `make` produces libcmetta.so plus the examples; `make test` runs
 #   the C suite and exits nonzero on the first failure; a missing prerequisite
 #   stops the build NAMING it and the package that supplies it, where an empty
 #   PLBASE used to compile against -I/include and fail on a missing
@@ -52,9 +52,9 @@ CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -fPIC -I. -I$(PLBASE)/include \
 LDFLAGS += -L$(PLLIBDIR) -Wl,-rpath,$(PLLIBDIR)
 LDLIBS  += -lswipl
 
-LIB       := libcetta.so
+LIB       := libcmetta.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower
-TESTS     := tests/test_cetta
+TESTS     := tests/test_cmetta
 KIT       := kit/driver
 BENCH     := benchmarks/cases
 
@@ -69,22 +69,22 @@ bench: $(BENCH)
 
 all: $(LIB) examples $(KIT) $(BENCH)
 
-$(LIB): cetta.c cetta.h
-	$(CC) $(CFLAGS) -shared -o $@ cetta.c $(LDFLAGS) $(LDLIBS)
+$(LIB): cmetta.c cmetta.h
+	$(CC) $(CFLAGS) -shared -o $@ cmetta.c $(LDFLAGS) $(LDLIBS)
 
 examples: $(EXAMPLES)
 
 examples/%: examples/%.c $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcetta $(LDFLAGS) $(LDLIBS) -lm
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS) $(LDLIBS) -lm
 
 kit/%: kit/%.c $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcetta $(LDFLAGS) $(LDLIBS) -lm
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS) $(LDLIBS) -lm
 
 benchmarks/%: benchmarks/%.c $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcetta $(LDFLAGS) $(LDLIBS) -lm
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS) $(LDLIBS) -lm
 
 tests/%: tests/%.c $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcetta $(LDFLAGS) $(LDLIBS) -lm
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS) $(LDLIBS) -lm
 
 # Every MT_API declaration must have a definition in the library. A header and
 # an implementation drift apart silently: an edit that removes a function
@@ -93,7 +93,7 @@ tests/%: tests/%.c $(LIB)
 # over-wide edit [measured 2026-08-28].
 surface: $(LIB)
 	@python3 -c "import re,subprocess,sys; \
-	  d=set(re.findall(r'^MT_API[^;(]*?\b(mt_[a-z_0-9]+)\(', open('cetta.h').read(), re.M)); \
+	  d=set(re.findall(r'^MT_API[^;(]*?\b(mt_[a-z_0-9]+)\(', open('cmetta.h').read(), re.M)); \
 	  o=subprocess.run(['nm','-D','--defined-only','$(LIB)'],capture_output=True,text=True).stdout; \
 	  f={l.split()[2] for l in o.splitlines() if len(l.split())==3 and l.split()[1]=='T'}; \
 	  miss=sorted(d-f); \
@@ -114,19 +114,19 @@ surface: $(LIB)
 # it in place keeps the reason beside the name rather than in this file.
 docs:
 	@python3 -c "import re,sys; \
-	  known=set(re.findall(r'\b(?:mt_[a-z_0-9]+|MT_[A-Z_0-9]+)\b', open('cetta.h').read())); \
+	  known=set(re.findall(r'\b(?:mt_[a-z_0-9]+|MT_[A-Z_0-9]+)\b', open('cmetta.h').read())); \
 	  bad=[]; \
 	  [bad.extend((d,n) for n in sorted(set(re.findall(r'\b(?:mt_[a-z_0-9]+|MT_[A-Z_0-9]+)\b', open(d).read())) \
 	    - known - set(re.findall(r'<!--\s*names:\s*(\S+)', open(d).read())))) \
 	   for d in ('README.md','llms.txt')]; \
-	  sys.exit('documented but not in cetta.h: ' + ', '.join(f'{d}:{n}' for d,n in bad)) if bad else \
+	  sys.exit('documented but not in cmetta.h: ' + ', '.join(f'{d}:{n}' for d,n in bad)) if bad else \
 	  print('docs: every mt_ name in README.md and llms.txt is in the header')"
 
 # The examples run too. An example that no longer compiles, or that compiles
 # and then fails, is documentation that lies, and the README quotes all four
 # directly. The Python seat gates its examples for the same reason.
 test: $(TESTS) $(EXAMPLES) surface docs
-	@./tests/test_cetta
+	@./tests/test_cmetta
 	@for example in $(EXAMPLES); do \
 	    ./$$example > /dev/null || { echo "$$example failed" >&2; exit 1; }; \
 	    echo "$$example ok"; \

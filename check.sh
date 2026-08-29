@@ -15,8 +15,8 @@
 
 # The C binding, the seam's third consumer and the only one that is IN the
 # engine's process. A C main() calls PL_initialise, registers its foreign
-# predicates, and consults the engine; extensions/cetta/extension.pl sees
-# '$cetta_present'/0 and loads the bridge beside it. Because there is no
+# predicates, and consults the engine; extensions/cmetta/extension.pl sees
+# '$cmetta_present'/0 and loads the bridge beside it. Because there is no
 # language boundary to cross, this seat reads engine terms directly and has no
 # wire codec, so the codec kit cannot gate it; what gates it instead is its own
 # C suite here and the cross-seat parity case in the pytest lane above, which
@@ -27,7 +27,7 @@
 # the tree, so a missing step is named and skipped, the same shape the C
 # extension example and the Node lane take.
 check_c_binding() {
-    binding="$HERE/extensions/cetta"
+    binding="$HERE/extensions/cmetta"
     [ -d "$binding" ] || return 0
     if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
         echo "note: no C compiler found, the C binding suite will not run" >&2
@@ -39,7 +39,7 @@ check_c_binding() {
 suite will not run" >&2
         return 0
     fi
-    sh "$HERE/extensions/cetta/test.sh"
+    sh "$HERE/extensions/cmetta/test.sh"
 }
 run GATE c-binding check_c_binding
 
@@ -54,10 +54,10 @@ run GATE c-binding check_c_binding
 # foreign code retires no inferences at all. A C wire encoder in this tree once
 # measured 526x faster on the inference counter while CPU time said it was 1.8x
 # SLOWER. Every case here is therefore decided by `perf stat -e instructions:u`
-# and CPU time PAIRED, and extensions/cetta/benchmarks/bench.py says beside
+# and CPU time PAIRED, and extensions/cmetta/benchmarks/bench.py says beside
 # each case which counter decides it.
 check_c_bench() {
-    binding="$HERE/extensions/cetta"
+    binding="$HERE/extensions/cmetta"
     [ -d "$binding" ] || return 0
     if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
         echo "note: no C compiler found, the C benchmark suite will not run" >&2
@@ -80,6 +80,6 @@ run; instructions:u is what decides these cases" >&2
 will not run; it compares through metta's BenchmarkBaseline" >&2
         return 0
     fi
-    CHECK_PY="$PY" sh "$HERE/extensions/cetta/bench.sh"
+    CHECK_PY="$PY" sh "$HERE/extensions/cmetta/bench.sh"
 }
 run GATE c-bench check_c_bench

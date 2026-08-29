@@ -1,5 +1,5 @@
 /* Purpose: run ONE named C-host workload for a fixed number of operations and
- *   report what the engine spent on it, so extensions/cetta/benchmarks/bench.py
+ *   report what the engine spent on it, so extensions/cmetta/benchmarks/bench.py
  *   can pin it. Every case here is a door a C host actually goes through, and
  *   each says beside itself which counter decides it.
  *
@@ -41,7 +41,7 @@
  *   Future Enhancements: None
  */
 
-#include <cetta.h>
+#include <cmetta.h>
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -274,7 +274,7 @@ static int case_space_pair(workload_t *w)
    program of its own is wrong. A failed assertion is the raiser because MeTTa
    keeps most failures AS values: (car-atom 5) answers unit and (+ 1 foo)
    answers itself, so neither reaches this path at all
-   [source: extensions/cetta/tests/test_cetta.c, test_an_engine_error_reaches_c_as_words].
+   [source: extensions/cmetta/tests/test_cmetta.c, test_an_engine_error_reaches_c_as_words].
    Decided by instructions:u and CPU time; no inference pin, because the ball's
    rendering is a foreign-side round trip whose engine half is a fraction of
    the row. */
@@ -324,7 +324,7 @@ static int setup_cursor_step(workload_t *w)
 
 static int setup_space_pair(workload_t *w)
 { size_t i;
-  if ( !(w->space = mt_space_open(w->m, "&cetta-bench")) )
+  if ( !(w->space = mt_space_open(w->m, "&cmetta-bench")) )
     return fail("space-pair: the space could not be opened");
   w->owns_space = true;
   w->facts = calloc(w->n, sizeof(*w->facts));

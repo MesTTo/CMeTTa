@@ -1,5 +1,5 @@
 /* Purpose: exercise every door of the C binding against a live engine, and
- *   fail loudly on the first one that does not behave as cetta.h says.
+ *   fail loudly on the first one that does not behave as cmetta.h says.
  * Assumes: one runtime per process, so every case shares one engine and a
  *   case that writes to &self cleans up after itself.
  * Guarantees: exits 0 only when every case passed; prints the failing
@@ -11,7 +11,7 @@
  */
 
 #define MT_SHORTHAND
-#include <cetta.h>
+#include <cmetta.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -31,7 +31,7 @@ static const char *current_case = "";
     }                                                                        \
   } while (0)
 
-/* -DCETTA_TRACE_CASES makes the harness announce each case, which is how a
+/* -DCMETTA_TRACE_CASES makes the harness announce each case, which is how a
    hang is located without a debugger. */
 #ifdef MT_TRACE_CASES
 #define CASE(name) \
@@ -401,9 +401,9 @@ static void test_spaces_store_and_query(metta *m)
   int matched = 0;
 
   CASE("a space stores, counts, matches and removes");
-  kb = mt_space_open(m, "&cetta-kb");
+  kb = mt_space_open(m, "&cmetta-kb");
   CHECK(kb != NULL);
-  CHECK(strcmp(mt_space_name(kb), "&cetta-kb") == 0);
+  CHECK(strcmp(mt_space_name(kb), "&cmetta-kb") == 0);
 
   CHECK(mt_add(kb, E("edge", "a", "b")));
   CHECK(mt_count(kb) == 1);
@@ -463,17 +463,17 @@ static void test_one_verb_takes_either_receiver(metta *m)
 
   CASE("the same verb points at a runtime or at a space");
   before = mt_count(m);                    /* a metta *  means &self   */
-  CHECK(mt_add(m, E("cetta-receiver-probe", 1)));
+  CHECK(mt_add(m, E("cmetta-receiver-probe", 1)));
   CHECK(mt_count(m) == before + 1);
 
-  kb = mt_space_open(m, "&cetta-receiver");
+  kb = mt_space_open(m, "&cmetta-receiver");
   CHECK(mt_count(kb) == 0);                /* a mt_space * means it */
-  CHECK(mt_add(kb, E("cetta-receiver-probe", 1)));
+  CHECK(mt_add(kb, E("cmetta-receiver-probe", 1)));
   CHECK(mt_count(kb) == 1);
   /* The two receivers are different stores, which is the point. */
   CHECK(mt_count(m) == before + 1);
 
-  CHECK(mt_del(m, E("cetta-receiver-probe", 1)));
+  CHECK(mt_del(m, E("cmetta-receiver-probe", 1)));
   CHECK(mt_wipe(kb));
   mt_space_close(kb);
 }

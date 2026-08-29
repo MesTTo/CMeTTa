@@ -8,7 +8,7 @@
 %     tests/prolog/static_checks.pl, a_host_binding_calls_only_published_surface,
 %     which reports "every one of 3 host bindings" with this file's row present;
 %     commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]
-%   - '$cetta_dispatch'/3 and '$cetta_object'/1 are foreign predicates the C
+%   - '$cmetta_dispatch'/3 and '$cmetta_object'/1 are foreign predicates the C
 %     half registers before consulting the engine. This file LOADS without
 %     them, because the static gate consults it directly with no C host in the
 %     process, so nothing here may call one at load time.
@@ -20,18 +20,18 @@
 %   - a cursor opened with a positive Inferences stops once its ENGINE has
 %     spent that many, cumulatively across pulls, because the budget is built
 %     into the engine goal by metta_host_inference_budget/3 [tested:
-%     tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
+%     tests/test_cmetta.c, test_a_bound_stops_a_runaway_and_says_so;
 %     commit=23082258ab5a278998c967274c5b22e0ce391a47]
 %   - metta_c_close/1 is idempotent
 %   - no answer is encoded, tagged, or stringified on the way out: the C half
 %     receives the engine's own term. This seat is in-process with the engine
 %     and has no marshalling boundary to cross, which is the whole reason it
-%     exists; see C6 in ai-cetta-c-constraints.md
+%     exists; see C6 in ai-cmetta-c-constraints.md
 %   - an operation published from C is registered through the engine's own
 %     four-call host protocol (open, assert, adopt, release), so a name another
 %     tier owns is refused rather than clobbered
 % Owns: one SWI engine per open cursor, released by metta_c_close/1, which the
-%   C half calls from cetta_answers_free().
+%   C half calls from cmetta_answers_free().
 % Decides: verbosity is set explicitly at boot rather than inherited from argv,
 %   because filereader.pl reads the CLI at load time and an embedded host has
 %   none. The setting itself is the engine's metta_host_set_silent/1, not a
@@ -123,7 +123,7 @@ metta_c_timed(Goal, Seconds, Goal) :- Seconds =< 0, !.
 metta_c_timed(Goal, Seconds, Timed) :-
     Timed = catch(call_with_time_limit(Seconds, Goal),
                   time_limit_exceeded,
-                  throw(error(cetta_limit(seconds, Seconds), _))).
+                  throw(error(cmetta_limit(seconds, Seconds), _))).
 
 % The inference bound raises the ENGINE's reserved limit envelope rather than a
 % second ball of this seat's own. The cursor door below reaches that envelope
@@ -145,8 +145,8 @@ metta_c_counted(Goal, Inferences) :-
 % this seat's own wall ball, and the engine's reserved envelope, which arrives
 % from a cursor budget and from a program's own (pragma! max-inferences N)
 % alike. Before the envelope was listed, a program that spent its own pragma
-% budget reached a C caller as CETTA_ERROR, a fault.
-metta_c_limit_ball(error(cetta_limit(Kind, Bound), _), Kind, Bound).
+% budget reached a C caller as CMETTA_ERROR, a fault.
+metta_c_limit_ball(error(cmetta_limit(Kind, Bound), _), Kind, Bound).
 metta_c_limit_ball(error(metta_control_signal(Signal, Bound), _), Kind, Bound) :-
     metta_c_limit_kind(Signal, Kind).
 
@@ -156,7 +156,7 @@ metta_c_limit_kind(time_limit, seconds).
 % Only the wall ball is rendered here; engine/metta/registration.pl renders the
 % reserved envelope, so the sentence does not exist twice.
 :- multifile prolog:error_message//1.
-prolog:error_message(cetta_limit(seconds, Bound)) -->
+prolog:error_message(cmetta_limit(seconds, Bound)) -->
     [ 'the evaluation passed its ~w second bound and was stopped'-[Bound] ].
 
 % One answer, split into the three things the C half reads: the term, the
@@ -247,7 +247,7 @@ metta_c_new_cursor(Engine, Id) :-
 metta_c_next(Id, Seconds, Answer) :-
     (   metta_c_cursor(Id, Engine)
     ->  true
-    ;   throw(error(existence_error(cetta_cursor, Id),
+    ;   throw(error(existence_error(cmetta_cursor, Id),
                     context(metta_c_next/3, 'this cursor is closed')))
     ),
     metta_c_pull(Engine, Seconds, Answer).
@@ -260,7 +260,7 @@ metta_c_pull(Engine, Seconds, Answer) :-
     ).
 
 % Idempotent: a host that closes after exhaustion, and again from
-% cetta_answers_free(), finds nothing the second time and is at peace.
+% cmetta_answers_free(), finds nothing the second time and is at peace.
 metta_c_close(Id) :-
     (   retract(metta_c_cursor(Id, Engine))
     ->  catch(engine_destroy(Engine), error(existence_error(_, _), _), true)
@@ -344,7 +344,7 @@ metta_c_register_op(Name0, Arity, Kind) :-
 % The foreign predicate lives in the C half. Reaching it through one named
 % predicate keeps every generated clause identical and gives the engine a
 % single goal shape to recognise below.
-metta_c_dispatch(Name, Args, Result) :- '$cetta_dispatch'(Name, Args, Result).
+metta_c_dispatch(Name, Args, Result) :- '$cmetta_dispatch'(Name, Args, Result).
 
 % The engine asks who a dispatch goal really is, so a purity refusal names the
 % operation rather than this file's dispatcher.
@@ -366,34 +366,34 @@ metta_c_retract_op(Name, Arity) :-
     ( metta_host_drop_function(Name, PredArity) -> true ; true ).
 
 % A C operation's refusal, rendered the way every other engine diagnostic is.
-% Without this SWI answers "Unknown message: cetta_operation_failed(...)",
+% Without this SWI answers "Unknown message: cmetta_operation_failed(...)",
 % which tells a caller the shape of the complaint rather than the complaint
 % [measured 2026-08-27].
 % error_message//1 rather than message//1: SWI dispatches the FORMAL half of
 % an error(Formal, Context) pair through this hook, and a message//1 clause
 % for the formal is never reached [measured 2026-08-27: SWI answered
-% "Unknown error term: cetta_operation_failed(...)" with the message//1
+% "Unknown error term: cmetta_operation_failed(...)" with the message//1
 % clause in place].
 :- multifile prolog:error_message//1.
-prolog:error_message(cetta_operation_failed(Name, Why)) -->
+prolog:error_message(cmetta_operation_failed(Name, Why)) -->
     [ 'the C operation ~w refused this application: ~w'-[Name, Why] ].
 
 %%%%%%%%%% A C value crossing MeTTa untouched %%%%%%%%%%
 %
-% A cetta_object is a blob the C half owns. It reaches MeTTa as an ordinary
+% A cmetta_object is a blob the C half owns. It reaches MeTTa as an ordinary
 % grounded value, compares by identity and prints through the C write
 % callback. One carrying a function pointer is APPLICABLE, which is how C
-% answers what a Python callable answers: '$cetta_object'(Blob) succeeds for
-% any of ours, and '$cetta_apply'/3 refuses one with no function.
+% answers what a Python callable answers: '$cmetta_object'(Blob) succeeds for
+% any of ours, and '$cmetta_apply'/3 refuses one with no function.
 :- multifile seam:grounded_applicable/1.
 seam:grounded_applicable(Obj) :-
-    blob(Obj, cetta_object),
-    '$cetta_object_callable'(Obj).
+    blob(Obj, cmetta_object),
+    '$cmetta_object_callable'(Obj).
 
 :- multifile seam:grounded_apply/3.
 seam:grounded_apply(Obj, Args, Result) :-
-    blob(Obj, cetta_object),
-    '$cetta_apply'(Obj, Args, Result).
+    blob(Obj, cmetta_object),
+    '$cmetta_apply'(Obj, Args, Result).
 
 %%%%%%%%%% Text coercion %%%%%%%%%%
 %

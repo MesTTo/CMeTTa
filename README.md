@@ -6,7 +6,7 @@ publishes C functions the language can call.
 
 ```c
 #define MT_SHORTHAND
-#include <cetta.h>
+#include <cmetta.h>
 #include <stdio.h>
 
 int main(void)
@@ -41,7 +41,7 @@ is the reason the seat exists.
 
 ## Five rules, and then you know the library
 
-Everything below is one of these five. They are in `cetta.h` too, at the top.
+Everything below is one of these five. They are in `cmetta.h` too, at the top.
 
 **1. `const` borrows, non-`const` takes.** Every door you hand a freshly built
 term to TAKES it, so the common shape leaks nothing and needs no cleanup line:
@@ -368,8 +368,8 @@ that evaluate start, the same restriction `sqlite3_create_function()` carries.
 
 | file | what it is |
 |---|---|
-| `cetta.h` | the public API, and the only file a consumer includes |
-| `cetta.c` | the C half: boot, term conversion, cursors, ops |
+| `cmetta.h` | the public API, and the only file a consumer includes |
+| `cmetta.c` | the C half: boot, term conversion, cursors, ops |
 | `bridge.pl` | the Prolog half, calling published engine surface only |
 | `extension.pl` | the seat declaration the engine reads at boot |
 | `examples/` | `hello`, `ops`, `stream`, `lower` |
@@ -381,4 +381,4 @@ The Python seat's `test_c_binding.py` runs both this seat and the Python host
 over `kit/corpus.json` and requires the same answers.
 
 Constraints and issues found while building this are recorded in
-`ai-cetta-c-constraints.md` at the repository root.
+`ai-cmetta-c-constraints.md` at the repository root.

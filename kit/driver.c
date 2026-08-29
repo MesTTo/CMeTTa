@@ -10,7 +10,7 @@
  * Owns: one runtime, closed before returning.
  * Decides: the report carries each answer's KIND and the engine's own TEXT
  *   rather than a wire form, because this seat has no wire codec (C6 in
- *   ai-cetta-c-constraints.md). Those two plus the answer COUNT are what the
+ *   ai-cmetta-c-constraints.md). Those two plus the answer COUNT are what the
  *   Python side compares, and between them they pin metatype, spelling and
  *   multiplicity.
  * Open Obligations:
@@ -19,7 +19,7 @@
  *   Future Enhancements: None
  */
 
-#include <cetta.h>
+#include <cmetta.h>
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -8,16 +8,16 @@
 ## Build
 
 ```sh
-sh extensions/cetta/build.sh
+sh extensions/cmetta/build.sh
 ```
 
-Produces `extensions/cetta/libcetta.so`. Include `extensions/cetta/cetta.h`.
+Produces `extensions/cmetta/libcmetta.so`. Include `extensions/cmetta/cmetta.h`.
 
 ## Shape of a program
 
 ```c
 #define MT_SHORTHAND               /* opt in to S() V() T() E() */
-#include <cetta.h>
+#include <cmetta.h>
 
 metta *m = mt_open(NULL);          /* NULL on failure; mt_errmsg() says why */
 
@@ -109,6 +109,6 @@ own counters around a region, which is how a C host measures without guessing.
 
 ## Where to read next
 
-- `extensions/cetta/cetta.h` is the contract, and it documents each call.
-- `extensions/cetta/examples/` are runnable programs: hello, ops, stream, lower.
-- The site publishes the seat's README at `/extensions/cetta`.
+- `extensions/cmetta/cmetta.h` is the contract, and it documents each call.
+- `extensions/cmetta/examples/` are runnable programs: hello, ops, stream, lower.
+- The site publishes the seat's README at `/extensions/cmetta`.

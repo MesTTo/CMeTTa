@@ -16,11 +16,11 @@
  *   - an atom is immutable and refcounted, so a term built once may be run
  *     many times and shared between threads without copying
  *   - building and reading atoms starts no engine
- *     [tested: tests/test_cetta.c, test_atoms_need_no_engine; commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
+ *     [tested: tests/test_cmetta.c, test_atoms_need_no_engine; commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
  *   - mt_eval() computes one answer per step, so a caller that stops
  *     pulling leaves the rest of an infinite stream uncomputed, and
  *     mt_each() closes the cursor on `break` as well as on exhaustion
- *     [tested: tests/test_cetta.c, test_the_walk_closes_its_cursor_on_break;
+ *     [tested: tests/test_cmetta.c, test_the_walk_closes_its_cursor_on_break;
  *     commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
  *
  * Owns resources: one Prolog runtime per process, released by mt_close();
@@ -58,14 +58,14 @@
  *          double y = mt_float(mt_arg(c, 1));
  *          if ( !mt_ok() ) return mt_fail(c, "wanted two numbers");
  *
- *      [tested: tests/test_cetta.c, test_the_error_state_is_errno_shaped;
+ *      [tested: tests/test_cmetta.c, test_the_error_state_is_errno_shaped;
  *      commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
  *
  *   3. ONE VERB, EITHER RECEIVER. mt_eval, mt_match, mt_atoms,
  *      mt_add, mt_del, mt_count and mt_wipe each take a `metta *`,
  *      meaning its &self, or a `mt_space *`. _Generic picks; the pair it
  *      picks between is declared above each macro for anyone who wants it.
- *      [tested: tests/test_cetta.c, test_one_verb_takes_either_receiver;
+ *      [tested: tests/test_cmetta.c, test_one_verb_takes_either_receiver;
  *      commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
  *
  *   4. A MeTTa Number splits into MT_INT and MT_FLOAT, because C has two
@@ -81,7 +81,7 @@
  *      value exists to get to the requested Inner Type, then the accessor
  *      seamlessly works. If a promotion path does not exist then the accessor
  *      will fail."
- *      [tested: tests/test_cetta.c,
+ *      [tested: tests/test_cmetta.c,
  *      test_reading_promotes_only_where_it_is_lossless; commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
  *
  *   6. A BARE C STRING IN TERM POSITION IS A SYMBOL. mt_expr("+", 1, 2) is
@@ -91,7 +91,7 @@
  *
  * Fails when: the caller wants two independent runtimes in one process
  *   (PL_initialise is process-wide), or wants to hold an engine term rather
- *   than a materialised copy. Both are in ai-cetta-c-constraints.md.
+ *   than a materialised copy. Both are in ai-cmetta-c-constraints.md.
  *
  * Guarded by: nothing, deliberately. An atom is immutable and its refcount is
  *   atomic, so building, sharing and dropping atoms is safe from any thread,
@@ -125,7 +125,7 @@ extern "C" {
    dispatch, and without it every macro here expands to a diagnostic about
    something else entirely. Saying so once beats a hundred lines of that. */
 #if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L
-#error "cetta.h needs C11: _Generic carries the argument coercions and the \
+#error "cmetta.h needs C11: _Generic carries the argument coercions and the \
 receiver dispatch. Compile with -std=c11 or later."
 #endif
 
@@ -270,7 +270,7 @@ MT_API mt_atom *mt_same_c(const mt_atom *atom);
    was given and returns NULL, so a failed inner constructor cannot leak
    through an outer one. Sixteen children is the ceiling; wider uses
    mt_exprv().
-   [tested: tests/test_cetta.c,
+   [tested: tests/test_cmetta.c,
    test_the_builder_coerces_each_child_by_its_c_type; commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3] */
 #define mt_expr(...)                                                      \
     mt_exprv(MT_NARG(__VA_ARGS__),                                     \
@@ -586,7 +586,7 @@ MT_API MT_MUST_USE mt_atom *mt_first(mt_answers *answers);
    none or more than one. The Python seat draws the same line between one()
    and first(), and the word means the same thing here: `one` is a claim about
    the cardinality and `first` is not. CONSUMES `answers`
-   [tested: tests/test_cetta.c, test_one_and_first_make_different_claims;
+   [tested: tests/test_cmetta.c, test_one_and_first_make_different_claims;
    commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]. */
 MT_API MT_MUST_USE mt_atom *mt_one(mt_answers *answers);
 
@@ -763,7 +763,7 @@ typedef struct mt_limits {
    (from (+ $n 1))))), budgets of 1,000 / 5,000 / 20,000 / 100,000 stop after
    0 / 86 / 1,404 / 7,118 answers. Answers scaling with the budget is the
    property that matters, and the one a per-step meter cannot produce
-   [tested: tests/test_cetta.c, test_a_bound_stops_a_runaway_and_says_so;
+   [tested: tests/test_cmetta.c, test_a_bound_stops_a_runaway_and_says_so;
    commit=a8ea956cecbe8af67a7dd340f00c74dd94dbfb7c].
    The wall bound applies per step, so time the host spends between steps does
    not count against it. An eager mt_run() is bounded as one call. */

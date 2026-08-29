@@ -9,7 +9,7 @@
  */
 
 #define MT_SHORTHAND
-#include <cetta.h>
+#include <cmetta.h>
 #include <stdio.h>
 
 int main(void)

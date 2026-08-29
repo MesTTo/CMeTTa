@@ -20,7 +20,7 @@ Wall clock decides nothing here and is not recorded.
 
 Guarantees:
   - one process per case, so a case never measures a runtime another case
-    warmed [source: extensions/cetta/benchmarks/cases.c, one runtime per
+    warmed [source: extensions/cmetta/benchmarks/cases.c, one runtime per
     process]
   - setup and boot sit outside the counted region for every case but `boot`,
     through perf's control descriptors, so a per-operation row prices the
@@ -161,7 +161,7 @@ CASES = (
     # render_ball asks metta_c_error_text/2 for its text. DECIDED BY
     # instructions:u AND CPU TIME. A failed assertion is the raiser because
     # MeTTa keeps most failures AS values, so nothing else reaches this path
-    # [source: extensions/cetta/tests/test_cetta.c,
+    # [source: extensions/cmetta/tests/test_cmetta.c,
     # test_an_engine_error_reaches_c_as_words]. The engine also reports each
     # failure on stderr, and that report is inside the region on purpose: a C
     # host pays for it.
