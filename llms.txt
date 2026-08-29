@@ -1,0 +1,114 @@
+# MeTTa from C
+
+> A C program boots the engine in its own process, builds terms, asks, and
+> reads answers back as `term_t` directly. This is the only host inside the
+> engine's process, so there is no wire and no serialisation. This file is how
+> to USE the seat; the repository root's llms.txt covers everything else.
+
+## Build
+
+```sh
+sh extensions/cetta/build.sh
+```
+
+Produces `extensions/cetta/libcetta.so`. Include `extensions/cetta/cetta.h`.
+
+## Shape of a program
+
+```c
+#define MT_SHORTHAND               /* opt in to S() V() T() E() */
+#include <cetta.h>
+
+metta *m = mt_open(NULL);          /* NULL on failure; mt_errmsg() says why */
+
+mt_each (a, mt_run(m, "!(+ 1 2)"))
+    printf("%s\n", mt_show(a));    /* the loop closes the cursor, break included */
+
+int64_t n = mt_one_int(mt_eval(m, E("+", 1, 2)));
+mt_close(m);
+```
+
+`mt_eval` computes at most one answer per step, so a host that wants the
+first answer of many pays for one. `mt_each` opens, walks and closes;
+`mt_rows (row, ...)` binds an `mt_row` instead of the atom alone, carrying
+`row->atom`, `row->text` (the engine's own rendering), `row->group` and the
+cursor, so `mt_bound(row, "y")` gives the binding under the name you wrote
+rather than a child index. `mt_do(m, src)` runs for effect and
+discards the answers.
+
+## Five rules, and then you know the library
+
+1. `const mt_atom *` BORROWS, non-`const` TAKES. Every door you hand a fresh
+   term to takes it, so `mt_add(kb, E("edge", "a", "b"))` leaks nothing;
+   `mt_keep(t)` is how you pass one you are keeping.
+2. Errors are `errno`-shaped: set on failure, not cleared on success. Check a
+   run once with `mt_ok()` after `mt_clear()`, not once per call.
+3. One verb, either receiver. `mt_add/del/eval/match/atoms/count/wipe` take
+   a `metta *` (its `&self`) or a `mt_space *`; `_Generic` picks.
+4. A Number splits into INT, FLOAT, BIGINT and RATIONAL. Reading promotes where
+   it is lossless (`mt_float` of an Int) and refuses where it is not
+   (`mt_int` of a Float; an Int past 2^53 as a double).
+5. A bare C string in term position is a SYMBOL. Text is `mt_text("...")`.
+
+## Building terms
+
+```c
+mt_expr("+", 1, 2)                     /* (+ 1 2)       */
+mt_expr("edge", "a", mt_var("y"))      /* (edge a $y)   */
+mt_expr("f", mt_expr("g", 1), 2.5)     /* (f (g 1) 2.5) */
+```
+
+No count, and no constructor per child: `_Generic` reads each argument's C
+type. `S() V() T() N() R() B() E()` are the same builders under
+`MT_SHORTHAND`.
+
+## Taking one answer
+
+`mt_one(r)` is exactly one and refuses zero or many; `mt_first(r)` takes
+the first and claims nothing; `mt_one_int/_float/_truth/_name(r)` give the
+value with no atom to look after; `mt_all(r)` gives every answer as an `mt_list`. Each
+consumes the cursor.
+
+## Calling back into C
+
+```c
+mt_def(m, (mt_op){ .name = "hypot", .arity = 2,
+                   .effect = MT_PURE, .fn = op_hypot });
+```
+
+Designated initializers name each field at the call site. `word_count`
+publishes as `word-count`. Inside the function: `mt_arg`, `mt_answer`,
+`mt_fail`.
+
+## Lowering
+
+`mt_def` publishes a C function the engine calls, and it must name an effect
+class because the engine cannot see into it. `mt_lower` installs an EQUATION
+from C tokens, which the engine reads, specialises and can match on:
+
+```c
+mt_lower(m, (twice $x), (* 2 $x));
+mt_lower(m, (fib $n), (if (< $n 2) $n (+ (fib (- $n 1)) (fib (- $n 2)))));
+```
+
+`#` is C's compile-time access to its own source, which is what Python's
+`__code__` and Node's `toString()` are at run time. Parameterise a body by its
+operators and it expands to C in one mode and MeTTa in the other, so one
+function is callable from both. See `examples/lower.c`.
+
+## Errors, bounds and threads
+
+`mt_error()` is the last status, `mt_errmsg()` its words. `mt_limit()`
+bounds an evaluation and a bound reports `MT_LIMIT`, which is not a fault. A
+thread that did not open the engine calls `mt_thread_attach()`.
+
+## Measuring
+
+`mt_stats_now()` twice with `mt_stats_since()` between reads the engine's
+own counters around a region, which is how a C host measures without guessing.
+
+## Where to read next
+
+- `extensions/cetta/cetta.h` is the contract, and it documents each call.
+- `extensions/cetta/examples/` are runnable programs: hello, ops, stream, lower.
+- The site publishes the seat's README at `/extensions/cetta`.
