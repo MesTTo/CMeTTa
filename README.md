@@ -1,6 +1,6 @@
 # The C binding
 
-MeTTa from C. A C program boots the PeTTa engine in its own process, builds
+MeTTa from C. A C program boots the MeTTa engine in its own process, builds
 and reads terms as C values, runs programs, pulls answers one at a time, and
 publishes C functions the language can call.
 

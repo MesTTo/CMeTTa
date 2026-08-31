@@ -3,7 +3,8 @@
  *   directly, with no wire encoding in between.
  *
  * Assumes:
- *   - SWI-Prolog 10 with threads [source: PLVERSION 100113]
+ *   - SWI-Prolog 10 with threads
+ *     [source: /usr/lib/swi-prolog/include/SWI-Prolog.h, PLVERSION 100113]
  *   - extensions/cmetta/bridge.pl is loaded by extensions/cmetta/extension.pl, which
  *     the engine globs at boot, and which finds this file because mt_open()
  *     registers '$mt_present'/0 BEFORE it consults engine/metta.pl
@@ -20,19 +21,39 @@
  *   - an ampersand-prefixed atom becomes MT_SPACE only when the engine
  *     says it is a space, which is a question this seat can ask and the
  *     out-of-process seats cannot [C5 in ai-cmetta-c-constraints.md]
+ *   - a door that reaches the engine before mt_open(), or after mt_close(),
+ *     REFUSES with MT_MISUSE naming mt_open() instead of dereferencing a
+ *     thread environment that is not there
+ *     [tested: tests/test_cmetta.c, test_a_door_before_the_runtime_refuses;
+ *     commit=WORKTREE]
+ *   - no term crosses this file on the C stack: reading, writing, comparing,
+ *     releasing and binding all walk with their own frame stack, so nesting
+ *     costs heap rather than the 8 MB the thread was given
+ *     [tested: tests/test_cmetta.c, test_a_deep_term_does_not_overrun_the_stack;
+ *     commit=WORKTREE]
  *
  * Owns resources: the process's Prolog runtime, released by mt_close(); the
  *   op table; one malloc'ed box per live mt_object, released when both the
  *   C atom and the engine blob have let go.
  *
- * Guarded by: g_lock for the runtime singleton and the op table. Atoms are
- *   immutable after construction and their refcount is atomic, so reading one
- *   takes no lock.
+ * Guarded by: nothing, and cmetta.h's "Guarded by" says why: an atom is
+ *   immutable after construction and its refcount is atomic, the error state
+ *   is thread-local, and the runtime singleton and the op table are written
+ *   at boot and at mt_def() time, which the header requires a host to do
+ *   before the threads that evaluate start. This field claimed a g_lock for
+ *   years; there has never been one in this file.
  *
- * Decides: variables decode to their SOURCE names when the engine supplies a
- *   name state for them, and to SWI's written form otherwise, because a
- *   caller who wrote $x wants $x back and a caller reading an internal
- *   variable wants something stable rather than a lie.
+ * Decides:
+ *   - variables decode to their SOURCE names when the engine supplies a name
+ *     state for them, and to SWI's written form otherwise, because a caller
+ *     who wrote $x wants $x back and a caller reading an internal variable
+ *     wants something stable rather than a lie.
+ *   - every walk over a term is ITERATIVE, over the MT_STACK below. A
+ *     recursive walk is shorter to read and this file had five of them, and
+ *     all five die on data: decode at 80,000 levels of nesting, encode and
+ *     mt_bound at 80,000, mt_eq at 200,000 and mt_drop at 400,000, each a
+ *     SIGSEGV that no host can catch [measured 2026-08-31; C35 in
+ *     ai-cmetta-c-constraints.md].
  *
  * Open Obligations:
  *   To Do: None
@@ -200,6 +221,105 @@ const char *mt_effect_str(mt_effect effect)
   return NULL;
 }
 
+/* A foreign frame, or 0 with the reason recorded. SWI answers 0 when the
+   stacks cannot hold another frame and when atom garbage collection is
+   running in this thread, which a blob release callback reaches, and a 0
+   handed to PL_discard_foreign_frame is undefined behaviour
+   [source: SWI-Prolog manual, PL_open_foreign_frame, "Returns (fid_t)0 on
+   failure"]. Every site in this file that opens a frame asks here. */
+static fid_t frame_open(const char *door)
+{ fid_t f = PL_open_foreign_frame();
+  if ( !f )
+    err_set(MT_NOMEM,
+            "%s could not open a Prolog foreign frame: the engine's stacks "
+            "are full, or this thread is inside atom garbage collection",
+            door);
+  return f;
+}
+
+/* Its pair, which accepts the frame that was never opened. A caller holding a
+   frame handed out by another function can then discard unconditionally. */
+static void frame_close(fid_t f)
+{ if ( f ) PL_discard_foreign_frame(f);
+}
+
+/* ================================================================== *
+ * The walk stack
+ * ================================================================== */
+
+/* Every walk over a term in this file uses one of these instead of calling
+   itself. A term is a tree and the obvious walk is recursive, but the depth
+   is the DATA's, not the program's: a thread gets 8 MB by default and this
+   file's five recursive walks died between 80,000 and 400,000 levels of
+   nesting, each one a SIGSEGV rather than a refusal [measured 2026-08-31,
+   ai-tmp/cseat-probe-d4.c on an 8 MB stack]. RapidJSON reached the same
+   conclusion and its kParseIterativeFlag is "constant complexity in terms of
+   function call stack size"; its issue #2217 is the other half of the lesson,
+   that an iterative parser is undone by a recursive destructor, which is why
+   mt_drop() walks with one of these too
+   [source: https://github.com/Tencent/rapidjson/issues/2217].
+
+   The stack starts in the caller's own frame and moves to the heap only when
+   it outgrows it, so a term of ordinary depth allocates nothing at all. Each
+   walk pushes ONE frame per level of nesting rather than one per child, so a
+   wide expression costs nothing either. That is llvm::SmallVector's shape and
+   Boehm's mark stack's shape, for the same two reasons.
+
+   TYPED BY MACRO, one instantiation per walk. The first version of this held
+   bytes and kept the element width in the struct, which is tidier to read and
+   costs a memcpy CALL with a runtime size on every push and an imul on every
+   read: +1.55% on term-out and +0.66% on cursor-step, both outside their
+   bands [measured 2026-08-31, interleaved A/B against the recursive walks,
+   perf stat -e instructions:u, min of 3]. A typed push is one struct store
+   the compiler inlines. klib's kvec.h is the shape and the reason
+   [source: https://github.com/attractivechaos/klib/blob/master/kvec.h]. */
+#define MT_WALK_FRAMES 16
+
+#define MT_STACK(type)                                                    \
+  struct { type *items, *fixed; size_t n, cap; }
+
+/* `base` is an array in the caller's own frame, and its LENGTH is the inline
+   capacity, so the two cannot drift apart. */
+#define stack_init(s, base)                                               \
+  ( (s)->items = (s)->fixed = (base),                                     \
+    (s)->cap = sizeof (base) / sizeof *(base),                            \
+    (s)->n = 0 )
+
+/* Push, or answer false having left the stack exactly as it was, so a walk
+   that cannot grow can still unwind through the frames it already holds. */
+#define stack_push(s, frame)                                              \
+  ( ( (s)->n < (s)->cap ||                                                \
+      ( (s)->items = stack_grow_((s)->items, (s)->fixed, &(s)->cap,       \
+                                 sizeof *(s)->items),                     \
+        (s)->n < (s)->cap ) )                                             \
+    ? ( (s)->items[(s)->n++] = (frame), true )                            \
+    : false )
+
+/* The innermost frame, or NULL. Valid until the next push, which may move the
+   block, so a walk reads what it needs out before it pushes again. */
+#define stack_top(s)  ( (s)->n ? &(s)->items[(s)->n - 1] : NULL )
+#define stack_pop(s)  ( (void)(s)->n-- )
+
+#define stack_free(s)                                                     \
+  do                                                                      \
+  { if ( (s)->items != (s)->fixed ) free((s)->items);                     \
+    (s)->items = (s)->fixed;                                              \
+    (s)->n = 0;                                                           \
+  } while (0)
+
+/* Twice the room, or the block it was given back unchanged: growing is the
+   only part of a push that is not a store, so it is the only part that is a
+   function, and a failure leaves the caller's stack intact. */
+static void *stack_grow_(void *items, void *fixed, size_t *cap, size_t width)
+{ size_t bigger = *cap * 2;
+  void *grown = ( items == fixed ) ? malloc(bigger * width)
+                                   : realloc(items, bigger * width);
+  if ( !grown ) return items;
+  if ( items == fixed ) memcpy(grown, fixed, *cap * width);
+  *cap = bigger;
+  return grown;
+}
+
 /* ================================================================== *
  * Atoms
  * ================================================================== */
@@ -274,12 +394,10 @@ mt_atom *mt_keep(const mt_atom *atom)
   return a;
 }
 
-void mt_drop(const mt_atom *atom)
-{ mt_atom *a = (mt_atom *)atom;
-  if ( !a ) return;
-  if ( MT_DEC(&a->refs) != 1 ) return;
-
-  switch ( a->kind )
+/* One atom's own memory. An expression's CHILDREN are not released here:
+   drop_expr() dismantles those with a stack of its own. */
+static inline void free_leaf(mt_atom *a)
+{ switch ( a->kind )
   { case MT_SYMBOL:
     case MT_VARIABLE:
     case MT_TEXT:
@@ -288,12 +406,6 @@ void mt_drop(const mt_atom *atom)
     case MT_HANDLE:
       free(a->u.t.text);
       break;
-    case MT_EXPR:
-    { size_t i;
-      for (i = 0; i < a->u.e.n; i++) mt_drop(a->u.e.kids[i]);
-      free(a->u.e.kids);
-      break;
-    }
     case MT_OBJECT:
       box_release(a->u.box);
       break;
@@ -303,16 +415,86 @@ void mt_drop(const mt_atom *atom)
   free(a);
 }
 
+/* One level of an expression being dismantled: the children still to release
+   and how far along them the walk is. */
+typedef struct drop_frame
+{ mt_atom **kids;
+  size_t    n, at;
+} drop_frame;
+
+typedef MT_STACK(drop_frame) drop_stack;
+
+/* Take one more level, or, when the machine cannot spare the frame, leave
+   that subtree allocated and say so. Releasing is the one job that cannot be
+   refused, and the recursion this replaced would answer an 8 MB stack with a
+   SIGSEGV; memory this walk cannot reach is recoverable and that is not. */
+static inline void drop_push(drop_stack *frames, mt_atom **kids,
+                             size_t n)
+{ drop_frame frame;
+  frame.kids = kids;
+  frame.n = n;
+  frame.at = 0;
+  if ( stack_push(frames, frame) ) return;
+  err_set(MT_NOMEM, "out of memory releasing a nested expression; the %zu "
+                    "children below it are still held", n);
+  free(kids);
+}
+
+/* An expression whose last reference has gone, released one frame per level
+   of nesting rather than one C call per level. */
+static void drop_expr(mt_atom *root)
+{ drop_frame fixed[MT_WALK_FRAMES];
+  drop_stack frames;
+  drop_frame *f;
+
+  stack_init(&frames, fixed);
+  drop_push(&frames, root->u.e.kids, root->u.e.n);
+  free(root);
+
+  while ( (f = stack_top(&frames)) != NULL )
+  { mt_atom *kid;
+    if ( f->at == f->n )
+    { free(f->kids);
+      stack_pop(&frames);
+      continue;
+    }
+    kid = f->kids[f->at++];
+    if ( MT_DEC(&kid->refs) != 1 ) continue;   /* another owner still holds it */
+    if ( kid->kind != MT_EXPR )
+    { free_leaf(kid);
+      continue;
+    }
+    /* The node's own memory goes now and its children become a new level.
+       `f` is not touched afterwards: the push may move the block. */
+    drop_push(&frames, kid->u.e.kids, kid->u.e.n);
+    free(kid);
+  }
+  stack_free(&frames);
+}
+
+void mt_drop(const mt_atom *atom)
+{ mt_atom *a = (mt_atom *)atom;
+  if ( !a || MT_DEC(&a->refs) != 1 ) return;
+  if ( a->kind == MT_EXPR ) drop_expr(a);
+  else free_leaf(a);
+}
+
+/* atom_text() refuses NULL by name, which is why these hand it the pointer
+   rather than testing it first: a ternary that answered NULL on its own left
+   mt_error() saying `ok` after a constructor had failed, and cmetta.h's rule 2
+   is that every function that can fail says so
+   [tested: tests/test_cmetta.c, test_a_failed_constructor_says_so;
+   commit=WORKTREE]. */
 mt_atom *mt_sym(const char *name)
-{ return name ? atom_text(MT_SYMBOL, name, strlen(name)) : NULL;
+{ return atom_text(MT_SYMBOL, name, name ? strlen(name) : 0);
 }
 
 mt_atom *mt_var(const char *name)
-{ return name ? atom_text(MT_VARIABLE, name, strlen(name)) : NULL;
+{ return atom_text(MT_VARIABLE, name, name ? strlen(name) : 0);
 }
 
 mt_atom *mt_text(const char *text)
-{ return text ? atom_text(MT_TEXT, text, strlen(text)) : NULL;
+{ return atom_text(MT_TEXT, text, text ? strlen(text) : 0);
 }
 
 mt_atom *mt_textn(const char *text, size_t length)
@@ -359,12 +541,67 @@ mt_atom *mt_bigint(const char *decimal)
   return atom_text(MT_BIGINT, decimal, strlen(decimal));
 }
 
+/* Magnitude as an unsigned, so INT64_MIN does not overflow on the way. */
+static uint64_t magnitude(int64_t value)
+{ return value < 0 ? (uint64_t)-(value + 1) + 1 : (uint64_t)value;
+}
+
+static uint64_t gcd_u64(uint64_t a, uint64_t b)
+{ while ( b )
+  { uint64_t t = a % b;
+    a = b;
+    b = t;
+  }
+  return a;
+}
+
+/* The pair is stored in CANONICAL form: lowest terms, sign on the numerator.
+   That is what Python's fractions.Fraction and Boost.Rational both do, and
+   more to the point it is what the engine does, so a ratio built here is one
+   the engine can read: SWI writes -1r2 and its reader refuses 1r-2, and a
+   negative denominator therefore built an atom that could not cross at all
+   [measured 2026-08-31: mt_del(space, mt_rational(1, -2)) refused inside
+   encode(); C32 in ai-cmetta-c-constraints.md]. */
 mt_atom *mt_rational(int64_t numerator, int64_t denominator)
 { mt_atom *a;
+  uint64_t divisor;
+
   if ( denominator == 0 )
   { err_set(MT_MISUSE, "a rational cannot have a zero denominator");
     return NULL;
   }
+  /* Equal halves are the ratio 1, taken first because it is the one case
+     whose common divisor does not fit int64_t: gcd(|n|, |d|) reaches 2^63
+     only when both are INT64_MIN. */
+  if ( numerator == denominator )
+  { numerator = denominator = 1;
+  } else
+  { divisor = gcd_u64(magnitude(numerator), magnitude(denominator));
+    if ( divisor > 1 )
+    { numerator /= (int64_t)divisor;
+      denominator /= (int64_t)divisor;
+    }
+  }
+  if ( denominator < 0 )
+  { if ( numerator == INT64_MIN || denominator == INT64_MIN )
+    { err_set(MT_UNSUPPORTED,
+              "%lld/%lld is exact but its canonical form is not: moving the "
+              "sign to the numerator overflows int64_t",
+              (long long)numerator, (long long)denominator);
+      return NULL;
+    }
+    numerator = -numerator;
+    denominator = -denominator;
+  }
+  /* A canonical denominator of 1 is an INTEGER, which is the last half of the
+     same canonicalisation and the half the engine decides: SWI evaluates
+     `3 rdiv 1` to 3, so a whole-number ratio stored in a space came back as
+     MT_INT and mt_eq() then answered false against the atom that was stored
+     [measured 2026-08-31: mt_rational(3, 1) built a Rational printing as 3;
+     adding it and matching it back read Number, equal to mt_num(3) and NOT
+     equal to what went in; tested: test_a_ratio_is_canonical_in_both_halves;
+     commit=WORKTREE]. */
+  if ( denominator == 1 ) return mt_num(numerator);
   if ( !(a = atom_alloc(MT_RATIONAL)) ) return NULL;
   a->u.r.num = numerator;
   a->u.r.den = denominator;
@@ -385,6 +622,11 @@ mt_atom *mt_exprv(size_t count, mt_atom **children)
 { mt_atom *a;
   size_t i;
   bool bad = false;
+
+  if ( count > 0 && !children )
+    return err_null(MT_MISUSE,
+                    "mt_exprv was asked for %zu children and given no array",
+                    count);
 
   for (i = 0; i < count; i++)
     if ( !children[i] ) bad = true;
@@ -502,8 +744,18 @@ bool mt_truth(const mt_atom *atom)
 
 mt_ratio mt_ratio_of(const mt_atom *atom)
 { mt_ratio out = { 0, 0 };
+  /* An Int reads as itself over one, which is rule 5's promotion and exact.
+     It has to, now that a canonical denominator of 1 makes an Int: without it
+     mt_ratio_of(mt_rational(3, 1)) refused the very atom mt_rational built.
+     A Bigint still refuses, because n/1 for an n outside int64_t is the
+     conversion the lattice says to refuse rather than round. */
+  if ( atom && atom->kind == MT_INT )
+  { out.num = atom->u.i;
+    out.den = 1;
+    return out;
+  }
   if ( !atom || atom->kind != MT_RATIONAL )
-  { err_set(MT_MISUSE, "mt_ratio_of wants a Rational; this is %s",
+  { err_set(MT_MISUSE, "mt_ratio_of wants a Rational or an Int; this is %s",
             atom ? mt_kind_str(atom->kind) : "NULL");
     return out;
   }
@@ -521,12 +773,11 @@ const mt_atom *mt_at(const mt_atom *atom, size_t index)
   return atom->u.e.kids[index];
 }
 
-bool mt_eq(const mt_atom *a, const mt_atom *b)
-{ size_t i;
-  if ( a == b ) return true;
-  if ( !a || !b || a->kind != b->kind ) return false;
-
-  switch ( a->kind )
+/* Two atoms of the same kind, compared WITHOUT their children: for an
+   expression this is the arity, which is what tells the walk below whether
+   there is any point descending. */
+static bool eq_shallow(const mt_atom *a, const mt_atom *b)
+{ switch ( a->kind )
   { case MT_SYMBOL:
     case MT_VARIABLE:
     case MT_TEXT:
@@ -540,21 +791,75 @@ bool mt_eq(const mt_atom *a, const mt_atom *b)
     case MT_BOOL:     return a->u.b == b->u.b;
     case MT_RATIONAL: return a->u.r.num == b->u.r.num &&
                                 a->u.r.den == b->u.r.den;
-    case MT_EXPR:
-      if ( a->u.e.n != b->u.e.n ) return false;
-      for (i = 0; i < a->u.e.n; i++)
-        if ( !mt_eq(a->u.e.kids[i], b->u.e.kids[i]) ) return false;
-      return true;
+    case MT_EXPR:     return a->u.e.n == b->u.e.n;
     case MT_OBJECT:
       /* By identity: the whole point of a live value is that its contents
          never become comparable text. */
       return a->u.box == b->u.box;
     case MT_NONE:
-      /* Unreachable: both atoms were proven non-NULL above. Named rather than
-         defaulted so a kind added later is a compile error here. */
+      /* Unreachable: both atoms were proven non-NULL by the caller. Named
+         rather than defaulted so a kind added later is a compile error. */
       break;
   }
   return false;
+}
+
+/* Two expressions being compared child by child. */
+typedef struct pair_frame
+{ const mt_atom *a, *b;
+  size_t         n, at;
+} pair_frame;
+
+typedef MT_STACK(pair_frame) pair_stack;
+
+static bool pair_push(pair_stack *frames, const mt_atom *a, const mt_atom *b,
+                      size_t n)
+{ pair_frame frame;
+  frame.a = a;
+  frame.b = b;
+  frame.n = n;
+  frame.at = 0;
+  return stack_push(frames, frame);
+}
+
+bool mt_eq(const mt_atom *a, const mt_atom *b)
+{ pair_frame fixed[MT_WALK_FRAMES];
+  pair_stack frames;
+  pair_frame *f;
+  bool equal = true;
+
+  if ( a == b ) return true;
+  if ( !a || !b || a->kind != b->kind || !eq_shallow(a, b) ) return false;
+  if ( a->kind != MT_EXPR ) return true;
+
+  stack_init(&frames, fixed);
+  pair_push(&frames, a, b, a->u.e.n);
+
+  while ( equal && (f = stack_top(&frames)) != NULL )
+  { const mt_atom *x, *y;
+    if ( f->at == f->n )
+    { stack_pop(&frames);
+      continue;
+    }
+    x = f->a->u.e.kids[f->at];
+    y = f->b->u.e.kids[f->at];
+    f->at++;
+    if ( x == y ) continue;
+    if ( !x || !y || x->kind != y->kind || !eq_shallow(x, y) )
+    { equal = false;
+      break;
+    }
+    /* `f` is not touched after this: the push may move the block. */
+    if ( x->kind == MT_EXPR && x->u.e.n > 0 &&
+         !pair_push(&frames, x, y, x->u.e.n) )
+    { err_set(MT_NOMEM,
+              "out of memory comparing two nested expressions; the answer "
+              "below this point was not computed");
+      equal = false;
+    }
+  }
+  stack_free(&frames);
+  return equal;
 }
 
 void *mt_value(const mt_atom *atom)
@@ -642,7 +947,42 @@ struct mt_space
   bool     borrowed;   /* &self and &metta live with the runtime */
 };
 
-static mt_space g_self, g_catalog;
+/* The two spaces every runtime has. Their names are constants, so they are
+   written here rather than in mt_open(): a handle whose name appears only
+   once the engine booted is a handle with a window in which reading it is a
+   null dereference. */
+static mt_space g_self    = { &g_runtime, (char *)"&self",  true };
+static mt_space g_catalog = { &g_runtime, (char *)"&metta", true };
+
+/* Every door that reaches the engine asks this first. SWI's foreign-frame
+   API reads the calling thread's Prolog environment, so a call made before
+   mt_open(), or after mt_close(), does not fail: it SEGFAULTS inside
+   PL_open_foreign_frame. Sixteen of cmetta.h's doors died that way, from
+   mt_parse to mt_stats_now, and calling a door before the constructor is the
+   most ordinary mistake a new caller makes [measured 2026-08-31,
+   ai-tmp/cseat-probe-d3.c; C34 in ai-cmetta-c-constraints.md]. The header
+   promises that every function that can fail says so, and a signal is not a
+   way of saying so. */
+static bool engine_ready(const char *door)
+{ if ( g_open ) return true;
+  err_set(MT_MISUSE,
+          "%s needs a running engine: call mt_open() first, and note that "
+          "mt_close() ends it", door);
+  return false;
+}
+
+/* The same, for a door that also takes a handle. NULL is what a failed
+   mt_open() or mt_space_open() hands back, so a caller who checked neither
+   arrives here rather than at a null dereference. */
+static bool handle_ready(const void *handle, const char *door)
+{ if ( !handle )
+  { err_set(MT_MISUSE,
+            "%s was given NULL, which is what a failed mt_open() or "
+            "mt_space_open() answers; check that before passing it on", door);
+    return false;
+  }
+  return engine_ready(door);
+}
 
 /* --- blob type for a live C value --------------------------------- */
 
@@ -733,7 +1073,7 @@ static bool is_space(term_t t)
 
   if ( !space_operand )
     space_operand = PL_predicate("metta_c_space_operand", 1, "user");
-  f = PL_open_foreign_frame();
+  if ( !(f = frame_open("decoding a symbol")) ) return false;
   rc = PL_call_predicate(NULL, PL_Q_NORMAL, space_operand, t);
   PL_discard_foreign_frame(f);
   return rc == TRUE;
@@ -763,55 +1103,6 @@ static char *variable_name(term_t names, term_t var)
   return term_text(var, CVT_WRITE, NULL);
 }
 
-static mt_atom *decode(term_t t, term_t names);
-
-static mt_atom *decode_list(term_t t, term_t names)
-{ mt_atom **kids = NULL;
-  size_t n = 0, cap = 4;
-  term_t head = PL_new_term_ref();
-  term_t tail = PL_copy_term_ref(t);
-
-  if ( !(kids = malloc(cap * sizeof(*kids))) )
-  { err_set(MT_NOMEM, "out of memory decoding an expression");
-    return NULL;
-  }
-  while ( PL_get_list(tail, head, tail) )
-  { mt_atom *kid = decode(head, names);
-    if ( !kid )
-    { size_t i;
-      for (i = 0; i < n; i++) mt_drop(kids[i]);
-      free(kids);
-      return NULL;
-    }
-    if ( n == cap )
-    { mt_atom **grown = realloc(kids, (cap *= 2) * sizeof(*kids));
-      if ( !grown )
-      { size_t i;
-        mt_drop(kid);
-        for (i = 0; i < n; i++) mt_drop(kids[i]);
-        free(kids);
-        err_set(MT_NOMEM, "out of memory decoding an expression");
-        return NULL;
-      }
-      kids = grown;
-    }
-    kids[n++] = kid;
-  }
-  if ( !PL_get_nil(tail) )
-  { size_t i;
-    for (i = 0; i < n; i++) mt_drop(kids[i]);
-    free(kids);
-    err_set(MT_UNSUPPORTED,
-            "a partial list is not a MeTTa expression; the engine handed back "
-            "a term with an unbound or non-list tail");
-    return NULL;
-  }
-  { mt_atom *out = mt_exprv(n, kids);   /* steals the children */
-    free(kids);
-    return out;
-  }
-}
-
 static mt_atom *decode_number(term_t t)
 { int64_t i;
   double d;
@@ -836,11 +1127,13 @@ static mt_atom *decode_number(term_t t)
     return NULL;
   }
   if ( PL_is_rational(t) )
-  { fid_t f = PL_open_foreign_frame();
-    term_t av = PL_new_term_refs(3);
+  { fid_t f = frame_open("decoding a rational");
+    term_t av;
     mt_atom *a = NULL;
     int64_t num, den;
-    if ( PL_unify(av, t) &&
+    if ( !f ) return NULL;
+    av = PL_new_term_refs(3);
+    if ( av && PL_unify(av, t) &&
          call_bridge("metta_c_rational_parts", 3, av) == MT_OK &&
          PL_get_int64(av + 1, &num) && PL_get_int64(av + 2, &den) )
       a = mt_rational(num, den);
@@ -855,7 +1148,20 @@ static mt_atom *decode_number(term_t t)
   return NULL;
 }
 
-static mt_atom *decode(term_t t, term_t names)
+/* Whether a term has CHILDREN, which decode() walks with its own stack
+   rather than by calling itself: see MT_STACK above and C35 in
+   ai-cmetta-c-constraints.md. [] is a list in SWI 7 and later, and the empty
+   expression is unit rather than a name, so it belongs here too. Asking
+   before decode_leaf() rather than inside it keeps the answer out of an
+   out-parameter, which is a store and a load per node on the hot path. A
+   variable is neither nil nor a proper list, so testing this first reads the
+   same as the branch order it replaced. */
+static bool decode_is_expr(term_t t)
+{ return PL_get_nil(t) || PL_is_list(t);
+}
+
+/* Every engine term with no children. */
+static mt_atom *decode_leaf(term_t t, term_t names)
 { if ( PL_is_variable(t) )
   { char *name = variable_name(names, t);
     mt_atom *a;
@@ -867,10 +1173,6 @@ static mt_atom *decode(term_t t, term_t names)
     free(name);
     return a;
   }
-
-  /* Before the atom test: [] is a list in SWI 7 and later, and the empty
-     expression is unit rather than a name. */
-  if ( PL_get_nil(t) || PL_is_list(t) ) return decode_list(t, names);
 
   if ( PL_is_integer(t) || PL_is_float(t) || PL_is_rational(t) )
     return decode_number(t);
@@ -954,6 +1256,117 @@ static mt_atom *decode(term_t t, term_t names)
   }
 }
 
+/* One expression being built: the children taken so far, and how far along
+   the engine's list this level has walked. The tail needs a term reference
+   per level, which SWI allocates on the Prolog stacks and bounds by
+   stack_limit, so depth costs a resource error rather than a signal. */
+typedef struct decode_frame
+{ mt_atom **kids;
+  size_t    n, cap;
+  term_t    tail;
+} decode_frame;
+
+typedef MT_STACK(decode_frame) decode_stack;
+
+static bool decode_frame_push(decode_stack *frames, term_t list)
+{ decode_frame frame;
+  frame.kids = NULL;
+  frame.n = frame.cap = 0;
+  /* Beyond the ten a foreign frame guarantees, PL_new_term_ref() can answer
+     0 with a resource exception scheduled, so it is checked
+     [source: SWI-Prolog manual, PL_open_foreign_frame: "On success, the stack
+     has room for at least 10 term_t handles"]. */
+  frame.tail = PL_copy_term_ref(list);
+  return frame.tail != 0 && stack_push(frames, frame);
+}
+
+static inline bool decode_frame_add(decode_frame *f, mt_atom *kid)
+{ if ( f->n == f->cap )
+  { size_t cap = f->cap ? f->cap * 2 : 4;
+    mt_atom **grown = realloc(f->kids, cap * sizeof(*grown));
+    if ( !grown ) return false;
+    f->kids = grown;
+    f->cap = cap;
+  }
+  f->kids[f->n++] = kid;
+  return true;
+}
+
+/* An engine term as a C atom. A leaf answers at once; an expression is walked
+   with a stack of levels, so a term nested deeper than the C stack can hold
+   decodes rather than killing the process. */
+static mt_atom *decode(term_t t, term_t names)
+{ decode_frame fixed[MT_WALK_FRAMES];
+  decode_stack frames;
+  decode_frame *f;
+  mt_atom *value = NULL;
+  term_t head;
+
+  if ( !decode_is_expr(t) ) return decode_leaf(t, names);
+
+  stack_init(&frames, fixed);
+  head = PL_new_term_ref();
+  if ( !head || !decode_frame_push(&frames, t) )
+    err_set(MT_NOMEM, "out of memory decoding an expression");
+
+  /* `f` is read out of the stack only where it can have MOVED, which is a
+     push or a pop, so the children of one level are taken in a loop that
+     keeps the level in a register. */
+  while ( (f = stack_top(&frames)) != NULL )
+  { mt_atom *kid;
+
+    if ( PL_get_list(f->tail, head, f->tail) )
+    { if ( decode_is_expr(head) )
+      { /* Descend. `f` is not touched afterwards: the push may move it. */
+        if ( decode_frame_push(&frames, head) ) continue;
+        err_set(MT_NOMEM, "out of memory decoding an expression");
+        break;
+      }
+      if ( !(kid = decode_leaf(head, names)) ) break;   /* it said why */
+      if ( !decode_frame_add(f, kid) )
+      { mt_drop(kid);
+        err_set(MT_NOMEM, "out of memory decoding an expression");
+        break;
+      }
+      continue;
+    }
+
+    if ( !PL_get_nil(f->tail) )
+    { err_set(MT_UNSUPPORTED,
+              "a partial list is not a MeTTa expression; the engine handed "
+              "back a term with an unbound or non-list tail");
+      break;
+    }
+
+    /* This level is complete: mt_exprv steals the children, the array is
+       this walk's to free, and the result becomes a child of the level
+       above or the answer itself. */
+    kid = mt_exprv(f->n, f->kids);
+    free(f->kids);
+    stack_pop(&frames);
+    if ( !kid ) break;
+    if ( !(f = stack_top(&frames)) )
+    { value = kid;
+      break;
+    }
+    if ( !decode_frame_add(f, kid) )
+    { mt_drop(kid);
+      err_set(MT_NOMEM, "out of memory decoding an expression");
+      break;
+    }
+  }
+
+  /* Whatever is still open was abandoned by a failure above. */
+  while ( (f = stack_top(&frames)) != NULL )
+  { size_t i;
+    for (i = 0; i < f->n; i++) mt_drop(f->kids[i]);
+    free(f->kids);
+    stack_pop(&frames);
+  }
+  stack_free(&frames);
+  return value;
+}
+
 /* --- the other direction ------------------------------------------ */
 
 /* Variables bound while encoding one term, so two occurrences of $x are one
@@ -998,7 +1411,9 @@ static bool encode_var(encode_ctx *ctx, const char *name, term_t out)
   return true;
 }
 
-static bool encode(const mt_atom *a, term_t out, encode_ctx *ctx)
+/* Every atom with no children. An expression is encode()'s own business,
+   because a list is built bottom up and that is where the walk lives. */
+static bool encode_leaf(const mt_atom *a, term_t out, encode_ctx *ctx)
 { if ( !a )
   { err_set(MT_MISUSE, "cannot encode a NULL atom");
     return false;
@@ -1038,25 +1453,86 @@ static bool encode(const mt_atom *a, term_t out, encode_ctx *ctx)
       err_set(MT_MISUSE, "cannot encode a NULL atom");
       return false;
     case MT_EXPR:
-    { size_t i;
-      term_t list = PL_new_term_ref();
-      term_t item = PL_new_term_ref();
-      if ( !PL_put_nil(list) ) return false;
-      for (i = a->u.e.n; i > 0; i--)
-      { if ( !encode(a->u.e.kids[i - 1], item, ctx) ) return false;
-        if ( !PL_cons_list(list, item, list) ) return false;
-      }
-      return PL_put_term(out, list);
-    }
+      /* Unreachable: encode() takes an expression itself. Named rather than
+         defaulted so a kind added later is a compile error here. */
+      break;
   }
   err_set(MT_MISUSE, "an atom of no kind this binding writes");
   return false;
 }
 
+/* One expression being written: the children still to place, counted DOWN
+   because a Prolog list is built from its tail, and the list built so far. */
+typedef struct encode_frame
+{ const mt_atom *a;
+  size_t         left;
+  term_t         list;
+} encode_frame;
+
+typedef MT_STACK(encode_frame) encode_stack;
+
+static bool encode_frame_push(encode_stack *frames, const mt_atom *a)
+{ encode_frame frame;
+  frame.a = a;
+  frame.left = a->u.e.n;
+  frame.list = PL_new_term_ref();
+  return frame.list != 0 && PL_put_nil(frame.list) &&
+         stack_push(frames, frame);
+}
+
+/* An atom as an engine term. One term reference per level of nesting, and no
+   C stack frame per level: an expression a caller can build is an expression
+   this has to be able to write. */
+static bool encode(const mt_atom *a, term_t out, encode_ctx *ctx)
+{ encode_frame fixed[MT_WALK_FRAMES];
+  encode_stack frames;
+  encode_frame *f;
+  term_t item;
+  bool ok;
+
+  if ( !a || a->kind != MT_EXPR ) return encode_leaf(a, out, ctx);
+
+  stack_init(&frames, fixed);
+  item = PL_new_term_ref();
+  ok = item != 0 && encode_frame_push(&frames, a);
+  if ( !ok ) err_set(MT_NOMEM, "out of memory writing an expression");
+
+  while ( ok && (f = stack_top(&frames)) != NULL )
+  { const mt_atom *kid;
+
+    if ( f->left == 0 )
+    { /* This level is complete: it becomes the head of the level above, or
+         the answer. `done` is a scalar, so popping does not disturb it. */
+      term_t done = f->list;
+      stack_pop(&frames);
+      f = stack_top(&frames);
+      ok = f ? PL_cons_list(f->list, done, f->list) : PL_put_term(out, done);
+      continue;
+    }
+
+    kid = f->a->u.e.kids[--f->left];
+    if ( kid && kid->kind == MT_EXPR )
+    { /* Descend. `f` is not touched afterwards: the push may move it. */
+      if ( !(ok = encode_frame_push(&frames, kid)) )
+        err_set(MT_NOMEM, "out of memory writing an expression");
+      continue;
+    }
+    ok = encode_leaf(kid, item, ctx) && PL_cons_list(f->list, item, f->list);
+  }
+  stack_free(&frames);
+  return ok;
+}
+
+/* encode()'s own refusals record their reason; a PL_put_* that fails does
+   not, so the one silent path is given words here. A caller that cleared the
+   error state before this can then read mt_errmsg() and find the truth
+   rather than a stale sentence. */
 static bool put_atom(const mt_atom *a, term_t out)
 { encode_ctx ctx = {0};
   bool ok = encode(a, out, &ctx);
   encode_ctx_free(&ctx);
+  if ( !ok && mt_ok() )
+    err_set(MT_NOMEM, "the engine's stacks could not hold the term written");
   return ok;
 }
 
@@ -1088,12 +1564,15 @@ static bool put_atom_named(const mt_atom *a, term_t out, term_t names)
 /* Render a pending ball into the thread-local error text, through the bridge,
    which asks SWI to print the message exactly as the console would have. */
 static void render_ball(term_t ball)
-{ fid_t f = PL_open_foreign_frame();
-  term_t av = PL_new_term_refs(2);
+{ fid_t f = frame_open("rendering an engine error");
+  term_t av;
   predicate_t p = PL_predicate("metta_c_error_text", 2, "user");
   qid_t q;
 
-  if ( PL_unify(av, ball) &&
+  if ( !f ) return;   /* frame_open() recorded why, which is all there is */
+  av = PL_new_term_refs(2);
+
+  if ( av && PL_unify(av, ball) &&
        (q = PL_open_query(NULL, PL_Q_CATCH_EXCEPTION, p, av)) )
   { if ( PL_next_solution(q) == TRUE )
     { char *text = term_text(av + 1, CVT_ATOM | CVT_STRING, NULL);
@@ -1121,19 +1600,52 @@ static void render_ball(term_t ball)
    fault. A caller wants to tell "I stopped it" from "it broke", and those need
    different answers even though both arrive as exceptions. */
 static bool ball_is_limit(term_t ball)
-{ fid_t f = PL_open_foreign_frame();
-  term_t av = PL_new_term_refs(3);
+{ fid_t f = frame_open("classifying an engine error");
+  term_t av;
   predicate_t p = PL_predicate("metta_c_limit_ball", 3, "user");
   qid_t q;
   bool yes = false;
 
-  if ( PL_unify(av, ball) &&
+  if ( !f ) return false;
+  av = PL_new_term_refs(3);
+
+  if ( av && PL_unify(av, ball) &&
        (q = PL_open_query(NULL, PL_Q_CATCH_EXCEPTION, p, av)) )
   { yes = PL_next_solution(q) == TRUE;
     PL_cut_query(q);
   }
   PL_discard_foreign_frame(f);
   return yes;
+}
+
+/* A ball copied off the stacks, read back and classified. It is a function of
+   its own rather than a branch inside call_bridge because call_bridge's HOT
+   path is a query that ANSWERS: written inline, the extra scope grew that
+   function from 225 to 262 instructions and cost 72 instructions per cursor
+   step, which is two of these calls [measured 2026-08-31, cursor-step,
+   perf stat -e instructions:u, min of 3]. The record is erased here, so the
+   caller hands it over and forgets it. */
+static mt_status ball_status(record_t saved, const char *name, int arity)
+{ fid_t f = frame_open("reading an engine error");
+  mt_status kind = MT_ERROR;
+
+  if ( f )
+  { term_t ball = PL_new_term_ref();
+    if ( ball && PL_recorded(saved, ball) )
+    { render_ball(ball);
+      if ( ball_is_limit(ball) ) kind = MT_LIMIT;
+      /* render_ball() records the words under MT_ERROR, because that is all
+         it can know. The classification happens here, and the STICKY status
+         is what mt_error() reads, so it has to carry the refined answer
+         rather than the one the renderer left behind. */
+      g_status = kind;
+    }
+    else err_set(MT_ERROR, "%s/%d raised a term that could not be read back",
+                 name, arity);
+    PL_discard_foreign_frame(f);
+  }
+  PL_erase(saved);
+  return kind;
 }
 
 /* Call a bridge predicate for its first solution, KEEPING its bindings, so the
@@ -1160,27 +1672,9 @@ static mt_status call_bridge(const char *name, int arity, term_t av)
       record_t saved = PL_record(ex);
       PL_cut_query(q);
       PL_clear_exception();
-      if ( saved )
-      { fid_t f = PL_open_foreign_frame();
-        term_t ball = PL_new_term_ref();
-        mt_status kind = MT_ERROR;
-        if ( PL_recorded(saved, ball) )
-        { render_ball(ball);
-          if ( ball_is_limit(ball) ) kind = MT_LIMIT;
-          /* render_ball() records the words under MT_ERROR, because that
-             is all it can know. The classification happens here, and the
-             STICKY status is what mt_error() reads, so it has to carry the
-             refined answer rather than the one the renderer left behind. */
-          g_status = kind;
-        }
-        else err_set(MT_ERROR, "%s/%d raised a term that could not be "
-                     "read back", name, arity);
-        PL_discard_foreign_frame(f);
-        PL_erase(saved);
-        return kind;
-      } else
-        err_set(MT_ERROR, "%s/%d raised, and the ball could not be copied "
-                "out of the query to be read", name, arity);
+      if ( saved ) return ball_status(saved, name, arity);
+      err_set(MT_ERROR, "%s/%d raised, and the ball could not be copied "
+              "out of the query to be read", name, arity);
       return MT_ERROR;
     }
     PL_cut_query(q);
@@ -1376,9 +1870,13 @@ static foreign_t pl_cmetta_apply(term_t t, term_t args, term_t result)
  * ================================================================== */
 
 static bool goal(const char *text)
-{ fid_t f = PL_open_foreign_frame();
-  term_t t = PL_new_term_ref();
-  bool ok = PL_chars_to_term(text, t) && PL_call(t, NULL);
+{ fid_t f = frame_open("running an engine goal");
+  term_t t;
+  bool ok;
+
+  if ( !f ) return false;
+  t = PL_new_term_ref();
+  ok = t && PL_chars_to_term(text, t) && PL_call(t, NULL);
   PL_discard_foreign_frame(f);
   return ok;
 }
@@ -1512,13 +2010,6 @@ metta *mt_open(const mt_config *config)
   g_runtime.verbose = config->verbose;
   g_open = true;
 
-  g_self.runtime = &g_runtime;
-  g_self.name = (char *)"&self";
-  g_self.borrowed = true;
-  g_catalog.runtime = &g_runtime;
-  g_catalog.name = (char *)"&metta";
-  g_catalog.borrowed = true;
-
   mt_verbose(&g_runtime, config->verbose);
   return &g_runtime;
 }
@@ -1543,15 +2034,20 @@ void mt_close(metta *runtime)
 }
 
 bool mt_verbose(metta *runtime, bool verbose)
-{ bool was = runtime->verbose;
-  fid_t f = PL_open_foreign_frame();
-  term_t av = PL_new_term_refs(1);
+{ bool was;
+  fid_t f;
+  term_t av;
+
+  if ( !handle_ready(runtime, "mt_verbose") ) return false;
+  was = runtime->verbose;
+  if ( !(f = frame_open("mt_verbose")) ) return was;
+  av = PL_new_term_refs(1);
   /* The engine's own door, not a bridge predicate: bridge.pl carried a
      private copy of the engine's retract-then-assert until C2 was taken
      engine-side as metta_host_set_silent/1. filereader.pl exports it, so
      it resolves in `user` the way every other engine predicate this file
      reaches does. */
-  if ( PL_put_atom_chars(av, verbose ? "false" : "true") &&
+  if ( av && PL_put_atom_chars(av, verbose ? "false" : "true") &&
        call_bridge("metta_host_set_silent", 1, av) == MT_OK )
     runtime->verbose = verbose;
   PL_discard_foreign_frame(f);
@@ -1560,16 +2056,21 @@ bool mt_verbose(metta *runtime, bool verbose)
 
 /* No runtime argument: there is one per process, so passing it said nothing. */
 bool mt_thread_attach(void)
-{ if ( PL_thread_attach_engine(NULL) < 0 )
+{ if ( !engine_ready("mt_thread_attach") ) return false;
+  if ( PL_thread_attach_engine(NULL) < 0 )
   { err_set(MT_ERROR, "this thread could not attach a Prolog engine");
     return false;
   }
   return true;
 }
 
+/* A release door, so it is a no-op rather than a refusal when there is
+   nothing to release: mt_close() and mt_answers_free() take the same line,
+   and a cleanup path that sets an error the caller then reads is a nuisance
+   with no remedy behind it. The show ring is C memory and goes either way. */
 void mt_thread_detach(void)
 { show_ring_release();
-  PL_thread_destroy_engine();
+  if ( g_open ) PL_thread_destroy_engine();
 }
 
 /* ================================================================== *
@@ -1585,10 +2086,11 @@ mt_atom *mt_parse(const char *source)
   mt_atom *out = NULL;
 
   if ( !source ) return err_null(MT_MISUSE, "mt_parse needs source text");
+  if ( !engine_ready("mt_parse") ) return NULL;
 
-  f = PL_open_foreign_frame();
+  if ( !(f = frame_open("mt_parse")) ) return NULL;
   av = PL_new_term_refs(3);
-  if ( !PL_put_string_chars(av, source) )
+  if ( !av || !PL_put_string_chars(av, source) )
   { PL_discard_foreign_frame(f);
     return err_null(MT_NOMEM, "out of memory holding the source");
   }
@@ -1603,11 +2105,13 @@ char *mt_show_dup(const mt_atom *atom)
   term_t av;
   char *text = NULL;
 
-  f = PL_open_foreign_frame();
+  if ( !engine_ready("mt_show_dup") ) return NULL;
+  if ( !(f = frame_open("mt_show_dup")) ) return NULL;
   av = PL_new_term_refs(3);
-  if ( put_atom_named(atom, av, av + 1) &&
-       call_bridge("metta_c_show", 3, av) == MT_OK )
-    text = term_text(av + 2, CVT_ATOM | CVT_STRING, NULL);
+  if ( av && put_atom_named(atom, av, av + 1) &&
+       call_bridge("metta_c_show", 3, av) == MT_OK &&
+       !(text = term_text(av + 2, CVT_ATOM | CVT_STRING, NULL)) )
+    err_set(MT_NOMEM, "out of memory copying the engine's rendering");
   PL_discard_foreign_frame(f);
   return text;
 }
@@ -1653,23 +2157,28 @@ void mt_free(void *pointer)
  * Spaces
  * ================================================================== */
 
+/* The runtime argument is not read -- there is one runtime per process -- but
+   it is CHECKED, because a caller holding the NULL a failed mt_open() gave
+   them is a caller who is about to write to a space that does not exist. */
 mt_space *mt_self(metta *runtime)
-{ (void)runtime;
-  return &g_self;
+{ return handle_ready(runtime, "mt_self") ? &g_self : NULL;
 }
 
 mt_space *mt_catalog(metta *runtime)
-{ (void)runtime;
-  return &g_catalog;
+{ return handle_ready(runtime, "mt_catalog") ? &g_catalog : NULL;
 }
 
+/* The name is C memory, so this answers after mt_close() as well as before
+   mt_open(), and NULL is an answer rather than a failure: a caller asking a
+   handle its own name is classifying, not acting. */
 const char *mt_space_name(const mt_space *space)
-{ return space->name;
+{ return space ? space->name : NULL;
 }
 
 mt_space *mt_space_open(metta *runtime, const char *name)
 { mt_space *s;
 
+  if ( !handle_ready(runtime, "mt_space_open") ) return NULL;
   if ( !name || name[0] != '&' )
     return err_null(MT_MISUSE,
                     "a space is named with a leading ampersand; %s is not",
@@ -1693,70 +2202,109 @@ void mt_space_close(mt_space *space)
   free(space);
 }
 
+/* A door that TAKES an atom refuses NULL rather than passing it on: see
+   space_call's note on what an unbound argument means to the bridge. */
+static bool atom_given(const mt_atom *atom, const char *door)
+{ if ( atom ) return true;
+  err_set(MT_MISUSE,
+          "%s was given no atom; the constructor that should have made one "
+          "failed and mt_errmsg() said why at the time", door);
+  return false;
+}
+
+/* One of the bridge's space predicates, with the space's name in av[0] and,
+   when `atom` is not NULL, the atom in av[1].
+
+   A door that TAKES an atom checks it BEFORE it calls here, because a NULL
+   would leave av[1] an UNBOUND VARIABLE and the bridge reads that as a
+   wildcard: mt_del(space, NULL) removed every atom in the space and
+   mt_add(space, NULL) stored a fresh variable, both answering `ok`
+   [measured 2026-08-31, ai-tmp/cseat-probe-d1.c; C32 in
+   ai-cmetta-c-constraints.md].
+
+   THE FRAME AND THE VECTOR GO BACK ON EVERY EXIT when the caller asked for
+   them, so the caller's cleanup is unconditional and right however this
+   ended. The early return this replaced kept both and wrote neither, and the
+   two callers that take a frame then discarded an UNINITIALISED fid_t
+   [measured 2026-08-31: clang --analyze reported cmetta.c:1737 and 1741, and
+   valgrind "Use of uninitialised value of size 8 at
+   PL_discard_foreign_frame" under mt_space_del]. */
 static mt_status space_call(const char *pred, mt_space *space,
                                  const mt_atom *atom, int arity,
                                  term_t *avp, fid_t *fp)
-{ fid_t f = PL_open_foreign_frame();
-  term_t av = PL_new_term_refs(arity);
-  mt_status status;
+{ fid_t f = frame_open(pred);
+  term_t av = 0;
+  mt_status status = MT_NOMEM;
 
-  if ( !PL_put_atom_chars(av, space->name) ||
-       ( atom && !put_atom(atom, av + 1) ) )
-  { PL_discard_foreign_frame(f);
-    return err_set(MT_MISUSE, "%s", mt_errmsg() ? mt_errmsg()
-                                     : "the atom could not be written");
+  if ( f && !(av = PL_new_term_refs(arity)) )
+    err_set(MT_NOMEM, "out of memory holding the arguments for %s", pred);
+
+  if ( fp ) *fp = f;
+  if ( avp ) *avp = av;
+
+  if ( f && av )
+  { if ( !PL_put_atom_chars(av, space->name) ||
+         ( atom && !put_atom(atom, av + 1) ) )
+      status = mt_ok() ? err_set(MT_MISUSE,
+                                 "%s could not write its arguments", pred)
+                       : mt_error();   /* put_atom already said why */
+    else
+      status = call_bridge(pred, arity, av);
   }
-  status = call_bridge(pred, arity, av);
-  /* The vector is only handed back when the caller also takes the frame:
-     a term_t outlives nothing once its frame is discarded. */
-  if ( fp )
-  { *fp = f;
-    if ( avp ) *avp = av;
-  } else
-    PL_discard_foreign_frame(f);
+  if ( !fp ) frame_close(f);
   return status;
 }
 
 /* These TAKE their atom. Building one inline is the common shape, so the door
    that consumes it owns it; a caller keeping a term hands over mt_keep(t).
-   The atom is dropped whatever happens, including on failure, so no path
-   leaks it. */
+   The atom is dropped whatever happens, including on a refusal before the
+   engine was reached, so no path leaks it. */
 bool mt_space_add(mt_space *space, mt_atom *atom)
-{ mt_status status = space_call("metta_c_add", space, atom, 2, NULL, NULL);
+{ mt_status status = MT_MISUSE;
+
+  if ( handle_ready(space, "mt_space_add") && atom_given(atom, "mt_space_add") )
+    status = space_call("metta_c_add", space, atom, 2, NULL, NULL);
   mt_drop(atom);
   return status == MT_OK;
 }
 
 bool mt_space_del(mt_space *space, mt_atom *atom)
-{ fid_t f;
-  term_t av;
-  mt_status status = space_call("metta_c_remove", space, atom, 3, &av, &f);
+{ fid_t f = 0;
+  term_t av = 0;
+  mt_status status = MT_MISUSE;
   bool removed = false;
+
+  if ( handle_ready(space, "mt_space_del") && atom_given(atom, "mt_space_del") )
+    status = space_call("metta_c_remove", space, atom, 3, &av, &f);
 
   if ( status == MT_OK )
   { char *text = term_text(av + 2, CVT_ATOM, NULL);
     removed = text && strcmp(text, "true") == 0;
     free(text);
   }
-  PL_discard_foreign_frame(f);
+  frame_close(f);
   mt_drop(atom);
   return removed;
 }
 
 size_t mt_space_count(mt_space *space)
-{ fid_t f;
-  term_t av;
-  mt_status status = space_call("metta_c_count", space, NULL, 2, &av, &f);
+{ fid_t f = 0;
+  term_t av = 0;
+  mt_status status = MT_MISUSE;
   int64_t n = 0;
+
+  if ( handle_ready(space, "mt_space_count") )
+    status = space_call("metta_c_count", space, NULL, 2, &av, &f);
 
   if ( status == MT_OK && !PL_get_int64(av + 1, &n) )
     err_set(MT_ERROR, "the space did not answer a count");
-  PL_discard_foreign_frame(f);
+  frame_close(f);
   return status == MT_OK ? (size_t)n : 0;
 }
 
 bool mt_space_wipe(mt_space *space)
-{ return space_call("metta_c_clear", space, NULL, 1, NULL, NULL) == MT_OK;
+{ return handle_ready(space, "mt_space_wipe") &&
+         space_call("metta_c_clear", space, NULL, 1, NULL, NULL) == MT_OK;
 }
 
 /* The &self halves of the same verbs, which is what a `metta *` receiver
@@ -1814,17 +2362,17 @@ static mt_status collect_groups(term_t groups, mt_answers *out)
   while ( PL_get_list(gtail, group, gtail) )
   { term_t atail = PL_copy_term_ref(group);
     while ( PL_get_list(atail, answer, atail) )
-    { fid_t f = PL_open_foreign_frame();
-      term_t av = PL_new_term_refs(4);
+    { fid_t f = frame_open("collecting an answer");
+      term_t av = f ? PL_new_term_refs(4) : 0;
       mt_atom *atom = NULL;
       char *text = NULL;
 
-      if ( PL_unify(av, answer) &&
+      if ( av && PL_unify(av, answer) &&
            call_bridge("metta_c_answer_parts", 4, av) == MT_OK )
       { atom = decode(av + 1, av + 2);
         text = term_text(av + 3, CVT_ATOM | CVT_STRING, NULL);
       }
-      PL_discard_foreign_frame(f);
+      frame_close(f);
 
       if ( !atom )
       { free(text);
@@ -1862,9 +2410,12 @@ static mt_status run_or_load(metta *runtime, const char *pred,
   if ( !argument ) return err_set(MT_MISUSE, "%s needs an argument", pred);
   if ( !(answers = answers_alloc(runtime)) ) return MT_NOMEM;
 
-  f = PL_open_foreign_frame();
+  if ( !(f = frame_open(pred)) )
+  { mt_answers_free(answers);
+    return MT_NOMEM;
+  }
   av = PL_new_term_refs(5);
-  if ( !PL_put_string_chars(av, argument) ||
+  if ( !av || !PL_put_string_chars(av, argument) ||
        !PL_put_atom_chars(av + 1, space) ||
        !PL_put_float(av + 2, runtime->limits.seconds) ||
        !PL_put_int64(av + 3, (int64_t)runtime->limits.inferences) )
@@ -1886,20 +2437,23 @@ static mt_status run_or_load(metta *runtime, const char *pred,
 
 mt_answers *mt_run(metta *runtime, const char *source)
 { mt_answers *out = NULL;
-  run_or_load(runtime, "metta_c_run", source, "&self", &out);
+  if ( handle_ready(runtime, "mt_run") )
+    run_or_load(runtime, "metta_c_run", source, "&self", &out);
   return out;
 }
 
 bool mt_do(metta *runtime, const char *source)
-{ mt_answers *answers = mt_run(runtime, source);
-  if ( !answers ) return false;
+{ mt_answers *answers;
+  if ( !handle_ready(runtime, "mt_do") ) return false;
+  if ( !(answers = mt_run(runtime, source)) ) return false;
   mt_answers_free(answers);
   return true;
 }
 
 mt_answers *mt_load(metta *runtime, const char *path)
 { mt_answers *out = NULL;
-  run_or_load(runtime, "metta_c_load", path, "&self", &out);
+  if ( handle_ready(runtime, "mt_load") )
+    run_or_load(runtime, "metta_c_load", path, "&self", &out);
   return out;
 }
 
@@ -1915,14 +2469,17 @@ static mt_status open_cursor(mt_space *space, const char *pred,
   *out = NULL;   /* see run_or_load: zeroed before anything can fail. */
   if ( !(answers = answers_alloc(space->runtime)) ) return MT_NOMEM;
 
-  f = PL_open_foreign_frame();
+  if ( !(f = frame_open(pred)) )
+  { mt_answers_free(answers);
+    return MT_NOMEM;
+  }
   av = PL_new_term_refs(4);
-  if ( !put_atom(atom, av) || !PL_put_atom_chars(av + 1, space->name) ||
+  if ( !av || !put_atom(atom, av) || !PL_put_atom_chars(av + 1, space->name) ||
        !PL_put_int64(av + 2, (int64_t)space->runtime->limits.inferences) )
   { PL_discard_foreign_frame(f);
     mt_answers_free(answers);
-    return err_set(MT_MISUSE, "%s", mt_errmsg() ? mt_errmsg()
-                                     : "the goal could not be written");
+    return mt_ok() ? err_set(MT_MISUSE, "%s could not write its goal", pred)
+                   : mt_error();   /* put_atom already said why */
   }
   status = call_bridge(pred, 4, av);
   if ( status == MT_OK && PL_get_int64(av + 3, &id) )
@@ -1947,27 +2504,34 @@ static mt_status open_cursor(mt_space *space, const char *pred,
 /* The atom is TAKEN, and the cursor keeps a reference to it rather than
    dropping it outright: mt_bound() needs the pattern to say which subterm a
    name reached, and the caller no longer has it to pass back in. */
-static mt_answers *open_with(mt_space *space, const char *pred,
-                             mt_atom *atom, bool keep_as_pattern)
+/* `door` is the name a caller would recognise, because a refusal that names
+   the bridge predicate answers a question the caller did not ask. Which
+   predicate to open follows from `as_pattern` rather than being a second
+   argument that could disagree with it: only a match has a pattern. */
+static mt_answers *open_with(mt_space *space, const char *door,
+                             mt_atom *atom, bool as_pattern)
 { mt_answers *out = NULL;
-  open_cursor(space, pred, atom, &out);
+
+  if ( handle_ready(space, door) && atom_given(atom, door) )
+    open_cursor(space, as_pattern ? "metta_c_open_match"
+                                  : "metta_c_open_eval", atom, &out);
   /* Only a MATCH keeps its atom. A match answer is an INSTANCE of the
      pattern, so the two line up position for position and mt_bound() can read
      a binding off them. An eval answer is a reduced value and shares no shape
      with the goal, so keeping the goal would let mt_bound() find a subterm at
      the same index and call it a binding, which is a wrong answer rather than
      a missing one. */
-  if ( out && keep_as_pattern ) out->pattern = atom;   /* takes the reference */
+  if ( out && as_pattern ) out->pattern = atom;   /* takes the reference */
   else mt_drop(atom);
   return out;
 }
 
 mt_answers *mt_space_eval(mt_space *space, mt_atom *goal)
-{ return open_with(space, "metta_c_open_eval", goal, false);
+{ return open_with(space, "mt_space_eval", goal, false);
 }
 
 mt_answers *mt_space_match(mt_space *space, mt_atom *pattern)
-{ return open_with(space, "metta_c_open_match", pattern, true);
+{ return open_with(space, "mt_space_match", pattern, true);
 }
 
 mt_answers *mt_space_atoms(mt_space *space)
@@ -2014,11 +2578,15 @@ static mt_status answers_step(mt_answers *answers)
     return MT_ROW;
   }
 
+  /* Only the lazy half needs the engine; a run's answers are C memory and a
+     caller may walk them after mt_close(). */
+  if ( !engine_ready("mt_next") ) return MT_MISUSE;
+
   clear_current(answers);
 
-  f = PL_open_foreign_frame();
+  if ( !(f = frame_open("mt_next")) ) return MT_NOMEM;
   av = PL_new_term_refs(3);
-  if ( !PL_put_int64(av, answers->cursor_id) ||
+  if ( !av || !PL_put_int64(av, answers->cursor_id) ||
        !PL_put_float(av + 1, answers->runtime->limits.seconds) )
   { PL_discard_foreign_frame(f);
     return err_set(MT_NOMEM, "out of memory stepping a cursor");
@@ -2032,14 +2600,14 @@ static mt_status answers_step(mt_answers *answers)
 
   head = PL_new_term_ref();
   tail = PL_copy_term_ref(av + 2);
-  if ( !PL_get_list(tail, head, tail) )
+  if ( !head || !tail || !PL_get_list(tail, head, tail) )
   { PL_discard_foreign_frame(f);
     answers->done = true;
     return MT_DONE;
   }
 
   { term_t parts = PL_new_term_refs(4);
-    if ( PL_unify(parts, head) &&
+    if ( parts && PL_unify(parts, head) &&
          call_bridge("metta_c_answer_parts", 4, parts) == MT_OK )
     { answers->current = decode(parts + 1, parts + 2);
       answers->current_text = term_text(parts + 3, CVT_ATOM | CVT_STRING, NULL);
@@ -2186,9 +2754,16 @@ void mt_list_free(mt_list list)
    [source: extensions/python/metta/atoms.py, _match/unify]. Narrower on
    purpose: a caller asking for one name does not need the whole binding set
    built to be handed one term out of it. */
+static size_t shorter_of(const mt_atom *a, const mt_atom *b)
+{ return a->u.e.n < b->u.e.n ? a->u.e.n : b->u.e.n;
+}
+
 static const mt_atom *bound_in(const mt_atom *pattern, const mt_atom *answer,
                                const char *name)
-{ size_t i, n;
+{ pair_frame fixed[MT_WALK_FRAMES];
+  pair_stack frames;
+  pair_frame *f;
+  const mt_atom *found = NULL;
 
   if ( !pattern || !answer ) return NULL;
   if ( mt_kind_of(pattern) == MT_VARIABLE )
@@ -2196,13 +2771,37 @@ static const mt_atom *bound_in(const mt_atom *pattern, const mt_atom *answer,
   if ( mt_kind_of(pattern) != MT_EXPR || mt_kind_of(answer) != MT_EXPR )
     return NULL;
 
-  n = pattern->u.e.n < answer->u.e.n ? pattern->u.e.n : answer->u.e.n;
-  for (i = 0; i < n; i++)
-  { const mt_atom *found = bound_in(pattern->u.e.kids[i],
-                                    answer->u.e.kids[i], name);
-    if ( found ) return found;
+  /* Depth first, left to right, taking each level's frame before its
+     siblings, which is the order the recursive walk this replaced had and
+     what makes "the first occurrence wins" mean the leftmost one. */
+  stack_init(&frames, fixed);
+  pair_push(&frames, pattern, answer, shorter_of(pattern, answer));
+
+  while ( !found && (f = stack_top(&frames)) != NULL )
+  { const mt_atom *p, *a;
+
+    if ( f->at == f->n )
+    { stack_pop(&frames);
+      continue;
+    }
+    p = f->a->u.e.kids[f->at];
+    a = f->b->u.e.kids[f->at];
+    f->at++;
+
+    if ( mt_kind_of(p) == MT_VARIABLE )
+    { if ( strcmp(p->u.t.text, name) == 0 ) found = a;
+      continue;
+    }
+    if ( mt_kind_of(p) != MT_EXPR || mt_kind_of(a) != MT_EXPR ) continue;
+    /* `f` is not touched afterwards: the push may move it. */
+    if ( !pair_push(&frames, p, a, shorter_of(p, a)) )
+    { err_set(MT_NOMEM,
+              "out of memory reading a binding out of a nested answer");
+      break;
+    }
   }
-  return NULL;
+  stack_free(&frames);
+  return found;
 }
 
 const mt_atom *mt_bound(const mt_row *row, const char *name)
@@ -2211,17 +2810,22 @@ const mt_atom *mt_bound(const mt_row *row, const char *name)
   return bound_in(row->of->pattern, row->atom, name);
 }
 
+/* A release door: it is a no-op rather than a refusal when there is nothing
+   to release, so a host tidying up after mt_close() is not punished for the
+   order it tidied in. What it can still free is C memory, and it does. */
 void mt_answers_free(mt_answers *answers)
 { size_t i;
   if ( !answers ) return;
   mt_drop(answers->pattern);
 
   if ( answers->lazy )
-  { fid_t f = PL_open_foreign_frame();
-    term_t av = PL_new_term_refs(1);
-    if ( PL_put_int64(av, answers->cursor_id) )
-      call_bridge("metta_c_close", 1, av);
-    PL_discard_foreign_frame(f);
+  { if ( g_open )
+    { fid_t f = frame_open("mt_answers_free");
+      term_t av = f ? PL_new_term_refs(1) : 0;
+      if ( av && PL_put_int64(av, answers->cursor_id) )
+        call_bridge("metta_c_close", 1, av);
+      frame_close(f);
+    }
     clear_current(answers);
   } else
   { for (i = 0; i < answers->n; i++)
@@ -2240,10 +2844,7 @@ void mt_answers_free(mt_answers *answers)
  * ================================================================== */
 
 bool mt_limit(metta *runtime, mt_limits limits)
-{ static const mt_limits none = {0, 0, 0};
-
-  if ( !runtime ) { err_set(MT_MISUSE, "mt_limit needs a runtime"); return false; }
-  (void)none;
+{ if ( !handle_ready(runtime, "mt_limit") ) return false;
   runtime->limits = limits;
 
   if ( runtime->limits.stack_bytes )
@@ -2260,9 +2861,17 @@ bool mt_limit(metta *runtime, mt_limits limits)
 }
 
 /* Returned by value. A three-scalar struct is cheaper to copy than to
-   out-parameter, and the call site reads as an expression. */
+   out-parameter, and the call site reads as an expression. The bounds are C
+   memory, so this answers after mt_close() as well; only NULL is refused. */
 mt_limits mt_limits_of(const metta *runtime)
-{ return runtime->limits;
+{ static const mt_limits none = {0, 0, 0};
+
+  if ( !runtime )
+  { err_set(MT_MISUSE, "mt_limits_of was given NULL, which is what a failed "
+                       "mt_open() answers");
+    return none;
+  }
+  return runtime->limits;
 }
 
 /* ================================================================== *
@@ -2277,11 +2886,12 @@ mt_stats mt_stats_now(metta *runtime)
   mt_stats out = {0, 0, 0, 0, 0, 0};
   size_t i = 0;
 
-  (void)runtime;
+  if ( !handle_ready(runtime, "mt_stats_now") ) return out;
+  if ( !(f = frame_open("mt_stats_now")) ) return out;
 
-  f = PL_open_foreign_frame();
   av = PL_new_term_refs(1);
-  status = call_bridge("metta_c_stats", 1, av);
+  status = av ? call_bridge("metta_c_stats", 1, av)
+              : err_set(MT_NOMEM, "out of memory sampling the counters");
   if ( status == MT_OK )
   { head = PL_new_term_ref();
     tail = PL_copy_term_ref(av);
@@ -2361,6 +2971,7 @@ bool mt_def(metta *runtime, mt_op op)
   const char *kind = mt_effect_str(op.effect);
   mt_op_entry_t *slot;
 
+  if ( !handle_ready(runtime, "mt_def") ) return false;
   if ( !name || !fn )
   { err_set(MT_MISUSE, "mt_def needs a name and a function");
     return false;
@@ -2376,9 +2987,12 @@ bool mt_def(metta *runtime, mt_op op)
     return false;
   }
 
-  f = PL_open_foreign_frame();
+  if ( !(f = frame_open("mt_def")) )
+  { free(published);
+    return false;
+  }
   av = PL_new_term_refs(3);
-  if ( !PL_put_atom_chars(av, published) ||
+  if ( !av || !PL_put_atom_chars(av, published) ||
        !PL_put_int64(av + 1, (int64_t)arity) ||
        !PL_put_atom_chars(av + 2, kind) )
   { PL_discard_foreign_frame(f);
@@ -2425,6 +3039,7 @@ bool mt_undef(metta *runtime, const char *name)
   char *published;
   size_t i;
 
+  if ( !handle_ready(runtime, "mt_undef") ) return false;
   if ( !name )
   { err_set(MT_MISUSE, "mt_undef needs a name");
     return false;
@@ -2434,9 +3049,12 @@ bool mt_undef(metta *runtime, const char *name)
     return false;
   }
 
-  f = PL_open_foreign_frame();
+  if ( !(f = frame_open("mt_undef")) )
+  { free(published);
+    return false;
+  }
   av = PL_new_term_refs(1);
-  status = PL_put_atom_chars(av, published)
+  status = ( av && PL_put_atom_chars(av, published) )
          ? call_bridge("metta_c_unregister_op", 1, av)
          : err_set(MT_NOMEM, "out of memory withdrawing an operation");
   PL_discard_foreign_frame(f);

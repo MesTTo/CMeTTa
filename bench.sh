@@ -30,14 +30,9 @@
 set -eu
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 
-PY=${CHECK_PY:-}
-if [ -z "$PY" ]; then
-    for candidate in "$HOME/Dev/.venv-pypetta/bin/python" \
-                     "$HERE/../../.venv/bin/python" python3; do
-        if command -v "$candidate" >/dev/null 2>&1; then PY="$candidate"; break; fi
-    done
-fi
-command -v "$PY" >/dev/null 2>&1 || {
+METTA_ROOT="$HERE/../.."
+. "$HERE/../../select-python.sh"
+[ -n "$PY" ] || {
     echo "bench.sh: no python found (set CHECK_PY)" >&2
     exit 2
 }

@@ -156,6 +156,62 @@ static void test_a_macro_evaluates_each_argument_exactly_once(metta *m)
   CHECK(side_effects == 1);
 }
 
+/* Called BEFORE mt_open(), which is the only moment this can be asked. Every
+   door that reaches the engine used to die inside PL_open_foreign_frame with
+   no thread environment to read: sixteen of them, from mt_parse to
+   mt_stats_now, each a SIGSEGV a host cannot catch [measured 2026-08-31,
+   ai-tmp/cseat-probe-d3.c; C34 in ai-cmetta-c-constraints.md]. The case
+   failing takes the whole binary down with it, which is exactly what the
+   defect did to a caller. */
+static void test_a_door_before_the_runtime_refuses(void)
+{ mt_atom *x = S("x");
+
+  CASE("a door called before mt_open refuses by name rather than dying");
+
+  mt_clear();
+  CHECK(mt_parse("(f 1)") == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "mt_open") != NULL);
+
+  mt_clear();
+  CHECK(strcmp(mt_show(x), "<unwritable>") == 0);
+  CHECK(mt_error() == MT_MISUSE);
+
+  /* The runtime a failed mt_open() hands back is NULL, and every door that
+     takes one has to survive being given it. */
+  mt_clear();
+  CHECK(mt_run(NULL, "!(+ 1 2)") == NULL);
+  CHECK(mt_do(NULL, "(= (f) 1)") == false);
+  CHECK(mt_load(NULL, "/nonexistent.metta") == NULL);
+  CHECK(mt_self(NULL) == NULL);
+  CHECK(mt_catalog(NULL) == NULL);
+  CHECK(mt_space_open(NULL, "&kb") == NULL);
+  CHECK(mt_stats_now(NULL).inferences == 0);
+  CHECK(mt_limits_of(NULL).seconds == 0.0);
+  CHECK(mt_undef(NULL, "nothing") == false);
+  CHECK(mt_thread_attach() == false);
+  CHECK(mt_error() == MT_MISUSE);
+
+  /* A door that TAKES an atom still takes it: the refusal is not a leak. */
+  mt_clear();
+  CHECK(mt_self_add(NULL, S("dropped-anyway")) == false);
+  CHECK(mt_self_del(NULL, S("dropped-anyway")) == false);
+  CHECK(mt_self_count(NULL) == 0);
+  CHECK(mt_self_eval(NULL, E("+", 1, 2)) == NULL);
+  CHECK(mt_self_match(NULL, V("x")) == NULL);
+  CHECK(mt_self_atoms(NULL) == NULL);
+
+  /* A release door is a no-op rather than a refusal: tidying up must not
+     depend on the order it is done in. */
+  mt_answers_free(NULL);
+  mt_space_close(NULL);
+  mt_close(NULL);
+  mt_thread_detach();
+
+  mt_drop(x);
+  mt_clear();
+}
+
 static void test_a_failed_child_does_not_leak_its_siblings(void)
 { mt_atom *bad;
   CASE("a NULL child fails the whole expression");
@@ -187,6 +243,116 @@ static void test_refusals_are_named(void)
   mt_drop(wide);
 }
 
+/* Rule 2 of cmetta.h: every function that CAN FAIL says so. Three
+   constructors answered NULL through a ternary that short-circuited before
+   the failure could be recorded, so `mt_clear(); mt_sym(NULL);` left the
+   thread reporting ok [measured 2026-08-31; C33 in
+   ai-cmetta-c-constraints.md]. */
+static void test_a_failed_constructor_says_so(void)
+{ CASE("a constructor that answers NULL leaves the reason behind it");
+
+  mt_clear();
+  CHECK(mt_sym(NULL) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  CHECK(mt_errmsg() != NULL);
+
+  mt_clear();
+  CHECK(mt_var(NULL) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+
+  mt_clear();
+  CHECK(mt_text(NULL) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+
+  mt_clear();
+  CHECK(mt_textn(NULL, 0) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+
+  /* A count with no array is the same shape one level up, and it used to be
+     a read through NULL rather than a refusal. */
+  mt_clear();
+  CHECK(mt_exprv(3, NULL) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+
+  /* Unit is still built from no children at all. */
+  mt_clear();
+  { mt_atom *unit = mt_exprv(0, NULL);
+    CHECK(unit != NULL);
+    CHECK(mt_len(unit) == 0);
+    CHECK(mt_ok());
+    mt_drop(unit);
+  }
+}
+
+/* A ratio is stored the way the engine keeps one, because a form the engine's
+   reader refuses is a term that cannot cross: SWI writes -1r2 and refuses
+   1r-2, so a negative denominator built an atom mt_show() could not render
+   [measured 2026-08-31; C32 in ai-cmetta-c-constraints.md]. */
+static void test_a_ratio_is_stored_in_canonical_form(void)
+{ mt_atom *a;
+
+  CASE("the sign sits on the numerator and the pair is in lowest terms");
+  mt_clear();
+  a = mt_rational(1, -2);
+  CHECK(a != NULL);
+  CHECK(mt_ratio_of(a).num == -1 && mt_ratio_of(a).den == 2);
+  CHECK(mt_float(a) == -0.5);
+  /* And it crosses: this is the door that refused before. */
+  CHECK(strcmp(mt_show(a), "-1r2") == 0);
+  CHECK(mt_ok());
+  mt_drop(a);
+
+  a = mt_rational(2, 4);
+  CHECK(mt_ratio_of(a).num == 1 && mt_ratio_of(a).den == 2);
+  mt_drop(a);
+
+  a = mt_rational(-6, -8);
+  CHECK(mt_ratio_of(a).num == 3 && mt_ratio_of(a).den == 4);
+  mt_drop(a);
+
+  a = mt_rational(0, -5);
+  CHECK(mt_ratio_of(a).num == 0 && mt_ratio_of(a).den == 1);
+  mt_drop(a);
+
+  CASE("a ratio whose canonical form does not fit is refused by name");
+  mt_clear();
+  /* INT64_MIN is the one denominator whose sign cannot move to the
+     numerator, and 3 shares no factor with it. */
+  CHECK(mt_rational(3, INT64_MIN) == NULL);
+  CHECK(mt_error() == MT_UNSUPPORTED);
+}
+
+/* The other half of the same canonicalisation, and the half the ENGINE
+   decides: SWI evaluates `3 rdiv 1` to 3, so a whole-number ratio came back
+   from a space as an Int and mt_eq() answered false against the atom that had
+   been stored. Reading it back as a ratio still answers 3/1, because that
+   promotion is exact and rule 5 says to take it. */
+static void test_a_ratio_is_canonical_in_both_halves(metta *m)
+{ mt_atom *whole;
+  const mt_atom *stored;
+
+  CASE("a canonical denominator of one is an Int, and reads as n over 1");
+  mt_clear();
+  whole = mt_rational(3, 1);
+  CHECK(whole != NULL);
+  CHECK(mt_kind_of(whole) == MT_INT);
+  CHECK(mt_int(whole) == 3);
+  CHECK(mt_ratio_of(whole).num == 3 && mt_ratio_of(whole).den == 1);
+  CHECK(mt_eq(whole, N(3)));
+  CHECK(mt_ok());
+
+  CASE("and it comes back from a space as the atom that went in");
+  CHECK(mt_add(m, mt_expr("ratio-round-trip", mt_keep(whole))));
+  mt_rows (row, mt_match(m, mt_expr("ratio-round-trip", mt_var("x"))))
+  { stored = mt_bound(row, "x");
+    CHECK(stored != NULL);
+    CHECK(mt_kind_of(stored) == MT_INT);
+    CHECK(mt_eq(stored, whole));
+  }
+  CHECK(mt_del(m, mt_expr("ratio-round-trip", mt_keep(whole))));
+  mt_drop(whole);
+}
+
 static void test_reading_promotes_only_where_it_is_lossless(void)
 { mt_atom *i = N(7), *f = R(2.5), *r = mt_rational(1, 4), *huge;
 
@@ -201,10 +367,22 @@ static void test_reading_promotes_only_where_it_is_lossless(void)
   CHECK(!mt_ok());
 
   CASE("a Rational reads as its quotient, and as its two halves");
+  mt_clear();                       /* the Float refusal above is still set */
   { mt_ratio parts = mt_ratio_of(r);
     CHECK(parts.num == 1 && parts.den == 4);
-    /* A non-Rational answers a zero denominator, which no ratio has. */
-    CHECK(mt_ratio_of(i).den == 0);
+    /* An Int reads as itself over one: the promotion is exact, so rule 5 takes
+       it. This line asserted a refusal until 2026-08-31, and the refusal was
+       unreachable-in-principle once mt_rational canonicalised a denominator of
+       one to an Int -- mt_ratio_of would then have refused the very atom
+       mt_rational built. The ENGINE settles it: SWI evaluates `3 rdiv 1` to 3,
+       so a whole-number ratio comes back from a space as an Int, and a seat
+       that called that "not a ratio" would disagree with the engine it drives.
+       A Bigint still refuses, which is where the lossless path really ends. */
+    CHECK(mt_ratio_of(i).num == 7 && mt_ratio_of(i).den == 1);
+    CHECK(mt_ok());
+    mt_clear();
+    CHECK(mt_ratio_of(f).den == 0);
+    CHECK(!mt_ok());
   }
   mt_clear();
   CHECK(mt_float(r) == 0.25);
@@ -455,6 +633,170 @@ static void test_spaces_store_and_query(metta *m)
   CHECK(mt_wipe(kb));
   CHECK(mt_count(kb) == 0);
   mt_space_close(kb);
+}
+
+/* A NULL atom is what a failed constructor hands a door, and the errno shape
+   invites checking later rather than at once, so the doors have to survive
+   it. They did not: space_call() wrote nothing into av[1], the bridge read
+   the unbound variable as a WILDCARD, and mt_del(space, NULL) removed every
+   atom in the space while mt_add(space, NULL) stored a fresh variable -- both
+   answering true with the error state clean [measured 2026-08-31,
+   ai-tmp/cseat-probe-d1.c; C32 in ai-cmetta-c-constraints.md]. */
+static void test_a_door_that_takes_an_atom_refuses_null(metta *m)
+{ mt_space *kb = mt_space_open(m, "&cmetta-null-atom");
+
+  CASE("a write door refuses a NULL atom instead of matching everything");
+  CHECK(kb != NULL);
+  CHECK(mt_add(kb, E("keep", "me")));
+  CHECK(mt_add(kb, E("keep", "me-too")));
+  CHECK(mt_count(kb) == 2);
+
+  mt_clear();
+  CHECK(mt_del(kb, NULL) == false);
+  CHECK(mt_error() == MT_MISUSE);
+  CHECK(mt_count(kb) == 2);
+
+  mt_clear();
+  CHECK(mt_add(kb, NULL) == false);
+  CHECK(mt_error() == MT_MISUSE);
+  CHECK(mt_count(kb) == 2);
+
+  /* The same door, one level up: a constructor that failed inside the call. */
+  mt_clear();
+  CHECK(mt_del(kb, E("keep", mt_spaceref("no-ampersand"))) == false);
+  CHECK(!mt_ok());
+  CHECK(mt_count(kb) == 2);
+
+  mt_clear();
+  CHECK(mt_space_eval(kb, NULL) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  CHECK(mt_space_match(kb, NULL) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+
+  CHECK(mt_wipe(kb));
+  mt_space_close(kb);
+}
+
+/* Every walk over a term used to recurse once per level of nesting, and all
+   five died on data, each a SIGSEGV rather than a refusal: decode, encode and
+   mt_bound at 80,000 levels, mt_eq at 200,000, mt_drop at 400,000 [measured
+   2026-08-31 on this box's 8 MB thread stack, ai-tmp/cseat-probe-d4.c; C35 in
+   ai-cmetta-c-constraints.md].
+
+   Two depths because the walks cost differently, and each is past the crash
+   point of the walks it drives. The three that CROSS to the engine make it
+   copy the term as well, which is where the memory goes: this case measures
+   0.5s and 208 MB at 100,000, and 1.1s and 427 MB when the crossing runs at
+   400,000 too [measured 2026-08-31, /usr/bin/time on tests/test_cmetta]. */
+#define MT_DEEP        400000   /* mt_eq and mt_drop, which stay in C */
+#define MT_DEEP_ENGINE 100000   /* encode, decode and mt_bound, which cross */
+
+static mt_atom *nested(size_t depth)
+{ mt_atom *a = S("leaf");
+  size_t i;
+  for (i = 0; i < depth && a; i++) a = E("f", a);
+  return a;
+}
+
+static void test_a_deep_term_does_not_overrun_the_stack(metta *m)
+{ mt_atom *deep = nested(MT_DEEP);
+  mt_space *kb;
+  int matched = 0;
+
+  CASE("a term nested deeper than the C stack is compared, written, read and released");
+  CHECK(deep != NULL);
+  CHECK(mt_kind_of(deep) == MT_EXPR);
+  mt_clear();
+
+  /* mt_eq. The twin goes as soon as it has been compared: one of these is
+     25 MB, and the case is about depth rather than about how many fit. */
+  { mt_atom *twin = nested(MT_DEEP);
+    CHECK(twin != NULL);
+    CHECK(mt_eq(deep, twin));
+    mt_drop(twin);
+  }
+
+  /* encode and decode, through the engine's own writer and reader, at the
+     depth the crossing pays for. */
+  { mt_atom *crossing = nested(MT_DEEP_ENGINE);
+    char *written = mt_show_dup(crossing);
+    mt_atom *read_back;
+    CHECK(written != NULL);
+    read_back = mt_parse(written);
+    CHECK(read_back != NULL);
+    CHECK(mt_eq(crossing, read_back));
+    mt_free(written);
+    mt_drop(read_back);
+    mt_drop(crossing);
+  }
+  CHECK(mt_ok());
+
+  /* bound_in, which walks a deep pattern against a deep answer. */
+  kb = mt_space_open(m, "&cmetta-deep");
+  CHECK(kb != NULL);
+  CHECK(mt_add(kb, nested(MT_DEEP_ENGINE)));
+  { mt_atom *pattern = V("x");
+    size_t i;
+    for (i = 0; i < MT_DEEP_ENGINE; i++) pattern = E("f", pattern);
+    mt_rows (row, mt_match(kb, pattern))
+    { CHECK(mt_kind_of(mt_bound(row, "x")) == MT_SYMBOL);
+      matched++;
+      break;
+    }
+  }
+  CHECK(matched == 1);
+  CHECK(mt_wipe(kb));
+  mt_space_close(kb);
+
+  /* mt_drop last, because it is the walk that cannot answer "no". */
+  mt_drop(deep);
+  CHECK(mt_ok());
+}
+
+/* metta_c_close/1 runs from mt_answers_free() whatever ended the walk, and a
+   cursor that reached the end of its answers has an engine that answered its
+   last. Closing that must leave the error state clean, because a host reading
+   mt_ok() after a loop is reading the loop's verdict. */
+static void test_closing_an_exhausted_cursor_is_quiet(metta *m)
+{ mt_answers *cursor;
+  int pulled = 0;
+
+  CASE("a cursor walked to exhaustion closes without a word");
+  mt_clear();
+  cursor = mt_eval(m, E("superpose", E(1, 2, 3)));
+  CHECK(cursor != NULL);
+  while ( mt_next(cursor) ) pulled++;
+  CHECK(pulled == 3);
+  CHECK(mt_ok());          /* exhaustion is not a failure */
+  mt_answers_free(cursor);
+  CHECK(mt_ok());          /* and neither is the close that follows it */
+
+  /* The runtime is unharmed, which is the other half of the claim. */
+  CHECK(mt_one_int(mt_eval(m, E("+", 1, 2))) == 3);
+  CHECK(mt_ok());
+}
+
+/* The engine's four-call host protocol proves the name is free BEFORE the
+   binding asserts anything, so a name another tier owns is refused rather
+   than clobbered. `is` is Prolog's own at this arity. */
+static mt_status op_never_called(mt_call *call, void *user)
+{ (void)user;
+  return mt_fail(call, "this operation should never have been registered");
+}
+
+static void test_a_taken_name_is_refused_rather_than_clobbered(metta *m)
+{ CASE("publishing over a name another tier owns is refused, with the owner named");
+  mt_clear();
+  CHECK(mt_def(m, (mt_op){ .name = "is", .arity = 1, .effect = MT_PURE,
+                           .fn = op_never_called }) == false);
+  CHECK(!mt_ok());
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "is/2") != NULL);
+
+  /* Refused before any write, so the name is still Prolog's and the engine
+     still runs. */
+  mt_clear();
+  CHECK(mt_one_int(mt_eval(m, E("+", 2, 3))) == 5);
+  CHECK(mt_ok());
 }
 
 static void test_one_verb_takes_either_receiver(metta *m)
@@ -826,9 +1168,13 @@ static void test_scope_cleanup_releases_on_every_exit(metta *m)
 #endif
 
 int main(void)
-{ metta *m = mt_open(NULL);
+{ metta *m;
 
-  if ( !m )
+  /* Before the runtime exists, because that is the only moment its absence
+     can be asked about. */
+  test_a_door_before_the_runtime_refuses();
+
+  if ( !(m = mt_open(NULL)) )
   { fprintf(stderr, "cannot boot the engine: %s\n", mt_errmsg());
     return 1;
   }
@@ -838,6 +1184,9 @@ int main(void)
   test_a_macro_evaluates_each_argument_exactly_once(m);
   test_a_failed_child_does_not_leak_its_siblings();
   test_refusals_are_named();
+  test_a_failed_constructor_says_so();
+  test_a_ratio_is_stored_in_canonical_form();
+  test_a_ratio_is_canonical_in_both_halves(m);
   test_reading_promotes_only_where_it_is_lossless();
   test_the_error_state_is_errno_shaped();
   test_reference_counting_holds_under_churn();
@@ -846,6 +1195,10 @@ int main(void)
   test_the_walk_closes_its_cursor_on_break(m);
   test_one_and_first_make_different_claims(m);
   test_spaces_store_and_query(m);
+  test_a_door_that_takes_an_atom_refuses_null(m);
+  test_a_deep_term_does_not_overrun_the_stack(m);
+  test_closing_an_exhausted_cursor_is_quiet(m);
+  test_a_taken_name_is_refused_rather_than_clobbered(m);
   test_one_verb_takes_either_receiver(m);
   test_a_user_space_decodes_as_a_space(m);
   test_a_c_function_is_callable_from_metta(m);

@@ -9,3 +9,10 @@ examples/lower
 tests/test_cmetta
 kit/driver
 benchmarks/cases
+
+# The install products and the configuration stamp that decides when the
+# installed library has to be rebuilt.
+libcmetta.so.*
+cmetta.pc
+.enginedir-stamp
+build/

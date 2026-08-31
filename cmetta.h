@@ -1,4 +1,4 @@
-/* Purpose: drive the PeTTa engine from C. Boot it, build and read MeTTa terms
+/* Purpose: drive the MeTTa engine from C. Boot it, build and read MeTTa terms
  *   as C values, run programs, pull answers one at a time, publish C functions
  *   the language calls, bound an evaluation and measure one.
  *
@@ -8,11 +8,26 @@
  *   - C11. _Generic carries the overloads and the argument coercions. Without
  *     it every long-named function still works and the macros do not.
  *   - the engine tree is reachable, either at the path given to mt_open()
- *     or at $PETTA_PATH
+ *     or at $METTA_PATH
  *
  * Guarantees:
  *   - every function that can fail says so, and none of them print, exit or
  *     longjmp; no Prolog exception crosses this header
+ *   - a door called before mt_open(), or after mt_close(), REFUSES with
+ *     MT_MISUSE naming mt_open(). It is the first mistake a new caller makes
+ *     and SWI's foreign-frame API answers it with a signal, which is worse
+ *     than all three of the above
+ *     [tested: tests/test_cmetta.c, test_a_door_before_the_runtime_refuses;
+ *     commit=WORKTREE]
+ *   - NULL is what a failed mt_open(), mt_space_open() or constructor hands
+ *     back, so every door refuses one rather than reading through it
+ *     [tested: tests/test_cmetta.c, test_a_door_that_takes_an_atom_refuses_null;
+ *     commit=WORKTREE]
+ *   - NESTING IS NOT A LIMIT. Building, reading, comparing, writing and
+ *     releasing a term all walk with their own stack, so a term nested a
+ *     million deep costs heap rather than the thread's 8 MB
+ *     [tested: tests/test_cmetta.c, test_a_deep_term_does_not_overrun_the_stack;
+ *     commit=WORKTREE]
  *   - an atom is immutable and refcounted, so a term built once may be run
  *     many times and shared between threads without copying
  *   - building and reading atoms starts no engine
@@ -61,6 +76,17 @@
  *      [tested: tests/test_cmetta.c, test_the_error_state_is_errno_shaped;
  *      commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
  *
+ *      A FAILURE IS RECORDED; AN ANSWER IS NOT, and the line between them is
+ *      whether the value could also be a real answer. mt_int(), mt_float(),
+ *      mt_truth() and mt_ratio_of() record, because 0, 0.0, false and a
+ *      denominator are values a real atom could carry. mt_kind_of(),
+ *      mt_name(), mt_len() and mt_at() do not, because they are how you
+ *      CLASSIFY an atom before reading it and a walk over a leaf must not arm
+ *      an error the caller then reads back. Every constructor and every door
+ *      records, including the ones that answer NULL
+ *      [tested: tests/test_cmetta.c, test_a_failed_constructor_says_so;
+ *      commit=WORKTREE].
+ *
  *   3. ONE VERB, EITHER RECEIVER. mt_eval, mt_match, mt_atoms,
  *      mt_add, mt_del, mt_count and mt_wipe each take a `metta *`,
  *      meaning its &self, or a `mt_space *`. _Generic picks; the pair it
@@ -75,7 +101,8 @@
  *
  *   5. READING PROMOTES WHERE IT IS LOSSLESS AND REFUSES WHERE IT IS NOT.
  *      mt_float() of an Int answers that integer, because the conversion
- *      loses nothing below 2^53 and is refused above it. mt_int() of a
+ *      loses nothing below 2^53 and is refused above it, and mt_ratio_of() of
+ *      an Int answers it over 1 for the same reason. mt_int() of a
  *      Float does NOT round. This is the promotion-lattice reading upstream
  *      Hyperon's own bridging note argues for: "if a promotion path for a
  *      value exists to get to the requested Inner Type, then the accessor
@@ -92,6 +119,9 @@
  * Fails when: the caller wants two independent runtimes in one process
  *   (PL_initialise is process-wide), or wants to hold an engine term rather
  *   than a materialised copy. Both are in ai-cmetta-c-constraints.md.
+ *   Nesting is bounded by memory rather than by the C stack, so a term deep
+ *   enough to exhaust the heap, or SWI's own stack_limit on the way in and
+ *   out, is refused by name rather than crossing.
  *
  * Guarded by: nothing, deliberately. An atom is immutable and its refcount is
  *   atomic, so building, sharing and dropping atoms is safe from any thread,
@@ -219,8 +249,21 @@ MT_API MT_MUST_USE mt_atom *mt_unit(void);
    leading minus. NULL on any other spelling. */
 MT_API MT_MUST_USE mt_atom *mt_bigint(const char *decimal);
 
-/* An exact ratio. A zero denominator is refused. Read one back with
-   mt_ratio_of(), which answers the pair. */
+/* An exact ratio, stored in CANONICAL form: lowest terms, sign on the
+   numerator, so mt_rational(1, -2) reads back as -1/2 and mt_rational(2, 4)
+   as 1/2. That is what Python's fractions.Fraction does, and more to the
+   point it is what the engine does, so a ratio built here is one the engine
+   can read: SWI writes -1r2 and its reader refuses 1r-2. A zero denominator
+   is refused, and so is the one pair whose canonical form does not fit, a
+   denominator of INT64_MIN sharing no factor with its numerator. Read one
+   back with mt_ratio_of(), which answers the pair.
+
+   A canonical denominator of 1 answers an INT, because that is the same
+   canonicalisation and the engine performs it either way: SWI evaluates
+   `3 rdiv 1` to 3, so a whole-number ratio stored in a space came back as an
+   Int and mt_eq() then answered false against the atom that had been stored
+   [tested: tests/test_cmetta.c, test_a_ratio_is_stored_in_canonical_form,
+   test_a_ratio_is_canonical_in_both_halves; commit=WORKTREE]. */
 MT_API MT_MUST_USE mt_atom *mt_rational(int64_t numerator, int64_t denominator);
 
 /* A space reference by its portable engine name, which begins with '&'. */
@@ -281,7 +324,12 @@ MT_API mt_atom *mt_same_c(const mt_atom *atom);
 /* Take a reference. Returns its argument, so it composes inline. NULL-safe. */
 MT_API mt_atom *mt_keep(const mt_atom *atom);
 
-/* Drop a reference. NULL-safe. */
+/* Drop a reference. NULL-safe, and nesting-safe: an expression is dismantled
+   with a worklist rather than by recursion, so releasing a term the engine
+   handed you cannot overrun the stack. If the machine cannot spare the
+   worklist -- which means it is out of memory while freeing -- the children
+   below that point are KEPT rather than walked, and MT_NOMEM is recorded. A
+   leak is recoverable and the signal recursion would send is not. */
 MT_API void mt_drop(const mt_atom *atom);
 
 /* --- reading. Each returns the value the way atoi() and strlen() do, and
@@ -306,8 +354,11 @@ MT_API double mt_float(const mt_atom *atom);
 
 MT_API bool mt_truth(const mt_atom *atom);
 /* A ratio is a pair, so it comes back as one rather than through two
-   out-parameters. `den` is 0 when the atom is not a Rational, which is a value
-   no ratio has, and the failure is recorded either way. */
+   out-parameters. An INT reads as itself over 1, which is rule 5's promotion
+   and exact; it has to, because mt_rational() answers an Int for a canonical
+   denominator of 1 and its own accessor cannot refuse what it built. `den` is
+   0 for anything else, which is a value no ratio has, and the failure is
+   recorded. */
 typedef struct mt_ratio {
   int64_t num;
   int64_t den;
@@ -322,7 +373,9 @@ MT_API size_t mt_len(const mt_atom *atom);
    or on a non-expression. mt_keep() it to hold it longer. */
 MT_API const mt_atom *mt_at(const mt_atom *atom, size_t index);
 
-/* Structural equality. Two variables are equal when their names are. */
+/* Structural equality. Two variables are equal when their names are. Answers
+   false and records MT_NOMEM in the one case where it cannot decide, a
+   machine that cannot hold the walk's own stack. */
 MT_API bool mt_eq(const mt_atom *a, const mt_atom *b);
 
 /* --- text, through the engine's own reader and writer --- */
@@ -354,7 +407,7 @@ typedef struct mt_space mt_space;
 typedef struct mt_answers mt_answers;
 
 typedef struct mt_config {
-  const char *path;      /* engine tree; NULL takes $PETTA_PATH then the
+  const char *path;      /* engine tree; NULL takes $METTA_PATH then the
                             tree this library was built beside          */
   size_t stack_limit;    /* bytes; 0 takes the engine's own default      */
   bool verbose;          /* let the engine print each compiled form      */
@@ -368,7 +421,11 @@ typedef struct mt_config {
 MT_API MT_MUST_USE metta *mt_open(const mt_config *config);
 
 /* Shut the runtime down. Atoms outlive it: they are C memory and stay valid
-   until their own references go. */
+   until their own references go, and so do the answers an eager mt_run()
+   already collected. Every door that needs the engine refuses afterwards,
+   naming mt_open(); the four release doors -- this one, mt_answers_free(),
+   mt_space_close() and mt_thread_detach() -- stay no-ops instead, so a host
+   is not punished for the order it tidies up in. */
 MT_API void mt_close(metta *runtime);
 
 /* Whether the engine prints compiled forms. Returns the previous setting. */
@@ -380,13 +437,17 @@ MT_API bool mt_verbose(metta *runtime, bool verbose);
 MT_API bool mt_thread_attach(void);
 MT_API void mt_thread_detach(void);
 
-/* &self and &petta, borrowed and living as long as the runtime. */
+/* &self and &petta, borrowed and living as long as the runtime. NULL, with
+   MT_MISUSE recorded, when `runtime` is the NULL a failed mt_open() answered
+   or the engine is closed. */
 MT_API mt_space *mt_self(metta *runtime);
 MT_API mt_space *mt_catalog(metta *runtime);
 
 /* Create or open a space by name; names begin with '&'. NULL on failure. */
 MT_API MT_MUST_USE mt_space *mt_space_open(metta *runtime, const char *name);
 MT_API void mt_space_close(mt_space *space);
+/* The name is C memory, so this answers whether or not the engine is running,
+   and NULL for a NULL space rather than refusing: it is a classifier. */
 MT_API const char *mt_space_name(const mt_space *space);
 
 /* ================================================================== *

@@ -4,9 +4,10 @@
 %   walk directly.
 % Assumes:
 %   - every engine predicate called here carries a seam:kind/2 in
-%     engine/ext_points.pl, service or host_service [tested:
-%     tests/prolog/static_checks.pl, a_host_binding_calls_only_published_surface,
-%     which reports "every one of 3 host bindings" with this file's row present;
+%     engine/ext_points.pl, service or host_service. The static gate walks all
+%     three host bindings and this file is one of their rows
+%     [tested: tests/prolog/static_checks.pl,
+%     a_host_binding_calls_only_published_surface;
 %     commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]
 %   - '$cmetta_dispatch'/3 and '$cmetta_object'/1 are foreign predicates the C
 %     half registers before consulting the engine. This file LOADS without
@@ -16,20 +17,41 @@
 %     term handed out here stays valid exactly as long as that frame
 % Guarantees:
 %   - metta_c_next/3 computes at most one answer per call, so a host that
-%     stops pulling leaves the rest of an infinite stream uncomputed
+%     stops pulling leaves the rest of an infinite stream uncomputed. The case
+%     cited walks an ENDLESS generator and breaks after three answers, which
+%     an eager door could not return from at all
+%     [tested: tests/test_cmetta.c, test_the_walk_closes_its_cursor_on_break;
+%     commit=WORKTREE]
 %   - a cursor opened with a positive Inferences stops once its ENGINE has
 %     spent that many, cumulatively across pulls, because the budget is built
 %     into the engine goal by metta_host_inference_budget/3 [tested:
 %     tests/test_cmetta.c, test_a_bound_stops_a_runaway_and_says_so;
 %     commit=23082258ab5a278998c967274c5b22e0ce391a47]
-%   - metta_c_close/1 is idempotent
+%   - metta_c_close/1 leaves nothing behind and says nothing: it retracts the
+%     row before it destroys the engine, so a cursor that reached the end of
+%     its answers closes without arming the host's error state
+%     [tested: tests/test_cmetta.c, test_closing_an_exhausted_cursor_is_quiet;
+%     commit=WORKTREE]
+%   - metta_c_close/1 on an Id that is no longer in the table succeeds
+%     quietly, so a host may close before it frees
+%     [assumed 2026-08-31: nothing in the tree closes one twice. cmetta.h has
+%     no door that closes a cursor without also freeing it, so the C suite
+%     cannot reach the second close; the branch is here so a host that grows
+%     one is not punished for it]
 %   - no answer is encoded, tagged, or stringified on the way out: the C half
 %     receives the engine's own term. This seat is in-process with the engine
 %     and has no marshalling boundary to cross, which is the whole reason it
-%     exists; see C6 in ai-cmetta-c-constraints.md
+%     exists; see C6 in ai-cmetta-c-constraints.md. The case cited sends a C
+%     POINTER through MeTTa and mutates the struct behind it on the way back,
+%     which nothing that rendered the value could do
+%     [tested: tests/test_cmetta.c, test_a_c_value_crosses_by_reference;
+%     commit=WORKTREE]
 %   - an operation published from C is registered through the engine's own
 %     four-call host protocol (open, assert, adopt, release), so a name another
-%     tier owns is refused rather than clobbered
+%     tier owns is refused rather than clobbered, and refused BEFORE anything
+%     is written
+%     [tested: tests/test_cmetta.c,
+%     test_a_taken_name_is_refused_rather_than_clobbered; commit=WORKTREE]
 % Owns: one SWI engine per open cursor, released by metta_c_close/1, which the
 %   C half calls from cmetta_answers_free().
 % Decides: verbosity is set explicitly at boot rather than inherited from argv,

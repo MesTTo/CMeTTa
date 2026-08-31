@@ -82,4 +82,36 @@ will not run; it compares through metta's BenchmarkBaseline" >&2
     fi
     CHECK_PY="$PY" sh "$HERE/extensions/cmetta/bench.sh"
 }
+
 run GATE c-bench check_c_bench
+
+# The install, proven by USING it. Everything above builds and runs in this
+# checkout, where the engine tree is two directories up and the library is
+# found by an rpath into the build directory; none of that is true for a
+# consumer, and a C library nobody outside the tree can link against is a
+# directory rather than a library. This lane installs into build/ under a real
+# prefix, compiles tests/install_consumer.c against nothing but
+# `pkg-config --cflags --libs cmetta`, and runs it with METTA_PATH unset. It
+# needs pkg-config on top of the compiler and headers the lanes above need, and
+# skips by name without it for the same reason they do.
+check_c_install() {
+    binding="$HERE/extensions/cmetta"
+    [ -d "$binding" ] || return 0
+    if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+        echo "note: no C compiler found, the C install check will not run" >&2
+        return 0
+    fi
+    if ! command -v pkg-config >/dev/null 2>&1; then
+        echo "note: pkg-config not found, the C install check will not run; it \
+is how a consumer finds an installed library" >&2
+        return 0
+    fi
+    if [ ! -f "$(swipl --dump-runtime-variables 2>/dev/null \
+                  | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
+        echo "note: SWI-Prolog development headers not found, the C install \
+check will not run" >&2
+        return 0
+    fi
+    make --quiet -C "$binding" install-check
+}
+run GATE c-install check_c_install
