@@ -8,7 +8,7 @@
  *   installed engine's directory into it.
  * Guarantees: exits 0 having printed the one answer to `(+ 2 3)`, and exits
  *   nonzero naming what failed otherwise
- *   [tested: extensions/cmetta/check.sh c-install; commit=WORKTREE].
+ *   [tested: extensions/cmetta/check.sh c-install; commit=1c40a5f96c308941b4c0669594acb06403109751].
  * Fails when: the engine tree was not installed beside the library, which is
  *   the failure this exists to catch and the reason it prints mt_errmsg().
  * Open Obligations:

@@ -17,7 +17,7 @@
 #   pkg-config file and the engine tree under $PREFIX, and `make install-check`
 #   proves the result by compiling a consumer that knows only what pkg-config
 #   says and booting it with no METTA_PATH and no rpath into this checkout
-#   [tested: extensions/cmetta/check.sh c-install; commit=WORKTREE].
+#   [tested: extensions/cmetta/check.sh c-install; commit=1c40a5f96c308941b4c0669594acb06403109751].
 # Decides: the engine tree is baked in as MT_ENGINE_PATH so a linked program
 #   boots with no environment set, and $METTA_PATH still overrides it at run
 #   time. A checkout that moves needs a rebuild, which is the same bargain
