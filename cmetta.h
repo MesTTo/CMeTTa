@@ -18,16 +18,16 @@
  *     and SWI's foreign-frame API answers it with a signal, which is worse
  *     than all three of the above
  *     [tested: tests/test_cmetta.c, test_a_door_before_the_runtime_refuses;
- *     commit=WORKTREE]
+ *     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
  *   - NULL is what a failed mt_open(), mt_space_open() or constructor hands
  *     back, so every door refuses one rather than reading through it
  *     [tested: tests/test_cmetta.c, test_a_door_that_takes_an_atom_refuses_null;
- *     commit=WORKTREE]
+ *     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
  *   - NESTING IS NOT A LIMIT. Building, reading, comparing, writing and
  *     releasing a term all walk with their own stack, so a term nested a
  *     million deep costs heap rather than the thread's 8 MB
  *     [tested: tests/test_cmetta.c, test_a_deep_term_does_not_overrun_the_stack;
- *     commit=WORKTREE]
+ *     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
  *   - an atom is immutable and refcounted, so a term built once may be run
  *     many times and shared between threads without copying
  *   - building and reading atoms starts no engine
@@ -85,7 +85,7 @@
  *      an error the caller then reads back. Every constructor and every door
  *      records, including the ones that answer NULL
  *      [tested: tests/test_cmetta.c, test_a_failed_constructor_says_so;
- *      commit=WORKTREE].
+ *      commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8].
  *
  *   3. ONE VERB, EITHER RECEIVER. mt_eval, mt_match, mt_atoms,
  *      mt_add, mt_del, mt_count and mt_wipe each take a `metta *`,
@@ -263,7 +263,7 @@ MT_API MT_MUST_USE mt_atom *mt_bigint(const char *decimal);
    `3 rdiv 1` to 3, so a whole-number ratio stored in a space came back as an
    Int and mt_eq() then answered false against the atom that had been stored
    [tested: tests/test_cmetta.c, test_a_ratio_is_stored_in_canonical_form,
-   test_a_ratio_is_canonical_in_both_halves; commit=WORKTREE]. */
+   test_a_ratio_is_canonical_in_both_halves; commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]. */
 MT_API MT_MUST_USE mt_atom *mt_rational(int64_t numerator, int64_t denominator);
 
 /* A space reference by its portable engine name, which begins with '&'. */

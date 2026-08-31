@@ -21,7 +21,7 @@
 %     cited walks an ENDLESS generator and breaks after three answers, which
 %     an eager door could not return from at all
 %     [tested: tests/test_cmetta.c, test_the_walk_closes_its_cursor_on_break;
-%     commit=WORKTREE]
+%     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
 %   - a cursor opened with a positive Inferences stops once its ENGINE has
 %     spent that many, cumulatively across pulls, because the budget is built
 %     into the engine goal by metta_host_inference_budget/3 [tested:
@@ -31,7 +31,7 @@
 %     row before it destroys the engine, so a cursor that reached the end of
 %     its answers closes without arming the host's error state
 %     [tested: tests/test_cmetta.c, test_closing_an_exhausted_cursor_is_quiet;
-%     commit=WORKTREE]
+%     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
 %   - metta_c_close/1 on an Id that is no longer in the table succeeds
 %     quietly, so a host may close before it frees
 %     [assumed 2026-08-31: nothing in the tree closes one twice. cmetta.h has
@@ -45,13 +45,13 @@
 %     POINTER through MeTTa and mutates the struct behind it on the way back,
 %     which nothing that rendered the value could do
 %     [tested: tests/test_cmetta.c, test_a_c_value_crosses_by_reference;
-%     commit=WORKTREE]
+%     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
 %   - an operation published from C is registered through the engine's own
 %     four-call host protocol (open, assert, adopt, release), so a name another
 %     tier owns is refused rather than clobbered, and refused BEFORE anything
 %     is written
 %     [tested: tests/test_cmetta.c,
-%     test_a_taken_name_is_refused_rather_than_clobbered; commit=WORKTREE]
+%     test_a_taken_name_is_refused_rather_than_clobbered; commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
 % Owns: one SWI engine per open cursor, released by metta_c_close/1, which the
 %   C half calls from cmetta_answers_free().
 % Decides: verbosity is set explicitly at boot rather than inherited from argv,

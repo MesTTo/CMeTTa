@@ -112,6 +112,6 @@ is how a consumer finds an installed library" >&2
 check will not run" >&2
         return 0
     fi
-    make --quiet -C "$binding" install-check
+    make --quiet -C "$HERE/extensions/cmetta" install-check
 }
 run GATE c-install check_c_install

@@ -25,12 +25,12 @@
  *     REFUSES with MT_MISUSE naming mt_open() instead of dereferencing a
  *     thread environment that is not there
  *     [tested: tests/test_cmetta.c, test_a_door_before_the_runtime_refuses;
- *     commit=WORKTREE]
+ *     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
  *   - no term crosses this file on the C stack: reading, writing, comparing,
  *     releasing and binding all walk with their own frame stack, so nesting
  *     costs heap rather than the 8 MB the thread was given
  *     [tested: tests/test_cmetta.c, test_a_deep_term_does_not_overrun_the_stack;
- *     commit=WORKTREE]
+ *     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
  *
  * Owns resources: the process's Prolog runtime, released by mt_close(); the
  *   op table; one malloc'ed box per live mt_object, released when both the
@@ -484,7 +484,7 @@ void mt_drop(const mt_atom *atom)
    mt_error() saying `ok` after a constructor had failed, and cmetta.h's rule 2
    is that every function that can fail says so
    [tested: tests/test_cmetta.c, test_a_failed_constructor_says_so;
-   commit=WORKTREE]. */
+   commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]. */
 mt_atom *mt_sym(const char *name)
 { return atom_text(MT_SYMBOL, name, name ? strlen(name) : 0);
 }
@@ -600,7 +600,7 @@ mt_atom *mt_rational(int64_t numerator, int64_t denominator)
      [measured 2026-08-31: mt_rational(3, 1) built a Rational printing as 3;
      adding it and matching it back read Number, equal to mt_num(3) and NOT
      equal to what went in; tested: test_a_ratio_is_canonical_in_both_halves;
-     commit=WORKTREE]. */
+     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]. */
   if ( denominator == 1 ) return mt_num(numerator);
   if ( !(a = atom_alloc(MT_RATIONAL)) ) return NULL;
   a->u.r.num = numerator;
