@@ -373,27 +373,45 @@ MT_API size_t mt_len(const mt_atom *atom);
    or on a non-expression. mt_keep() it to hold it longer. */
 MT_API const mt_atom *mt_at(const mt_atom *atom, size_t index);
 
-/* Structural equality. Two variables are equal when their names are. Answers
-   false and records MT_NOMEM in the one case where it cannot decide, a
-   machine that cannot hold the walk's own stack. */
+/* Structural equality, matching the engine's term identity. Two variables are
+   equal when their names are; signed float zeros differ and every NaN agrees,
+   because SWI canonicalises NaN payloads as they enter a term. Answers false
+   and records MT_NOMEM in the one case where it cannot decide, a machine that
+   cannot hold the walk's own stack. */
 MT_API bool mt_eq(const mt_atom *a, const mt_atom *b);
 
 /* --- text, through the engine's own reader and writer --- */
 
 /* Read one MeTTa form. The engine's reader is the only reader. */
 MT_API MT_MUST_USE mt_atom *mt_parse(const char *source);
+/* The counted twin, for source containing NUL. */
+MT_API MT_MUST_USE mt_atom *mt_parsen(const char *source, size_t length);
 
-/* Write an atom the way the engine writes it, into a per-thread rotating
+typedef struct mt_string {
+  char  *data;
+  size_t len;
+} mt_string;
+
+/* Present an atom the way the engine displays it, into a per-thread rotating
    buffer so it drops straight into printf:
 
        printf("%s -> %s\n", mt_show(pattern), mt_show(answer));
 
-   The buffer is reused after MT_SHOW_SLOTS further calls on this thread,
-   which is the contract strerror() and inet_ntoa() already gave C. Take a
-   copy with mt_show_dup() to keep it, and free that with mt_free(). */
+   Presentation is deliberately lossy for values with no MeTTa source form. A
+   counted string containing NUL is truncated by this C-string API. The buffer
+   is reused after MT_SHOW_SLOTS further calls on this thread, which is the
+   contract strerror() and inet_ntoa() already gave C. Take a copy with
+   mt_show_dup() to keep it, and free that with mt_free(). */
 #define MT_SHOW_SLOTS 8
 MT_API const char *mt_show(const mt_atom *atom);
 MT_API MT_MUST_USE char *mt_show_dup(const mt_atom *atom);
+
+/* Serialize an atom to MeTTa source that mt_parsen() reads back as an equal
+   atom. `data` is OWNED and counted by `len`; free it with mt_free().
+   {NULL, 0} with the engine's reason when the value has no round-trip source
+   spelling, such as a live C object, a non-finite float or a symbol containing
+   whitespace. The count is what lets a text atom carry NUL without truncation. */
+MT_API MT_MUST_USE mt_string mt_write_dup(const mt_atom *atom);
 
 /* Free anything this library handed back by pointer that is not an atom. */
 MT_API void mt_free(void *pointer);
@@ -476,6 +494,10 @@ MT_API MT_MUST_USE mt_answers *mt_load(metta *runtime, const char *path);
 #define MT_METTA(tokens)  MT_METTA_(tokens)
 #define MT_METTA_(tokens) #tokens
 
+/* Stringify exactly the tokens written at the call site. Use this when a MeTTa
+   symbol collides with a C macro and expansion would silently change it. */
+#define MT_METTA_RAW(tokens) #tokens
+
 /* Install an equation written as C TOKENS rather than as a string:
 
        mt_lower(m, (twice $x), (* 2 $x));
@@ -518,6 +540,11 @@ MT_API MT_MUST_USE mt_answers *mt_load(metta *runtime, const char *path);
    buys things. */
 #define mt_lower(runtime, head, body)                                     \
     mt_do((runtime), "(= " MT_METTA(head) " " MT_METTA(body) ")")
+
+/* The non-expanding twin. Both arguments are stringified in this macro itself,
+   because forwarding either through another macro would expand it first. */
+#define mt_lower_raw(runtime, head, body)                                 \
+    mt_do((runtime), "(= " #head " " #body ")")
 
 /* Run source for its EFFECT and discard the answers: definitions, imports,
    pragmas, anything whose point is what it leaves behind rather than what it
@@ -581,9 +608,9 @@ MT_API bool mt_space_wipe(mt_space *space);
    step, so keep an atom with mt_keep() and text with mt_show_dup(). */
 typedef struct mt_row {
   const mt_atom *atom;   /* the answer itself                              */
-  const char    *text;   /* the engine's own rendering of it, which can show
-                            a value mt_show() refuses: a host-only value or
-                            a non-finite float                             */
+  const char    *text;   /* presentation text, like mt_show(); it can show a
+                            host-only value mt_write_dup() refuses, and its C
+                            string spelling truncates an embedded NUL       */
   size_t         group;  /* which `!` form produced it, counting from 0;
                             always 0 for the lazy doors, which run one goal */
   mt_answers    *of;     /* the cursor it came from, which is what lets

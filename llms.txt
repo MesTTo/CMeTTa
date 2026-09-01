@@ -69,6 +69,10 @@ the first and claims nothing; `mt_one_int/_float/_truth/_name(r)` give the
 value with no atom to look after; `mt_all(r)` gives every answer as an `mt_list`. Each
 consumes the cursor.
 
+`mt_show`/`mt_show_dup` return presentation text. `mt_write_dup` returns an
+owned counted `mt_string` that `mt_parsen(data, len)` reads back exactly; free
+`data` with `mt_free`. Strict writing refuses values with no source spelling.
+
 ## Calling back into C
 
 ```c
@@ -95,6 +99,9 @@ mt_lower(m, (fib $n), (if (< $n 2) $n (+ (fib (- $n 1)) (fib (- $n 2)))));
 `__code__` and Node's `toString()` are at run time. Parameterise a body by its
 operators and it expands to C in one mode and MeTTa in the other, so one
 function is callable from both. See `examples/lower.c`.
+Ordinary `mt_lower` expands C macros in its MeTTa tokens. Use `mt_lower_raw`
+or `MT_METTA_RAW` when a MeTTa symbol must retain a spelling that collides with
+a C macro.
 
 ## Errors, bounds and threads
 

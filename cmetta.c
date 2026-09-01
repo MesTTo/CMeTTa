@@ -70,6 +70,7 @@
 #include <SWI-Stream.h>
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -134,6 +135,10 @@ static pl_function_t as_pl_function(mt_anyfn fn)
 #define MT_ERR_MAX 2048
 static MT_TLS char g_err[MT_ERR_MAX];
 static MT_TLS mt_status g_status = MT_OK;
+/* A callback needs to tell a failure raised DURING this application from the
+   errno-shaped failure that was already present when it began. Comparing the
+   status is not enough: two consecutive failures may have the same kind. */
+static MT_TLS uint64_t g_error_generation;
 
 static mt_status err_set(mt_status status, const char *fmt, ...)
 { va_list ap;
@@ -141,6 +146,7 @@ static mt_status err_set(mt_status status, const char *fmt, ...)
   vsnprintf(g_err, sizeof(g_err), fmt, ap);
   va_end(ap);
   g_status = status;
+  g_error_generation++;
   return status;
 }
 
@@ -152,7 +158,20 @@ static void *err_null(mt_status status, const char *fmt, ...)
   vsnprintf(g_err, sizeof(g_err), fmt, ap);
   va_end(ap);
   g_status = status;
+  g_error_generation++;
   return NULL;
+}
+
+static mt_status err_copy(mt_status status, const char *text)
+{ snprintf(g_err, sizeof(g_err), "%s", text);
+  g_status = status;
+  g_error_generation++;
+  return status;
+}
+
+static void err_reclassify(mt_status status)
+{ g_status = status;
+  g_error_generation++;
 }
 
 void mt_clear(void)
@@ -787,7 +806,15 @@ static bool eq_shallow(const mt_atom *a, const mt_atom *b)
       return a->u.t.len == b->u.t.len &&
              memcmp(a->u.t.text, b->u.t.text, a->u.t.len) == 0;
     case MT_INT:      return a->u.i == b->u.i;
-    case MT_FLOAT:    return a->u.f == b->u.f;
+    case MT_FLOAT:
+      /* SWI preserves signed zero but canonicalises NaN payloads when a float
+         enters a term. The space predicates therefore distinguish the zeros
+         and identify every NaN, so the pure-C door must too.
+         [tested: tests/test_cmetta.c,
+         test_float_identity_agrees_with_the_engine; commit=WORKTREE] */
+      return (isnan(a->u.f) && isnan(b->u.f)) ||
+             (!isnan(a->u.f) && !isnan(b->u.f) &&
+              memcmp(&a->u.f, &b->u.f, sizeof(a->u.f)) == 0);
     case MT_BOOL:     return a->u.b == b->u.b;
     case MT_RATIONAL: return a->u.r.num == b->u.r.num &&
                                 a->u.r.den == b->u.r.den;
@@ -1000,14 +1027,20 @@ static int object_release_blob(atom_t a)
   return TRUE;
 }
 
+static void object_acquire_blob(atom_t a)
+{ mt_box_t *box = PL_blob_data(a, NULL, NULL);
+  if ( box ) MT_INC(&box->refs);
+}
+
 static PL_blob_t mt_object_blob =
 { .magic   = PL_BLOB_MAGIC,
-  .flags   = PL_BLOB_NOCOPY,
+  .flags   = PL_BLOB_UNIQUE | PL_BLOB_NOCOPY,
   /* The SEAT's spelling, because bridge.pl names this type in blob/2 and the
      two must agree. Like the four foreign predicates above, it is a contract
      with the Prolog half rather than part of the C API's prefix. */
   .name    = "cmetta_object",
   .release = object_release_blob,
+  .acquire = object_acquire_blob,
   .write   = object_write
 };
 
@@ -1441,8 +1474,13 @@ static bool encode_leaf(const mt_atom *a, term_t out, encode_ctx *ctx)
       return n > 0 && PL_put_term_from_chars(out, REP_UTF8, (size_t)n, buf);
     }
     case MT_OBJECT:
-      MT_INC(&a->u.box->refs);
-      return PL_put_blob(out, a->u.box, sizeof(*a->u.box), &mt_object_blob);
+      /* PL_put_blob's result reports whether SWI created a blob atom; it is
+         not a success flag. The acquire callback pairs one box reference with
+         each created blob and an existing unique blob needs no second one.
+         [tested: tests/test_cmetta.c,
+         test_the_same_c_object_is_one_engine_identity; commit=WORKTREE] */
+      (void)PL_put_blob(out, a->u.box, sizeof(*a->u.box), &mt_object_blob);
+      return true;
     case MT_HANDLE:
       err_set(MT_UNSUPPORTED,
               "a native engine value cannot be sent back by its printed form: "
@@ -1577,8 +1615,7 @@ static void render_ball(term_t ball)
   { if ( PL_next_solution(q) == TRUE )
     { char *text = term_text(av + 1, CVT_ATOM | CVT_STRING, NULL);
       if ( text )
-      { snprintf(g_err, sizeof(g_err), "%s", text);
-        g_status = MT_ERROR;
+      { err_copy(MT_ERROR, text);
         free(text);
         PL_cut_query(q);
         PL_discard_foreign_frame(f);
@@ -1588,9 +1625,8 @@ static void render_ball(term_t ball)
     PL_cut_query(q);
   }
   { char *text = term_text(ball, CVT_WRITE, NULL);
-    snprintf(g_err, sizeof(g_err), "%s",
+    err_copy(MT_ERROR,
              text ? text : "the engine raised a term this binding could not print");
-    g_status = MT_ERROR;
     free(text);
   }
   PL_discard_foreign_frame(f);
@@ -1638,7 +1674,7 @@ static mt_status ball_status(record_t saved, const char *name, int arity)
          it can know. The classification happens here, and the STICKY status
          is what mt_error() reads, so it has to carry the refined answer
          rather than the one the renderer left behind. */
-      g_status = kind;
+      err_reclassify(kind);
     }
     else err_set(MT_ERROR, "%s/%d raised a term that could not be read back",
                  name, arity);
@@ -1750,6 +1786,7 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
   term_t head = PL_new_term_ref();
   term_t tail = PL_copy_term_ref(args);
   mt_status status;
+  uint64_t error_before;
   foreign_t rc = FALSE;
 
   memset(&call, 0, sizeof(call));
@@ -1774,6 +1811,7 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
   call.args = (const mt_atom **)decoded;
   call.arity = n;
 
+  error_before = g_error_generation;
   status = fn(&call, user);
 
   if ( status == MT_OK && call.answered )
@@ -1787,7 +1825,8 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
        bare mt_error(...) printed as "Unknown message: ..."
        [measured 2026-08-27]. */
     const char *why = call.failed ? call.error
-                    : (mt_errmsg() ? mt_errmsg()
+                    : (g_error_generation != error_before && mt_errmsg()
+                    ? mt_errmsg()
                     : "the C function answered nothing");
     term_t ball = PL_new_term_ref();
     if ( PL_unify_term(ball,
@@ -2080,17 +2119,16 @@ void mt_thread_detach(void)
 /* No runtime argument on the text doors either: they need the ENGINE, and
    there is one of those per process. Threading a handle through them was
    ceremony that never chose anything. */
-mt_atom *mt_parse(const char *source)
+static mt_atom *parse_n(const char *source, size_t length, const char *door)
 { fid_t f;
   term_t av;
   mt_atom *out = NULL;
 
-  if ( !source ) return err_null(MT_MISUSE, "mt_parse needs source text");
-  if ( !engine_ready("mt_parse") ) return NULL;
+  if ( !engine_ready(door) ) return NULL;
 
-  if ( !(f = frame_open("mt_parse")) ) return NULL;
+  if ( !(f = frame_open(door)) ) return NULL;
   av = PL_new_term_refs(3);
-  if ( !av || !PL_put_string_chars(av, source) )
+  if ( !av || !PL_put_string_nchars(av, length, source) )
   { PL_discard_foreign_frame(f);
     return err_null(MT_NOMEM, "out of memory holding the source");
   }
@@ -2098,6 +2136,16 @@ mt_atom *mt_parse(const char *source)
     out = decode(av + 1, av + 2);
   PL_discard_foreign_frame(f);
   return out;
+}
+
+mt_atom *mt_parse(const char *source)
+{ if ( !source ) return err_null(MT_MISUSE, "mt_parse needs source text");
+  return parse_n(source, strlen(source), "mt_parse");
+}
+
+mt_atom *mt_parsen(const char *source, size_t length)
+{ if ( !source ) return err_null(MT_MISUSE, "mt_parsen needs source text");
+  return parse_n(source, length, "mt_parsen");
 }
 
 char *mt_show_dup(const mt_atom *atom)
@@ -2112,6 +2160,22 @@ char *mt_show_dup(const mt_atom *atom)
        call_bridge("metta_c_show", 3, av) == MT_OK &&
        !(text = term_text(av + 2, CVT_ATOM | CVT_STRING, NULL)) )
     err_set(MT_NOMEM, "out of memory copying the engine's rendering");
+  PL_discard_foreign_frame(f);
+  return text;
+}
+
+mt_string mt_write_dup(const mt_atom *atom)
+{ fid_t f;
+  term_t av;
+  mt_string text = { NULL, 0 };
+
+  if ( !engine_ready("mt_write_dup") ) return text;
+  if ( !(f = frame_open("mt_write_dup")) ) return text;
+  av = PL_new_term_refs(3);
+  if ( av && put_atom_named(atom, av, av + 1) &&
+       call_bridge("metta_c_write_atom", 3, av) == MT_OK &&
+       !(text.data = term_text(av + 2, CVT_ATOM | CVT_STRING, &text.len)) )
+    err_set(MT_NOMEM, "out of memory copying the engine's written form");
   PL_discard_foreign_frame(f);
   return text;
 }

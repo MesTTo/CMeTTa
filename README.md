@@ -121,11 +121,14 @@ C's single flat namespace. The long names always work.
 | `MT_OBJECT` | a live C value crossing by reference |
 | `MT_HANDLE` | a native engine value held by reference |
 
-Building and reading them starts no engine. `mt_parse()` and `mt_show()`
-do, because text goes through the engine's own reader and writer rather than a
-second one grown here. `mt_show()` writes into a per-thread rotating buffer
-so it drops straight into `printf`, which is the contract `strerror()` already
-gave C; `mt_show_dup()` gives you a copy to keep.
+Building and reading them starts no engine. `mt_parse()`, `mt_parsen()`,
+`mt_show()` and `mt_write_dup()` do, because text goes through the engine's own
+reader and writers rather than a second set grown here. `mt_show()` is
+presentation and writes into a per-thread rotating buffer so it drops straight
+into `printf`; `mt_show_dup()` gives you a copy to keep. `mt_write_dup()` is the
+strict, reader-inverse door. It returns counted `mt_string` data, so an embedded
+NUL survives through `mt_parsen(written.data, written.len)`, and refuses a value
+whose display spelling would read back differently.
 
 ## Answers are stepped, not drained
 
@@ -231,7 +234,8 @@ mt_atom *handle = mt_object(&account, "account", NULL);
 Each call makes ONE value, and this seat does not intern: two `mt_object` calls
 on the same pointer are two atoms that answer `False` to `==` and fail to
 `unify`, where the Node seat interns by identity and Python answers `True`. Wrap
-once and pass the atom. The blob is released by SWI's garbage collector through
+once and pass the atom. Every crossing of that one atom uses one engine identity,
+so it can be matched and deleted with `mt_keep(handle)`. The blob is released by SWI's garbage collector through
 the `mt_free_fn` you hand it, so not interning costs no memory; what it costs is
 that comparison. `get-type` answers `%Undefined%` for one, because this seat
 declares no `seam:host_object/1`, the seam by which a host tells the engine a
@@ -257,7 +261,11 @@ mt_lower(m, (fib $n), (if (< $n 2) $n
 
 The body is C tokens the compiler saw, so there is no quoting, no escaped
 newlines, and unbalanced parentheses are a compile error rather than a runtime
-one. The preprocessor is what makes this possible: Python lowers by reading a
+one. Ordinary `mt_lower` expands C macros first, which is how the shared `POLY`
+body below works. A MeTTa symbol that collides with a C macro therefore uses
+`mt_lower_raw`; its head and body are stringified without expansion. The
+standalone `MT_METTA_RAW(tokens)` gives the same literal spelling. The
+preprocessor is what makes this possible: Python lowers by reading a
 function's `__code__` and Node by reading its `toString()`, and C has neither
 at run time but has `#`, which is access to the program's own source at the
 one moment C offers it.

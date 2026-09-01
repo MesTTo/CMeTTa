@@ -113,6 +113,11 @@ metta_c_read(Source, Term, Names) :-
 % correct and unhelpful to somebody who wrote $x.
 metta_c_show(Term, Names, Text) :- sdisplay_with_names(Term, Names, Text).
 
+% Serialization stays separate from display. It either answers reader-inverse
+% text or raises the engine's ordinary unwritable-value error; it never falls
+% back to a presentation spelling that would read as a different atom.
+metta_c_write_atom(Term, Names, Text) :- swrite_with_names(Term, Names, Text).
+
 %%%%%%%%%% Running a program %%%%%%%%%%
 %
 % The grouping walk, the working-dir defaulting and the load lifecycle are the
