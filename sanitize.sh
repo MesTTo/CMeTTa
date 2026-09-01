@@ -5,7 +5,7 @@
 # Guarantees: UBSan runs every current executable with recovery disabled;
 #   standalone LSan preserves the main suite tally with exitcode=0 and refuses
 #   a leak whose first frame after the allocator belongs to this seat
-#   [tested: make -C extensions/cmetta sanitize; commit=WORKTREE].
+#   [tested: make -C extensions/cmetta sanitize; commit=76cb4d82793b6c61a5e6c138f5b98723a2917153].
 # Owns resources: ai-tmp/cmetta-sanitize, replaced on each run; its temporary
 #   quoted-path symlink is removed on every shell exit.
 
