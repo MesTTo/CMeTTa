@@ -536,7 +536,8 @@ static void test_presentation_and_round_trip_text_are_distinct(void)
     mt_clear();
     written = mt_write_dup(spaced);
     CHECK(written.data == NULL && written.len == 0);
-    CHECK(!mt_ok());
+    CHECK(mt_error() == MT_ERROR);
+    CHECK(mt_errmsg() && strstr(mt_errmsg(), "printed form would read back"));
     CHECK(strcmp(mt_show(spaced), "has space") == 0);
     mt_drop(spaced);
   }
@@ -547,7 +548,8 @@ static void test_presentation_and_round_trip_text_are_distinct(void)
     CHECK(strcmp(mt_show(infinite), "inf") == 0);
     written = mt_write_dup(infinite);
     CHECK(written.data == NULL && written.len == 0);
-    CHECK(!mt_ok());
+    CHECK(mt_error() == MT_ERROR);
+    CHECK(mt_errmsg() && strstr(mt_errmsg(), "printed form would read back"));
     mt_drop(infinite);
   }
 }

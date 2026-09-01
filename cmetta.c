@@ -1922,6 +1922,11 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
        machinery carries it and bridge.pl's prolog:message//1 renders it. A
        bare mt_error(...) printed as "Unknown message: ..."
        [measured 2026-08-27]. */
+    /* Only an error written during this invocation may explain its silence;
+       an errno-shaped thread channel otherwise lends the next call a stale
+       and unrelated reason
+       [tested: test_an_answerless_operation_uses_only_its_own_error;
+       commit=2e13376bb6e1662655525533a1ab02800940aec5]. */
     const char *why = call.failed ? call.error
                     : (g_error_generation != error_before && mt_errmsg()
                     ? mt_errmsg()

@@ -410,7 +410,9 @@ MT_API MT_MUST_USE char *mt_show_dup(const mt_atom *atom);
    atom. `data` is OWNED and counted by `len`; free it with mt_free().
    {NULL, 0} with the engine's reason when the value has no round-trip source
    spelling, such as a live C object, a non-finite float or a symbol containing
-   whitespace. The count is what lets a text atom carry NUL without truncation. */
+   whitespace. The count is what lets a text atom carry NUL without truncation
+   [tested: test_presentation_and_round_trip_text_are_distinct;
+   commit=2e13376bb6e1662655525533a1ab02800940aec5]. */
 MT_API MT_MUST_USE mt_string mt_write_dup(const mt_atom *atom);
 
 /* Free anything this library handed back by pointer that is not an atom. */
@@ -545,7 +547,9 @@ MT_API MT_MUST_USE mt_answers *mt_load(metta *runtime, const char *path);
     mt_do((runtime), "(= " MT_METTA(head) " " MT_METTA(body) ")")
 
 /* The non-expanding twin. Both arguments are stringified in this macro itself,
-   because forwarding either through another macro would expand it first. */
+   because forwarding either through another macro would expand it first
+   [tested: test_raw_lowering_preserves_tokens_that_are_c_macros;
+   commit=2e13376bb6e1662655525533a1ab02800940aec5]. */
 #define mt_lower_raw(runtime, head, body)                                 \
     mt_do((runtime), "(= " #head " " #body ")")
 
