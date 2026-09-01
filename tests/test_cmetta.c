@@ -1381,6 +1381,9 @@ static void test_a_refused_stack_limit_clears_the_engine_exception(metta *m)
   CHECK(mt_error() == MT_ERROR);
   CHECK(mt_errmsg() && strstr(mt_errmsg(), "stack") != NULL);
   CHECK(PL_exception(0) == 0);
+  CHECK(mt_limits_of(m).seconds == old.seconds);
+  CHECK(mt_limits_of(m).inferences == old.inferences);
+  CHECK(mt_limits_of(m).stack_bytes == old.stack_bytes);
 
   CASE("the host can call the engine after the caught exception");
   mt_clear();

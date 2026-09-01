@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 extern int64_t mt_test_cursor_id(const mt_answers *answers);
 
@@ -34,7 +35,7 @@ static mt_answers *open_source(metta *runtime)
 
 static void test_cursor_ids_are_monotone_and_constant_cost(metta *runtime)
 { mt_answers **held = calloc(CURSOR_COUNT, sizeof(*held));
-  mt_answers *old_runtime_cursor;
+  mt_answers *old_runtime_cursor, *old_runtime_row_cursor;
   mt_answers *new_runtime_cursor;
   mt_answers *cursor;
   mt_stats before, after;
@@ -93,6 +94,9 @@ static void test_cursor_ids_are_monotone_and_constant_cost(metta *runtime)
   old_runtime_cursor = open_source(runtime);
   expect(old_runtime_cursor != NULL,
          "a cursor retained across cleanup must open");
+  old_runtime_row_cursor = open_source(runtime);
+  expect(old_runtime_row_cursor != NULL,
+         "a row cursor retained across cleanup must open");
   old_id = mt_test_cursor_id(old_runtime_cursor);
   mt_close(runtime);
 
@@ -100,6 +104,7 @@ static void test_cursor_ids_are_monotone_and_constant_cost(metta *runtime)
   expect(runtime != NULL, "the runtime must restart for the stale-handle case");
   if ( !runtime )
   { mt_answers_free(old_runtime_cursor);
+    mt_answers_free(old_runtime_row_cursor);
     return;
   }
   expect(mt_do(runtime,
@@ -111,6 +116,13 @@ static void test_cursor_ids_are_monotone_and_constant_cost(metta *runtime)
   new_id = mt_test_cursor_id(new_runtime_cursor);
 
   mt_answers_free(old_runtime_cursor);
+  mt_clear();
+  expect(mt_row_next(old_runtime_row_cursor) == NULL,
+         "a stale row cursor must refuse instead of reaching the new engine");
+  expect(mt_error() == MT_MISUSE && mt_errmsg() &&
+         strstr(mt_errmsg(), "mt_row_next") != NULL,
+         "the stale row refusal must name the door the caller used");
+  mt_answers_free(old_runtime_row_cursor);
   mt_clear();
   expect(mt_next(new_runtime_cursor) != NULL,
          "freeing a stale cursor must not close a restarted runtime's cursor");

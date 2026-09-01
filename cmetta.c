@@ -31,6 +31,13 @@
  *     costs heap rather than the 8 MB the thread was given
  *     [tested: tests/test_cmetta.c, test_a_deep_term_does_not_overrun_the_stack;
  *     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
+ *   - allocator sizes, callback lists, space counts, engine counters and stack
+ *     defaults are validated at their representation boundaries
+ *     [tested: tests/test_internal_contracts.c and
+ *     test_a_refused_stack_limit_clears_the_engine_exception; commit=WORKTREE]
+ *   - a cursor refusal names the public step door used, and cached predicate
+ *     and variable-pair handles are rebuilt after successful engine cleanup
+ *     [tested: tests/test_cursor_ids.c and tests/test_reopen.c; commit=WORKTREE]
  *
  * Owns resources: the process's Prolog runtime, released by mt_close(); the
  *   op table; one malloc'ed box per live mt_object, released when both the
@@ -326,13 +333,40 @@ static void frame_close(fid_t f)
     (s)->n = 0;                                                           \
   } while (0)
 
+/* Array arithmetic is checked before allocator arithmetic. malloc(count *
+   width) is otherwise a smaller successful allocation followed by an
+   out-of-bounds walk, not an allocation failure. */
+static bool array_bytes(size_t count, size_t width, size_t *bytes)
+{ if ( width && count > SIZE_MAX / width ) return false;
+  *bytes = count * width;
+  return true;
+}
+
+static bool next_capacity(size_t current, size_t initial, size_t width,
+                          size_t *next, size_t *bytes)
+{ size_t capacity;
+  if ( current )
+  { if ( current > SIZE_MAX / 2 ) return false;
+    capacity = current * 2;
+  } else
+    capacity = initial;
+  if ( !array_bytes(capacity, width, bytes) ) return false;
+  *next = capacity;
+  return true;
+}
+
 /* Twice the room, or the block it was given back unchanged: growing is the
    only part of a push that is not a store, so it is the only part that is a
    function, and a failure leaves the caller's stack intact. */
 static void *stack_grow_(void *items, void *fixed, size_t *cap, size_t width)
-{ size_t bigger = *cap * 2;
-  void *grown = ( items == fixed ) ? malloc(bigger * width)
-                                   : realloc(items, bigger * width);
+{ size_t bigger, bytes;
+  void *grown;
+
+  if ( !next_capacity(*cap, 1, width, &bigger, &bytes) )
+  { err_set(MT_NOMEM, "a term walk is too deep for an addressable stack");
+    return items;
+  }
+  grown = ( items == fixed ) ? malloc(bytes) : realloc(items, bytes);
   if ( !grown ) return items;
   if ( items == fixed ) memcpy(grown, fixed, *cap * width);
   *cap = bigger;
@@ -639,12 +673,16 @@ mt_atom *mt_spaceref(const char *name)
 
 mt_atom *mt_exprv(size_t count, mt_atom **children)
 { mt_atom *a;
-  size_t i;
+  size_t bytes, i;
   bool bad = false;
 
   if ( count > 0 && !children )
     return err_null(MT_MISUSE,
                     "mt_exprv was asked for %zu children and given no array",
+                    count);
+  if ( !array_bytes(count, sizeof(*children), &bytes) )
+    return err_null(MT_NOMEM,
+                    "an expression with %zu children exceeds addressable memory",
                     count);
 
   for (i = 0; i < count; i++)
@@ -661,13 +699,13 @@ mt_atom *mt_exprv(size_t count, mt_atom **children)
     return NULL;
   }
   if ( count > 0 )
-  { if ( !(a->u.e.kids = malloc(count * sizeof(*a->u.e.kids))) )
+  { if ( !(a->u.e.kids = malloc(bytes)) )
     { free(a);
       for (i = 0; i < count; i++) mt_drop(children[i]);
       err_set(MT_NOMEM, "out of memory building an expression of %zu", count);
       return NULL;
     }
-    memcpy(a->u.e.kids, children, count * sizeof(*a->u.e.kids));
+    memcpy(a->u.e.kids, children, bytes);
   }
   a->u.e.n = count;
   return a;
@@ -963,7 +1001,10 @@ struct metta
   char             *path;
   bool              verbose;
   mt_limits    limits;
+  size_t            initial_stack_bytes;
   predicate_t        space_operand;
+  functor_t          equal_functor;
+  functor_t          pair_functor;
   mt_op_entry_t *ops;
   size_t            nops, cap_ops;
 };
@@ -1135,24 +1176,21 @@ static bool is_space(term_t t)
 
 /* The source name of a variable, from the engine's Name=Var pairs. */
 static char *variable_name(term_t names, term_t var)
-{ term_t head, tail, pair;
+{ term_t head, tail;
   if ( !names ) return term_text(var, CVT_WRITE, NULL);
 
   head = PL_new_term_ref();
-  pair = PL_new_term_ref();
   tail = PL_copy_term_ref(names);
   while ( PL_get_list(tail, head, tail) )
   { term_t nm = PL_new_term_ref();
     term_t vr = PL_new_term_ref();
     /* Both Name=Var and Name-Var are read: the engine's name state uses one
        and a reader's variable_names uses the other. */
-    if ( (PL_is_functor(head, PL_new_functor(PL_new_atom("="), 2)) ||
-          PL_is_functor(head, PL_new_functor(PL_new_atom("-"), 2))) &&
+    if ( (PL_is_functor(head, g_runtime.equal_functor) ||
+          PL_is_functor(head, g_runtime.pair_functor)) &&
          PL_get_arg(1, head, nm) && PL_get_arg(2, head, vr) &&
          PL_compare(vr, var) == 0 )
-    { (void)pair;
       return term_text(nm, CVT_ATOM | CVT_STRING, NULL);
-    }
   }
   return term_text(var, CVT_WRITE, NULL);
 }
@@ -1344,8 +1382,11 @@ static bool decode_frame_push(decode_stack *frames, term_t list)
 
 static inline bool decode_frame_add(decode_frame *f, mt_atom *kid)
 { if ( f->n == f->cap )
-  { size_t cap = f->cap ? f->cap * 2 : 4;
-    mt_atom **grown = realloc(f->kids, cap * sizeof(*grown));
+  { size_t cap, bytes;
+    mt_atom **grown;
+    if ( !next_capacity(f->cap, 4, sizeof(*grown), &cap, &bytes) )
+      return false;
+    grown = realloc(f->kids, bytes);
     if ( !grown ) return false;
     f->kids = grown;
     f->cap = cap;
@@ -1459,12 +1500,23 @@ static bool encode_var(encode_ctx *ctx, const char *name, term_t out)
   if ( strcmp(name, "_") == 0 ) return true;
 
   if ( ctx->n == ctx->cap )
-  { size_t cap = ctx->cap ? ctx->cap * 2 : 4;
-    char **nn = realloc(ctx->names, cap * sizeof(*nn));
-    term_t *vv = realloc(ctx->vars, cap * sizeof(*vv));
-    if ( nn ) ctx->names = nn;
-    if ( vv ) ctx->vars = vv;
-    if ( !nn || !vv ) return false;
+  { size_t cap, name_bytes, var_bytes;
+    char **nn;
+    term_t *vv;
+    if ( !next_capacity(ctx->cap, 4, sizeof(*nn), &cap, &name_bytes) ||
+         !array_bytes(cap, sizeof(*vv), &var_bytes) )
+      return false;
+    nn = malloc(name_bytes);
+    vv = malloc(var_bytes);
+    if ( !nn || !vv ) { free(nn); free(vv); return false; }
+    if ( ctx->n )
+    { memcpy(nn, ctx->names, ctx->n * sizeof(*nn));
+      memcpy(vv, ctx->vars, ctx->n * sizeof(*vv));
+    }
+    free(ctx->names);
+    free(ctx->vars);
+    ctx->names = nn;
+    ctx->vars = vv;
     ctx->cap = cap;
   }
   if ( !(ctx->names[ctx->n] = strdup(name)) ) return false;
@@ -1617,7 +1669,7 @@ static bool put_atom_named(const mt_atom *a, term_t out, term_t names)
   { term_t pair = PL_new_term_ref();
     term_t name = PL_new_term_ref();
     ok = PL_put_atom_chars(name, ctx.names[i - 1]) &&
-         PL_cons_functor(pair, PL_new_functor(PL_new_atom("-"), 2),
+         PL_cons_functor(pair, g_runtime.pair_functor,
                          name, ctx.vars[i - 1]) &&
          PL_cons_list(names, pair, names);
   }
@@ -1880,7 +1932,7 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
                           term_t args, term_t result)
 { struct mt_call call;
   mt_atom **decoded = NULL;
-  size_t n = 0, cap = 4, i;
+  size_t n = 0, cap = 4, bytes, i;
   term_t head = PL_new_term_ref();
   term_t tail = PL_copy_term_ref(args);
   mt_status status;
@@ -1888,7 +1940,8 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
   foreign_t rc = FALSE;
 
   memset(&call, 0, sizeof(call));
-  if ( !(decoded = malloc(cap * sizeof(*decoded))) )
+  if ( !array_bytes(cap, sizeof(*decoded), &bytes) ||
+       !(decoded = malloc(bytes)) )
     return PL_resource_error("memory");
 
   while ( PL_get_list(tail, head, tail) )
@@ -1898,9 +1951,14 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
       goto done;
     }
     if ( n == cap )
-    { mt_atom **grown = realloc(decoded, (cap *= 2) * sizeof(*decoded));
+    { size_t grown_cap;
+      mt_atom **grown;
+      if ( !next_capacity(cap, 4, sizeof(*decoded), &grown_cap, &bytes) )
+      { mt_drop(a); rc = PL_resource_error("memory"); goto done; }
+      grown = realloc(decoded, bytes);
       if ( !grown ) { mt_drop(a); rc = PL_resource_error("memory"); goto done; }
       decoded = grown;
+      cap = grown_cap;
     }
     decoded[n++] = a;
   }
@@ -2004,7 +2062,13 @@ static foreign_t pl_cmetta_object_callable(term_t t)
 }
 
 static foreign_t pl_cmetta_apply(term_t t, term_t args, term_t result)
-{ mt_box_t *box = blob_box(t);
+{ size_t arity;
+  mt_box_t *box;
+
+  if ( PL_skip_list(args, 0, &arity) != PL_LIST )
+    return PL_type_error("list", args);
+  (void)arity;
+  box = blob_box(t);
   if ( !box || !box->apply ) return FALSE;
   return run_call(box->type ? box->type : "function",
                   box->apply, box->user, args, result);
@@ -2079,6 +2143,54 @@ static bool goal_atom(const char *name, const char *value)
   return status == MT_OK;
 }
 
+/* Read and write a size-valued Prolog flag as a bound term. Besides avoiding
+   source interpolation, these helpers keep the size_t/Prolog-integer boundary
+   explicit on platforms where their ranges differ. */
+static bool prolog_size_flag(const char *name, size_t *value)
+{ fid_t f = frame_open("reading a Prolog size flag");
+  term_t av;
+  uint64_t wide;
+  mt_status status;
+
+  if ( !f ) return false;
+  av = PL_new_term_refs(2);
+  if ( !av || !PL_put_atom_chars(av, name) )
+    status = err_set(MT_NOMEM, "out of memory reading Prolog flag %s", name);
+  else
+    status = call_bridge("current_prolog_flag", 2, av);
+  if ( status == MT_OK && !PL_get_uint64(av + 1, &wide) )
+    status = err_set(MT_ERROR, "Prolog flag %s was not an unsigned integer",
+                     name);
+  if ( status == MT_OK && sizeof(size_t) < sizeof(wide) && wide > SIZE_MAX )
+    status = err_set(MT_ERROR,
+                     "Prolog flag %s exceeds this platform's size_t range",
+                     name);
+  if ( status == MT_OK ) *value = (size_t)wide;
+  frame_close(f);
+  return status == MT_OK;
+}
+
+static bool set_prolog_size_flag(const char *name, size_t value)
+{ fid_t f = frame_open("setting a Prolog size flag");
+  term_t av;
+  mt_status status;
+
+  if ( !f ) return false;
+  av = PL_new_term_refs(2);
+  if ( sizeof(size_t) > sizeof(uint64_t) && value > (size_t)UINT64_MAX )
+    status = err_set(MT_UNSUPPORTED,
+                     "requested Prolog flag %s exceeds uint64_t", name);
+  else if ( !av || !PL_put_atom_chars(av, name) ||
+            !PL_put_uint64(av + 1, (uint64_t)value) )
+    status = err_set(MT_NOMEM,
+                     "could not represent the requested Prolog flag %s",
+                     name);
+  else
+    status = call_bridge("set_prolog_flag", 2, av);
+  frame_close(f);
+  return status == MT_OK;
+}
+
 static char *default_path(void)
 { const char *env = getenv("METTA_PATH");
   return strdup(env && *env ? env : MT_ENGINE_PATH);
@@ -2091,6 +2203,8 @@ metta *mt_open(const mt_config *config)
   char *path;
   char *buf;
   size_t bufsz;
+  size_t initial_stack_bytes;
+  functor_t equal_functor, pair_functor;
 
   if ( !config ) config = &defaults;
 
@@ -2131,6 +2245,18 @@ metta *mt_open(const mt_config *config)
                       as_pl_function((mt_anyfn)pl_cmetta_apply), 0);
   PL_register_blob_type(&mt_object_blob);
 
+  if ( !prolog_size_flag("stack_limit", &initial_stack_bytes) )
+  { free(path);
+    return NULL;
+  }
+  equal_functor = PL_new_functor(PL_new_atom("="), 2);
+  pair_functor = PL_new_functor(PL_new_atom("-"), 2);
+  if ( !equal_functor || !pair_functor )
+  { free(path);
+    return err_null(MT_NOMEM,
+                    "out of memory caching the engine's pair functors");
+  }
+
   bufsz = strlen(path) + 128;
   if ( !(buf = malloc(bufsz)) )
   { free(path);
@@ -2138,9 +2264,7 @@ metta *mt_open(const mt_config *config)
   }
 
   if ( config->stack_limit )
-  { snprintf(buf, bufsz, "set_prolog_flag(stack_limit, %zu)",
-             config->stack_limit);
-    if ( !goal(buf) )
+  { if ( !set_prolog_size_flag("stack_limit", config->stack_limit) )
     { free(path); free(buf);
       return NULL;
     }
@@ -2204,6 +2328,9 @@ metta *mt_open(const mt_config *config)
      commit=802878f86f478c23fc05f7e68cbe605160eedb59]. */
   g_runtime.space_operand =
     PL_predicate("metta_c_space_operand", 1, "user");
+  g_runtime.equal_functor = equal_functor;
+  g_runtime.pair_functor = pair_functor;
+  g_runtime.initial_stack_bytes = initial_stack_bytes;
   g_runtime.generation = ++g_runtime_generation;
   g_runtime.open = true;
   g_runtime.path = path;
@@ -2533,19 +2660,35 @@ bool mt_space_del(mt_space *space, mt_atom *atom)
   return removed;
 }
 
+static bool space_count_value(term_t term, size_t *count)
+{ uint64_t wide;
+
+  if ( !PL_get_uint64(term, &wide) )
+  { err_set(MT_ERROR,
+            "the space answered a negative or non-integer count");
+    return false;
+  }
+  if ( sizeof(size_t) < sizeof(wide) && wide > SIZE_MAX )
+  { err_set(MT_ERROR, "the space count exceeds this platform's size_t range");
+    return false;
+  }
+  *count = (size_t)wide;
+  return true;
+}
+
 size_t mt_space_count(mt_space *space)
 { fid_t f = 0;
   term_t av = 0;
   mt_status status = MT_MISUSE;
-  int64_t n = 0;
+  size_t n = 0;
 
   if ( handle_ready(space, "mt_space_count") )
     status = space_call("metta_c_count", space, NULL, 2, &av, &f);
 
-  if ( status == MT_OK && !PL_get_int64(av + 1, &n) )
-    err_set(MT_ERROR, "the space did not answer a count");
+  if ( status == MT_OK && !space_count_value(av + 1, &n) )
+    status = MT_ERROR;
   frame_close(f);
-  return status == MT_OK ? (size_t)n : 0;
+  return status == MT_OK ? n : 0;
 }
 
 bool mt_space_wipe(mt_space *space)
@@ -2848,13 +2991,13 @@ static void clear_current(mt_answers *answers)
   answers->current_text = NULL;
 }
 
-static mt_status answers_step(mt_answers *answers)
+static mt_status answers_step(mt_answers *answers, const char *door)
 { fid_t f;
   term_t av;
   mt_status status;
   term_t head, tail;
 
-  if ( !answers ) return err_set(MT_MISUSE, "mt_answers_step needs a cursor");
+  if ( !answers ) return err_set(MT_MISUSE, "%s needs a cursor", door);
   if ( answers->done ) return MT_DONE;
 
   if ( !answers->lazy )
@@ -2873,16 +3016,17 @@ static mt_status answers_step(mt_answers *answers)
 
   /* Only the lazy half needs the engine; a run's answers are C memory and a
      caller may walk them after mt_close(). */
-  if ( !engine_ready("mt_next") ) return MT_MISUSE;
+  if ( !engine_ready(door) ) return MT_MISUSE;
   if ( answers->generation != g_runtime.generation )
   { answers->done = true;
     return err_set(MT_MISUSE,
-                   "mt_next was given a cursor from a previous engine runtime");
+                   "%s was given a cursor from a previous engine runtime",
+                   door);
   }
 
   clear_current(answers);
 
-  if ( !(f = frame_open("mt_next")) ) return MT_NOMEM;
+  if ( !(f = frame_open(door)) ) return MT_NOMEM;
   av = PL_new_term_refs(3);
   if ( !av || !PL_put_int64(av, answers->cursor_id) ||
        !PL_put_float(av + 1, answers->runtime->limits.seconds) )
@@ -2926,13 +3070,13 @@ static mt_status answers_step(mt_answers *answers)
    whether that was exhaustion or a failure. */
 const mt_atom *mt_next(mt_answers *answers)
 { if ( !answers ) return NULL;
-  return answers_step(answers) == MT_ROW ? answers->current : NULL;
+  return answers_step(answers, "mt_next") == MT_ROW ? answers->current : NULL;
 }
 
 /* The same step reported in full. The row lives in the cursor and is
    refreshed here, so it is a pointer and costs no copy per answer. */
 const mt_row *mt_row_next(mt_answers *answers)
-{ if ( !mt_next(answers) ) return NULL;
+{ if ( !answers || answers_step(answers, "mt_row_next") != MT_ROW ) return NULL;
   answers->row.atom  = answers->current;
   answers->row.text  = answers->current_text;
   answers->row.group = answers->current_group;
@@ -3014,8 +3158,12 @@ mt_list mt_all(mt_answers *answers)
   if ( !answers ) return out;
   while ( (found = mt_next(answers)) != NULL )
   { if ( out.len == cap )
-    { size_t grown_cap = cap ? cap * 2 : 8;
-      mt_atom **grown = realloc(out.items, grown_cap * sizeof(*grown));
+    { size_t grown_cap, bytes;
+      mt_atom **grown;
+      if ( !next_capacity(cap, 8, sizeof(*grown), &grown_cap, &bytes) )
+        grown = NULL;
+      else
+        grown = realloc(out.items, bytes);
       if ( !grown )
       { mt_list_free(out);
         mt_answers_free(answers);
@@ -3147,15 +3295,11 @@ void mt_answers_free(mt_answers *answers)
 
 bool mt_limit(metta *runtime, mt_limits limits)
 { if ( !handle_ready(runtime, "mt_limit") ) return false;
+  if ( !set_prolog_size_flag("stack_limit",
+                             limits.stack_bytes ? limits.stack_bytes
+                                                : runtime->initial_stack_bytes) )
+    return false;
   runtime->limits = limits;
-
-  if ( runtime->limits.stack_bytes )
-  { char goal_text[96];
-    snprintf(goal_text, sizeof(goal_text),
-             "set_prolog_flag(stack_limit, %zu)", runtime->limits.stack_bytes);
-    if ( !goal(goal_text) )
-      return false;
-  }
   return true;
 }
 
@@ -3177,13 +3321,72 @@ mt_limits mt_limits_of(const metta *runtime)
  * Measuring
  * ================================================================== */
 
+static bool number_as_double(term_t term, double *value)
+{ int64_t signed_value;
+  uint64_t unsigned_value;
+
+  if ( PL_get_float(term, value) ) return true;
+  if ( PL_get_int64(term, &signed_value) )
+  { *value = (double)signed_value;
+    return true;
+  }
+  if ( PL_get_uint64(term, &unsigned_value) )
+  { *value = (double)unsigned_value;
+    return true;
+  }
+  return false;
+}
+
+static bool decode_stats(term_t list, mt_stats *out)
+{ term_t head = PL_new_term_ref();
+  term_t tail = PL_copy_term_ref(list);
+  uint64_t integers[4];
+  double times[2];
+  size_t i;
+
+  if ( !head || !tail )
+  { err_set(MT_NOMEM, "out of memory decoding the engine counters");
+    return false;
+  }
+  for (i = 0; i < 6; i++)
+  { if ( !PL_get_list(tail, head, tail) )
+    { err_set(MT_ERROR,
+              "the engine answered %zu counters where six were expected", i);
+      return false;
+    }
+    if ( i == 1 || i == 4 )
+    { size_t time_index = i == 1 ? 0 : 1;
+      if ( !number_as_double(head, &times[time_index]) )
+      { err_set(MT_ERROR, "engine counter %zu was not numeric", i + 1);
+        return false;
+      }
+    } else
+    { size_t integer_index = i == 0 ? 0 : i == 2 ? 1 : i == 3 ? 2 : 3;
+      if ( !PL_get_uint64(head, &integers[integer_index]) )
+      { err_set(MT_ERROR,
+                "engine counter %zu was not an unsigned integer", i + 1);
+        return false;
+      }
+    }
+  }
+  if ( !PL_get_nil(tail) )
+  { err_set(MT_ERROR, "the engine answered more than six counters");
+    return false;
+  }
+  out->inferences = integers[0];
+  out->cputime = times[0];
+  out->gc_count = integers[1];
+  out->gc_freed = integers[2];
+  out->gc_time = times[1] / 1000.0;
+  out->table_bytes = integers[3];
+  return true;
+}
+
 mt_stats mt_stats_now(metta *runtime)
 { fid_t f;
-  term_t av, head, tail;
+  term_t av;
   mt_status status;
-  double values[6] = {0, 0, 0, 0, 0, 0};
   mt_stats out = {0, 0, 0, 0, 0, 0};
-  size_t i = 0;
 
   if ( !handle_ready(runtime, "mt_stats_now") ) return out;
   if ( !(f = frame_open("mt_stats_now")) ) return out;
@@ -3191,29 +3394,9 @@ mt_stats mt_stats_now(metta *runtime)
   av = PL_new_term_refs(1);
   status = av ? call_bridge("metta_c_stats", 1, av)
               : err_set(MT_NOMEM, "out of memory sampling the counters");
-  if ( status == MT_OK )
-  { head = PL_new_term_ref();
-    tail = PL_copy_term_ref(av);
-    while ( i < 6 && PL_get_list(tail, head, tail) )
-    { int64_t whole;
-      if ( PL_get_int64(head, &whole) ) values[i] = (double)whole;
-      else if ( !PL_get_float(head, &values[i]) ) values[i] = 0;
-      i++;
-    }
-    if ( i < 6 )
-      status = err_set(MT_ERROR,
-                       "the engine answered %zu counters where six were "
-                       "expected", i);
-  }
+  if ( status == MT_OK && !decode_stats(av, &out) ) status = MT_ERROR;
   PL_discard_foreign_frame(f);
   if ( status != MT_OK ) return out;
-
-  out.inferences  = (uint64_t)values[0];
-  out.cputime     = values[1];
-  out.gc_count    = (uint64_t)values[2];
-  out.gc_freed    = (uint64_t)values[3];
-  out.gc_time     = values[4] / 1000.0;   /* the engine reports milliseconds */
-  out.table_bytes = (uint64_t)values[5];
   return out;
 }
 
@@ -3227,6 +3410,99 @@ mt_stats mt_stats_since(mt_stats before, mt_stats after)
   spent.table_bytes = after.table_bytes - before.table_bytes;
   return spent;
 }
+
+#ifdef MT_TEST_FAULTS
+/* Fault-library probes exercise engine terms that the public bridge cannot
+   honestly produce. They keep invalid fixtures out of the installed surface
+   while testing the conversion helpers themselves. */
+bool mt_test_improper_apply_is_rejected(void)
+{ fid_t f = frame_open("testing an improper apply list");
+  term_t callable, args, head, tail, result;
+  char *text = NULL;
+  bool rejected = false;
+
+  if ( !f ) return false;
+  callable = PL_new_term_ref();
+  args = PL_new_term_ref();
+  head = PL_new_term_ref();
+  tail = PL_new_term_ref();
+  result = PL_new_term_ref();
+  if ( callable && args && head && tail && result &&
+       PL_put_atom_chars(head, "head") && PL_put_atom_chars(tail, "not_a_list") &&
+       PL_cons_list(args, head, tail) &&
+       pl_cmetta_apply(callable, args, result) == FALSE )
+  { term_t exception = PL_exception(0);
+    if ( exception )
+    { text = term_text(exception, CVT_WRITE, NULL);
+      rejected = text && strstr(text, "type_error(list") != NULL;
+      PL_clear_exception();
+    }
+  }
+  free(text);
+  frame_close(f);
+  return rejected;
+}
+
+bool mt_test_negative_count_is_rejected(void)
+{ fid_t f = frame_open("testing a negative space count");
+  term_t value;
+  size_t count = 0;
+  bool rejected;
+
+  if ( !f ) return false;
+  value = PL_new_term_ref();
+  rejected = value && PL_put_int64(value, -1) &&
+             !space_count_value(value, &count);
+  frame_close(f);
+  return rejected;
+}
+
+bool mt_test_large_stats_are_exact(void)
+{ static const uint64_t first = UINT64_C(9007199254740993);
+  static const uint64_t last = UINT64_C(9007199254740995);
+  fid_t f = frame_open("testing exact large counters");
+  term_t list, head, tail;
+  mt_stats stats = {0};
+  bool ok = false;
+  int i;
+
+  if ( !f ) return false;
+  list = PL_new_term_ref();
+  head = PL_new_term_ref();
+  tail = PL_new_term_ref();
+  if ( !list || !head || !tail || !PL_put_nil(list) ) goto done;
+  for (i = 5; i >= 0; i--)
+  { bool put = i == 0 ? PL_put_uint64(head, first)
+             : i == 1 ? PL_put_float(head, 1.5)
+             : i == 2 ? PL_put_uint64(head, 7)
+             : i == 3 ? PL_put_uint64(head, 9)
+             : i == 4 ? PL_put_float(head, 2.0)
+                      : PL_put_uint64(head, last);
+    if ( !put || !PL_put_term(tail, list) ||
+         !PL_cons_list(list, head, tail) )
+      goto done;
+  }
+  ok = decode_stats(list, &stats) && stats.inferences == first &&
+       stats.table_bytes == last && stats.gc_count == 7 &&
+       stats.gc_freed == 9 && stats.cputime == 1.5 &&
+       stats.gc_time == 0.002;
+done:
+  frame_close(f);
+  return ok;
+}
+
+bool mt_test_decode_growth_overflow_is_rejected(void)
+{ decode_frame frame = { .kids = NULL, .n = SIZE_MAX, .cap = SIZE_MAX,
+                         .tail = 0 };
+  return !decode_frame_add(&frame, NULL);
+}
+
+size_t mt_test_stack_limit(void)
+{ size_t value = 0;
+  (void)prolog_size_flag("stack_limit", &value);
+  return value;
+}
+#endif
 
 /* ================================================================== *
  * Publishing C functions

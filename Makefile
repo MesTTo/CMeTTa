@@ -67,7 +67,8 @@ LDLIBS  += -lswipl
 LIB       := libcmetta.so
 FAULT_LIB := tests/libcmetta_fault.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower
-FAULT_TESTS := tests/test_alloc_failure tests/test_cursor_ids tests/test_reopen
+FAULT_TESTS := tests/test_alloc_failure tests/test_cursor_ids tests/test_reopen \
+               tests/test_internal_contracts
 THREAD_TESTS := tests/test_threads
 TESTS     := tests/test_cmetta tests/test_bad_boot tests/test_quoted_path \
              $(FAULT_TESTS) $(THREAD_TESTS)
@@ -182,7 +183,7 @@ docs:
 # The examples run too. An example that no longer compiles, or that compiles
 # and then fails, is documentation that lies, and the README quotes all four
 # directly. The Python seat gates its examples for the same reason.
-test: $(TESTS) $(EXAMPLES) surface docs version hardening
+test: $(TESTS) $(EXAMPLES) $(KIT) surface docs version hardening
 	@./tests/test_cmetta
 	@./tests/test_bad_boot
 	@set -e; \
@@ -195,7 +196,9 @@ test: $(TESTS) $(EXAMPLES) surface docs version hardening
 	@./tests/test_alloc_failure
 	@./tests/test_cursor_ids
 	@./tests/test_reopen
+	@./tests/test_internal_contracts
 	@./tests/test_threads
+	@python3 ./tests/test_kit.py ./kit/driver "$(abspath ../../ai-tmp)"
 	@for example in $(EXAMPLES); do \
 	    ./$$example > /dev/null || { echo "$$example failed" >&2; exit 1; }; \
 	    echo "$$example ok"; \

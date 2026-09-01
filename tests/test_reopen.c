@@ -38,6 +38,8 @@ static void test_restart_replaces_runtime_owned_predicates(void)
 { metta *runtime = mt_open(NULL);
   void *first;
   mt_atom *space;
+  mt_atom *variable_form;
+  mt_string written;
 
   expect(runtime != NULL, "the first runtime must boot");
   if ( !runtime ) return;
@@ -87,6 +89,16 @@ static void test_restart_replaces_runtime_owned_predicates(void)
   expect(space && mt_kind_of(space) == MT_SPACE,
          "space decoding must use the restarted runtime's handle");
   mt_drop(space);
+
+  variable_form = mt_parse("(restart-pair $x)");
+  written = mt_write_dup(variable_form);
+  expect(variable_form != NULL && written.data != NULL,
+         "the restarted variable functors must decode and encode");
+  expect(written.data && written.len == strlen("(restart-pair $x)") &&
+         memcmp(written.data, "(restart-pair $x)", written.len) == 0,
+         "the restarted functor cache must preserve the source variable name");
+  mt_free(written.data);
+  mt_drop(variable_form);
   mt_close(runtime);
 }
 

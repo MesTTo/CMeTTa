@@ -46,7 +46,7 @@ ENGINE_DEFINE="-DMT_ENGINE_PATH=\"$ROOT\""
 # libraries do use it, and `make hardening` checks those linked artifacts.
 LINK="-L$PLLIBDIR -Wl,-rpath,$PLLIBDIR -Wl,-z,relro,-z,now -lswipl -lm"
 NORMAL_TESTS="test_cmetta test_bad_boot test_quoted_path"
-FAULT_TESTS="test_alloc_failure test_cursor_ids test_reopen"
+FAULT_TESTS="test_alloc_failure test_cursor_ids test_reopen test_internal_contracts"
 EXAMPLES="hello ops lower stream"
 FIXTURE="$ROOT/ai-tmp/cmetta-sanitize-path-o'brien-unicodé-$$"
 
@@ -59,7 +59,7 @@ build_matrix() {
     mode=$1
     sanitize_flags=$2
     out="$BUILD_ROOT/$mode"
-    mkdir -p "$out/tests" "$out/examples"
+    mkdir -p "$out/tests" "$out/examples" "$out/kit"
 
     # The compiler flag strings are deliberately split into words.
     # shellcheck disable=SC2086
@@ -93,6 +93,10 @@ build_matrix() {
             -o "$out/examples/$example_name" "$HERE/examples/$example_name.c" \
             -L"$out" -Wl,-rpath,"$out" -lcmetta $sanitize_flags $LINK
     done
+    # shellcheck disable=SC2086
+    $CC $COMMON "$ENGINE_DEFINE" $sanitize_flags \
+        -o "$out/kit/driver" "$HERE/kit/driver.c" \
+        -L"$out" -Wl,-rpath,"$out" -lcmetta $sanitize_flags $LINK
 }
 
 run_ubsan() {
@@ -111,7 +115,10 @@ run_ubsan() {
     "$out/tests/test_alloc_failure" >> "$log" 2>&1
     "$out/tests/test_cursor_ids" >> "$log" 2>&1
     "$out/tests/test_reopen" >> "$log" 2>&1
+    "$out/tests/test_internal_contracts" >> "$log" 2>&1
     "$out/tests/test_threads" >> "$log" 2>&1
+    python3 "$HERE/tests/test_kit.py" "$out/kit/driver" \
+        "$BUILD_ROOT" >> "$log" 2>&1
     for example_name in $EXAMPLES; do
         "$out/examples/$example_name" > /dev/null 2>> "$log"
         echo "$example_name ok" >> "$log"
