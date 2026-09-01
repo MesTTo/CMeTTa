@@ -1811,7 +1811,7 @@ struct mt_call
    be handed NULL or retain a stale nullable slot. Every public callback door
    refuses the missing context through the same errno-shaped channel instead
    of reading it [tested: test_a_door_that_takes_an_atom_refuses_null;
-   commit=WORKTREE]. */
+   commit=acf9c5e7503903ead353176c0a6e116bbf23f07a]. */
 static bool call_given(const mt_call *call, const char *door)
 { if ( call ) return true;
   err_set(MT_MISUSE, "%s was given a NULL operation call", door);
