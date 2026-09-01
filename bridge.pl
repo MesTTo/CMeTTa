@@ -38,6 +38,12 @@
 %     no door that closes a cursor without also freeing it, so the C suite
 %     cannot reach the second close; the branch is here so a host that grows
 %     one is not punished for it]
+%   - cursor identifiers are monotone for one runtime's lifetime and opening
+%     one takes one atomic flag update rather than a scan of the open-cursor
+%     table. The C half carries the runtime generation beside the identifier,
+%     so a cursor retained across cleanup cannot close a new runtime's cursor
+%     after SWI resets its flags [tested: extensions/cmetta/tests/test_cursor_ids.c,
+%     test_cursor_ids_are_monotone_and_constant_cost; commit=WORKTREE]
 %   - no answer is encoded, tagged, or stringified on the way out: the C half
 %     receives the engine's own term. This seat is in-process with the engine
 %     and has no marshalling boundary to cross, which is the whole reason it
@@ -260,10 +266,8 @@ metta_c_open_match(Pattern, Space, Inferences, Id) :-
     metta_c_new_cursor(Engine, Id).
 
 metta_c_new_cursor(Engine, Id) :-
-    (   aggregate_all(max(N), metta_c_cursor(N, _), Highest)
-    ->  Id is Highest + 1
-    ;   Id = 1
-    ),
+    flag(metta_c_cursor_id, Previous, Previous + 1),
+    Id is Previous + 1,
     assertz(metta_c_cursor(Id, Engine)).
 
 % [] is exhaustion and [Answer] is one answer, so the C half needs no

@@ -959,6 +959,7 @@ typedef struct mt_op_entry
 
 struct metta
 { bool              open;
+  uint64_t          generation;
   char             *path;
   bool              verbose;
   mt_limits    limits;
@@ -970,6 +971,7 @@ struct metta
 static struct metta g_runtime;
 static bool         g_open = false;
 static bool         g_cleanup_failed = false;
+static uint64_t     g_runtime_generation;
 
 struct mt_space
 { metta *runtime;
@@ -2158,6 +2160,7 @@ metta *mt_open(const mt_config *config)
      commit=802878f86f478c23fc05f7e68cbe605160eedb59]. */
   g_runtime.space_operand =
     PL_predicate("metta_c_space_operand", 1, "user");
+  g_runtime.generation = ++g_runtime_generation;
   g_runtime.open = true;
   g_runtime.path = path;
   g_runtime.verbose = config->verbose;
@@ -2531,6 +2534,7 @@ typedef struct eager_answer
    already computed, or an engine suspended between them. */
 struct mt_answers
 { metta        *runtime;
+  uint64_t       generation;     /* runtime that owns a lazy cursor id */
   bool          lazy;
   mt_atom      *pattern;        /* what mt_bound lines each answer against */
   int64_t       cursor_id;      /* lazy: the bridge's engine id     */
@@ -2546,7 +2550,10 @@ struct mt_answers
 static mt_answers *answers_alloc(metta *runtime)
 { mt_answers *a = calloc(1, sizeof(*a));
   if ( !a ) err_set(MT_NOMEM, "out of memory opening a cursor");
-  else a->runtime = runtime;
+  else
+  { a->runtime = runtime;
+    a->generation = runtime->generation;
+  }
   return a;
 }
 
@@ -2559,6 +2566,14 @@ static MT_TLS size_t test_eager_grows_before_failure = SIZE_MAX;
 
 void mt_test_fail_eager_grow_after(size_t successful_grows)
 { test_eager_grows_before_failure = successful_grows;
+}
+
+/* Expose the identifier but not the engine-owned cursor itself. The regression
+   uses it to prove that an emptied table cannot recycle a stale identifier
+   [tested: test_cursor_ids_are_monotone_and_constant_cost;
+   commit=WORKTREE]. */
+int64_t mt_test_cursor_id(const mt_answers *answers)
+{ return answers && answers->lazy ? answers->cursor_id : -1;
 }
 #endif
 
@@ -2815,6 +2830,11 @@ static mt_status answers_step(mt_answers *answers)
   /* Only the lazy half needs the engine; a run's answers are C memory and a
      caller may walk them after mt_close(). */
   if ( !engine_ready("mt_next") ) return MT_MISUSE;
+  if ( answers->generation != g_runtime.generation )
+  { answers->done = true;
+    return err_set(MT_MISUSE,
+                   "mt_next was given a cursor from a previous engine runtime");
+  }
 
   clear_current(answers);
 
@@ -3053,7 +3073,13 @@ void mt_answers_free(mt_answers *answers)
   mt_drop(answers->pattern);
 
   if ( answers->lazy )
-  { if ( g_open )
+  { /* SWI resets flag/3 state at PL_cleanup(), so the first cursor after a
+       restart may reuse the old runtime's numeric id. The generation is the
+       other half of the handle: an old C cursor can release its own memory,
+       but cannot close a new runtime's engine
+       [tested: test_cursor_ids_are_monotone_and_constant_cost;
+       commit=WORKTREE]. */
+    if ( g_open && answers->generation == g_runtime.generation )
     { fid_t f = frame_open("mt_answers_free");
       term_t av = f ? PL_new_term_refs(1) : 0;
       if ( av && PL_put_int64(av, answers->cursor_id) )
