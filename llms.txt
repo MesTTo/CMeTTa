@@ -66,6 +66,15 @@ type. `S() V() T() N() R() B() E()` are the same builders under
 iterative and covers counted text, signed zero, canonical NaNs and C-object
 identity. It is non-cryptographic and process-local, not a persistent atom ID.
 
+`mt_unify(left, right)` is symmetric pure term algebra and returns an owned,
+normalized `mt_bindings`, or NULL without an error for a structural mismatch.
+`mt_unifyv(count, atoms)` makes every operand agree with the first through one
+substitution. Both borrow their atoms. Read a value with
+`mt_binding(bindings, "x")`, iterate with `mt_bindings_len`,
+`mt_binding_var` and `mt_binding_value`, apply it with
+`mt_substitute(atom, bindings)`, then call `mt_bindings_free`. `_` binds
+nothing, aliases normalize transitively, and no-occurs-check cycles stay finite.
+
 ## Taking one answer
 
 `mt_one(r)` is exactly one and refuses zero or many; `mt_first(r)` takes

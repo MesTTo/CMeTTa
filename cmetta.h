@@ -390,6 +390,42 @@ MT_API bool mt_eq(const mt_atom *a, const mt_atom *b);
    commit=d37f1a5192999fdaa1a617e86191de4fe3570f91]. */
 MT_API uint64_t mt_hash(const mt_atom *atom);
 
+/* A normalized substitution produced by mt_unify() or mt_unifyv(). The
+   object owns its variable and value atoms; the accessors BORROW them until
+   mt_bindings_free(). Entries retain the deterministic binding order of the
+   same last-child-first work-list the Python seat uses.
+
+   Unification is symmetric, iterative and has no occurs check, matching the
+   Python seat: variables in either operand bind, `_` is anonymous, and
+   variadic unification makes every operand agree with the first through one
+   shared substitution. A structural mismatch returns NULL without recording
+   an error; call mt_clear() first when NULL must be distinguished from an
+   allocation or contract failure. Ground equality succeeds with a non-NULL
+   substitution of length zero. Binding values are transitively normalized,
+   while no-occurs-check cycles remain finite.
+
+   mt_substitute() BORROWS both arguments and returns an OWNED atom. It applies
+   one normalized substitution without walking a replacement again, so a
+   cyclic binding such as `$x = (f $x)` remains a finite `(f $x)`.
+   [tested: tests/test_unify.c; commit=WORKTREE] */
+typedef struct mt_bindings mt_bindings;
+
+MT_API MT_MUST_USE mt_bindings *mt_unify(const mt_atom *left,
+                                         const mt_atom *right);
+MT_API MT_MUST_USE mt_bindings *mt_unifyv(
+    size_t count, const mt_atom *const *atoms);
+MT_API size_t mt_bindings_len(const mt_bindings *bindings);
+MT_API const mt_atom *mt_binding_var(const mt_bindings *bindings,
+                                     size_t index);
+MT_API const mt_atom *mt_binding_value(const mt_bindings *bindings,
+                                       size_t index);
+/* A value by variable NAME, BORROWED; NULL when the name is unbound. */
+MT_API const mt_atom *mt_binding(const mt_bindings *bindings,
+                                 const char *name);
+MT_API MT_MUST_USE mt_atom *mt_substitute(const mt_atom *atom,
+                                          const mt_bindings *bindings);
+MT_API void mt_bindings_free(mt_bindings *bindings);
+
 /* --- text, through the engine's own reader and writer --- */
 
 /* Read one MeTTa form. The engine's reader is the only reader. */

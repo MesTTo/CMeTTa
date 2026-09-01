@@ -1040,6 +1040,528 @@ uint64_t mt_hash(const mt_atom *atom)
   return hash;
 }
 
+/* ================================================================== *
+ * Pure-C unification and substitution
+ * ================================================================== */
+
+typedef struct binding_entry
+{ mt_atom *variable;
+  mt_atom *value;
+} binding_entry;
+
+struct mt_bindings
+{ binding_entry *entries;
+  size_t         len, cap;
+  /* Open-addressed indices, stored plus one so zero remains the empty slot.
+     Bindings are never deleted individually, so no tombstone state exists. */
+  size_t        *slots;
+  size_t         slot_cap;
+};
+
+#define NO_BINDING SIZE_MAX
+
+static bool named_variable(const mt_atom *atom)
+{ return atom && atom->kind == MT_VARIABLE &&
+         !(atom->u.t.len == 1 && atom->u.t.text[0] == '_');
+}
+
+static uint64_t binding_name_hash(const char *name, size_t len)
+{ unsigned char kind = (unsigned char)MT_VARIABLE;
+  uint64_t hash = MT_FNV64_OFFSET;
+  hash = hash_bytes(hash, &kind, sizeof(kind));
+  hash = hash_bytes(hash, &len, sizeof(len));
+  return hash_bytes(hash, name, len);
+}
+
+static bool binding_name_equal(const binding_entry *entry,
+                               const char *name, size_t len)
+{ return entry->variable->u.t.len == len &&
+         memcmp(entry->variable->u.t.text, name, len) == 0;
+}
+
+static size_t binding_index_text(const mt_bindings *bindings,
+                                 const char *name, size_t len)
+{ size_t at, probed;
+
+  if ( !bindings->slot_cap || !bindings->slots || !bindings->entries ||
+       !bindings->len )
+    return NO_BINDING;
+  at = (size_t)binding_name_hash(name, len) & (bindings->slot_cap - 1);
+  for (probed = 0; probed < bindings->slot_cap; probed++)
+  { size_t slot = bindings->slots[at];
+    if ( !slot ) return NO_BINDING;
+    if ( binding_name_equal(&bindings->entries[slot - 1], name, len) )
+      return slot - 1;
+    at = (at + 1) & (bindings->slot_cap - 1);
+  }
+  return NO_BINDING;
+}
+
+static size_t binding_index_atom(const mt_bindings *bindings,
+                                 const mt_atom *variable)
+{ if ( !named_variable(variable) ) return NO_BINDING;
+  return binding_index_text(bindings, variable->u.t.text, variable->u.t.len);
+}
+
+static void binding_insert_slot(size_t *slots, size_t slot_cap,
+                                const binding_entry *entries, size_t index)
+{ const mt_atom *variable = entries[index].variable;
+  size_t at = (size_t)binding_name_hash(variable->u.t.text,
+                                        variable->u.t.len) & (slot_cap - 1);
+  while ( slots[at] ) at = (at + 1) & (slot_cap - 1);
+  slots[at] = index + 1;
+}
+
+/* Reserve both arrays before an entry acquires references. Half-full tables
+   keep an unsuccessful lookup bounded by an empty slot, and power-of-two
+   doubling makes the mask above valid. */
+static bool bindings_reserve_one(mt_bindings *bindings)
+{ if ( !bindings->slot_cap || bindings->len >= bindings->slot_cap / 2 )
+  { size_t slot_cap, bytes, i;
+    size_t *slots;
+    if ( !next_capacity(bindings->slot_cap, 8, sizeof(*slots),
+                        &slot_cap, &bytes) )
+    { err_set(MT_NOMEM, "a binding table exceeds addressable memory");
+      return false;
+    }
+    slots = calloc(1, bytes);
+    if ( !slots )
+    { err_set(MT_NOMEM, "out of memory growing a binding index to %zu slots",
+              slot_cap);
+      return false;
+    }
+    for (i = 0; i < bindings->len; i++)
+      binding_insert_slot(slots, slot_cap, bindings->entries, i);
+    free(bindings->slots);
+    bindings->slots = slots;
+    bindings->slot_cap = slot_cap;
+  }
+
+  if ( bindings->len == bindings->cap )
+  { size_t cap, bytes;
+    binding_entry *entries;
+    if ( !next_capacity(bindings->cap, 8, sizeof(*entries), &cap, &bytes) )
+    { err_set(MT_NOMEM, "a substitution exceeds addressable memory");
+      return false;
+    }
+    entries = realloc(bindings->entries, bytes);
+    if ( !entries )
+    { err_set(MT_NOMEM, "out of memory growing a substitution to %zu entries",
+              cap);
+      return false;
+    }
+    bindings->entries = entries;
+    bindings->cap = cap;
+  }
+  return true;
+}
+
+static void binding_replace_value(binding_entry *entry,
+                                  const mt_atom *value)
+{ mt_atom *kept = mt_keep(value);
+  mt_drop(entry->value);
+  entry->value = kept;
+}
+
+static bool binding_put(mt_bindings *bindings, const mt_atom *variable,
+                        const mt_atom *value)
+{ size_t index = binding_index_atom(bindings, variable);
+  if ( index != NO_BINDING )
+  { assert(bindings->entries && index < bindings->len);
+    binding_replace_value(&bindings->entries[index], value);
+    return true;
+  }
+  if ( !bindings_reserve_one(bindings) ) return false;
+  index = bindings->len;
+  bindings->entries[index].variable = mt_keep(variable);
+  bindings->entries[index].value = mt_keep(value);
+  bindings->len++;
+  binding_insert_slot(bindings->slots, bindings->slot_cap,
+                      bindings->entries, index);
+  return true;
+}
+
+/* Follow aliases without entering expressions. An acyclic path is compressed;
+   len+1 followed bindings proves a cycle, which stays untouched and finite. */
+static const mt_atom *binding_walk(mt_bindings *bindings,
+                                   const mt_atom *atom)
+{ const mt_atom *current = atom, *terminal;
+  size_t followed = 0, i;
+
+  while ( named_variable(current) )
+  { size_t index = binding_index_atom(bindings, current);
+    if ( index == NO_BINDING ) break;
+    if ( followed >= bindings->len ) return current;
+    current = bindings->entries[index].value;
+    followed++;
+  }
+  terminal = current;
+  current = atom;
+  for (i = 0; i < followed; i++)
+  { size_t index = binding_index_atom(bindings, current);
+    const mt_atom *next;
+    if ( index == NO_BINDING ) break;
+    next = bindings->entries[index].value;
+    if ( next != terminal )
+      binding_replace_value(&bindings->entries[index], terminal);
+    current = next;
+  }
+  return terminal;
+}
+
+typedef struct substitution_frame
+{ const mt_atom *source;
+  mt_atom      **kids;
+  size_t         at;
+  size_t         binding_index;
+  bool           is_binding;
+} substitution_frame;
+
+typedef MT_STACK(substitution_frame) substitution_stack;
+
+static void substitution_cleanup(substitution_stack *frames, mt_atom *value)
+{ substitution_frame *frame;
+  mt_drop(value);
+  while ( (frame = stack_top(frames)) != NULL )
+  { if ( !frame->is_binding && frame->kids )
+    { size_t i;
+      for (i = 0; i < frame->at; i++) mt_drop(frame->kids[i]);
+      free(frame->kids);
+    }
+    stack_pop(frames);
+  }
+  stack_free(frames);
+}
+
+/* One post-order mapper serves public one-pass substitution and the unifier's
+   transitive normalization. Replacement values are followed only in the
+   latter mode; active binding names cut no-occurs-check cycles, while resolved
+   names cache completed subgraphs. Unchanged expressions retain their exact
+   node and allocate no child array.
+   [source: extensions/python/metta/atoms.py, _resolve_binding/_map_atoms;
+   commit=WORKTREE] */
+static mt_atom *substitute_impl(const mt_atom *root, mt_bindings *bindings,
+                                bool follow_values, unsigned char *active,
+                                unsigned char *resolved)
+{ substitution_frame fixed[MT_WALK_FRAMES];
+  substitution_stack frames;
+  const mt_atom *current = root;
+  mt_atom *value = NULL;
+  bool producing = false;
+
+  stack_init(&frames, fixed);
+  for (;;)
+  { if ( !producing )
+    { size_t index = binding_index_atom(bindings, current);
+      if ( index != NO_BINDING )
+      { if ( !follow_values || resolved[index] )
+        { value = mt_keep(bindings->entries[index].value);
+          producing = true;
+        } else if ( active[index] )
+        { value = mt_keep(current);
+          producing = true;
+        } else
+        { substitution_frame frame = {0};
+          frame.is_binding = true;
+          frame.binding_index = index;
+          if ( !stack_push(&frames, frame) )
+          { err_set(MT_NOMEM,
+                    "out of memory following a nested substitution");
+            substitution_cleanup(&frames, NULL);
+            return NULL;
+          }
+          active[index] = 1;
+          current = bindings->entries[index].value;
+          continue;
+        }
+      } else if ( current->kind == MT_EXPR && current->u.e.n )
+      { substitution_frame frame = {0};
+        frame.source = current;
+        if ( !stack_push(&frames, frame) )
+        { err_set(MT_NOMEM,
+                  "out of memory walking a nested substitution");
+          substitution_cleanup(&frames, NULL);
+          return NULL;
+        }
+        current = current->u.e.kids[0];
+        continue;
+      } else
+      { value = mt_keep(current);
+        producing = true;
+      }
+    }
+
+    while ( producing )
+    { substitution_frame *frame = stack_top(&frames);
+      if ( !frame )
+      { stack_free(&frames);
+        return value;
+      }
+
+      if ( frame->is_binding )
+      { size_t index = frame->binding_index;
+        binding_replace_value(&bindings->entries[index], value);
+        resolved[index] = 1;
+        active[index] = 0;
+        stack_pop(&frames);
+        continue;
+      }
+
+      { size_t index = frame->at;
+        const mt_atom *original = frame->source->u.e.kids[index];
+
+        if ( frame->kids )
+        { frame->kids[index] = value;
+          value = NULL;
+        } else if ( value != original )
+        { size_t bytes, i;
+          if ( !array_bytes(frame->source->u.e.n,
+                            sizeof(*frame->kids), &bytes) ||
+               !(frame->kids = malloc(bytes)) )
+          { mt_drop(value);
+            value = NULL;
+            err_set(MT_NOMEM,
+                    "out of memory rebuilding a substituted expression");
+            substitution_cleanup(&frames, NULL);
+            return NULL;
+          }
+          for (i = 0; i < index; i++)
+            frame->kids[i] = mt_keep(frame->source->u.e.kids[i]);
+          frame->kids[index] = value;
+          value = NULL;
+        } else
+        { /* `value` is the retain this walk just took on `original`, and the
+             live source expression is another owner. Decrementing that known
+             extra reference directly both preserves the source node and tells
+             static analysis why no leaf can be freed here. */
+          unsigned refs_before = MT_DEC(&value->refs);
+          assert(refs_before > 1);
+          (void)refs_before;
+          value = NULL;
+        }
+        frame->at++;
+      }
+
+      if ( frame->at < frame->source->u.e.n )
+      { current = frame->source->u.e.kids[frame->at];
+        producing = false;
+        break;
+      }
+
+      { const mt_atom *source = frame->source;
+        mt_atom **kids = frame->kids;
+        size_t count = source->u.e.n;
+        stack_pop(&frames);
+        if ( kids )
+        { value = mt_exprv(count, kids);
+          free(kids);
+          if ( !value )
+          { substitution_cleanup(&frames, NULL);
+            return NULL;
+          }
+        } else
+          value = mt_keep(source);
+      }
+    }
+  }
+}
+
+static bool bindings_normalize(mt_bindings *bindings)
+{ unsigned char *active, *resolved;
+  size_t i;
+
+  if ( !bindings->len ) return true;
+  active = calloc(bindings->len, sizeof(*active));
+  resolved = calloc(bindings->len, sizeof(*resolved));
+  if ( !active || !resolved )
+  { free(active);
+    free(resolved);
+    err_set(MT_NOMEM, "out of memory normalizing a substitution");
+    return false;
+  }
+
+  /* Direct aliases get the path-compression pass before expression values are
+     rebuilt. This is what keeps a long x0=x1=...=a chain linear. */
+  for (i = 0; i < bindings->len; i++)
+    (void)binding_walk(bindings, bindings->entries[i].variable);
+
+  for (i = 0; i < bindings->len; i++)
+  { mt_atom *value;
+    if ( resolved[i] ) continue;
+    active[i] = 1;
+    value = substitute_impl(bindings->entries[i].value, bindings, true,
+                            active, resolved);
+    active[i] = 0;
+    if ( !value )
+    { free(active);
+      free(resolved);
+      return false;
+    }
+    mt_drop(bindings->entries[i].value);
+    bindings->entries[i].value = value;
+    resolved[i] = 1;
+  }
+  free(active);
+  free(resolved);
+  return true;
+}
+
+/* Robinson's work-list unifier, matching the Python seat's last-child-first
+   stack order and no-occurs-check behavior. `matched` distinguishes a clean
+   structural mismatch from an allocation failure in this C implementation.
+   [source: extensions/python/metta/atoms.py, _unify_symmetric;
+   commit=WORKTREE] */
+static bool unify_pair(mt_bindings *bindings, const mt_atom *left,
+                       const mt_atom *right, bool *matched)
+{ pair_frame fixed[MT_WALK_FRAMES];
+  pair_stack frames;
+  const mt_atom *x = left, *y = right;
+
+  *matched = false;
+  stack_init(&frames, fixed);
+  for (;;)
+  { x = binding_walk(bindings, x);
+    y = binding_walk(bindings, y);
+
+    if ( x == y ||
+         (x->kind == y->kind && x->kind != MT_EXPR && eq_shallow(x, y)) )
+      ;
+    else if ( x->kind == MT_VARIABLE )
+    { if ( named_variable(x) && !binding_put(bindings, x, y) )
+      { stack_free(&frames);
+        return false;
+      }
+    } else if ( y->kind == MT_VARIABLE )
+    { if ( named_variable(y) && !binding_put(bindings, y, x) )
+      { stack_free(&frames);
+        return false;
+      }
+    } else if ( x->kind == MT_EXPR && y->kind == MT_EXPR &&
+                x->u.e.n == y->u.e.n )
+    { if ( x->u.e.n )
+      { pair_frame *frame;
+        if ( !pair_push(&frames, x, y, x->u.e.n) )
+        { err_set(MT_NOMEM,
+                  "out of memory unifying two nested expressions");
+          stack_free(&frames);
+          return false;
+        }
+        frame = stack_top(&frames);
+        frame->at = frame->n - 1;
+        x = frame->a->u.e.kids[frame->at];
+        y = frame->b->u.e.kids[frame->at];
+        continue;
+      }
+    } else
+    { stack_free(&frames);
+      return true;
+    }
+
+    for (;;)
+    { pair_frame *frame = stack_top(&frames);
+      if ( !frame )
+      { *matched = true;
+        stack_free(&frames);
+        return true;
+      }
+      if ( frame->at )
+      { frame->at--;
+        x = frame->a->u.e.kids[frame->at];
+        y = frame->b->u.e.kids[frame->at];
+        break;
+      }
+      stack_pop(&frames);
+    }
+  }
+}
+
+mt_bindings *mt_unifyv(size_t count, const mt_atom *const *atoms)
+{ mt_bindings *bindings;
+  size_t i;
+
+  if ( count < 2 )
+    return err_null(MT_MISUSE,
+                    "mt_unifyv needs at least two atoms; it was given %zu",
+                    count);
+  if ( !atoms )
+    return err_null(MT_MISUSE,
+                    "mt_unifyv was given a count and no atom array");
+  for (i = 0; i < count; i++)
+    if ( !atoms[i] )
+      return err_null(MT_MISUSE,
+                      "mt_unifyv atom %zu of %zu was NULL", i + 1, count);
+
+  bindings = calloc(1, sizeof(*bindings));
+  if ( !bindings )
+    return err_null(MT_NOMEM, "out of memory allocating a substitution");
+
+  for (i = 1; i < count; i++)
+  { bool matched;
+    if ( !unify_pair(bindings, atoms[0], atoms[i], &matched) )
+    { mt_bindings_free(bindings);
+      return NULL;
+    }
+    if ( !matched )
+    { mt_bindings_free(bindings);
+      return NULL;
+    }
+  }
+  if ( !bindings_normalize(bindings) )
+  { mt_bindings_free(bindings);
+    return NULL;
+  }
+  return bindings;
+}
+
+mt_bindings *mt_unify(const mt_atom *left, const mt_atom *right)
+{ const mt_atom *atoms[2] = { left, right };
+  return mt_unifyv(2, atoms);
+}
+
+size_t mt_bindings_len(const mt_bindings *bindings)
+{ return bindings ? bindings->len : 0;
+}
+
+const mt_atom *mt_binding_var(const mt_bindings *bindings, size_t index)
+{ return bindings && index < bindings->len
+       ? bindings->entries[index].variable : NULL;
+}
+
+const mt_atom *mt_binding_value(const mt_bindings *bindings, size_t index)
+{ return bindings && index < bindings->len
+       ? bindings->entries[index].value : NULL;
+}
+
+const mt_atom *mt_binding(const mt_bindings *bindings, const char *name)
+{ size_t index;
+  if ( !bindings || !name )
+  { err_set(MT_MISUSE, "mt_binding needs bindings and a variable name");
+    return NULL;
+  }
+  index = binding_index_text(bindings, name, strlen(name));
+  return index == NO_BINDING ? NULL : bindings->entries[index].value;
+}
+
+mt_atom *mt_substitute(const mt_atom *atom, const mt_bindings *bindings)
+{ if ( !atom || !bindings )
+    return err_null(MT_MISUSE,
+                    "mt_substitute needs an atom and a substitution");
+  return substitute_impl(atom, (mt_bindings *)bindings, false, NULL, NULL);
+}
+
+void mt_bindings_free(mt_bindings *bindings)
+{ size_t i;
+  if ( !bindings ) return;
+  for (i = 0; i < bindings->len; i++)
+  { mt_drop(bindings->entries[i].variable);
+    mt_drop(bindings->entries[i].value);
+  }
+  free(bindings->entries);
+  free(bindings->slots);
+  free(bindings);
+}
+
+#undef NO_BINDING
 #undef MT_FNV64_OFFSET
 #undef MT_FNV64_PRIME
 
@@ -3367,9 +3889,9 @@ void mt_list_free(mt_list list)
    This is one variable's half of the directional match the Python seat spells
    `unify(pattern, atom)`, whose documented reconstruction is
    `substitute(pattern, unify(pattern, atom))`
-   [source: extensions/python/metta/atoms.py, _match/unify]. Narrower on
-   purpose: a caller asking for one name does not need the whole binding set
-   built to be handed one term out of it. */
+   [source: extensions/python/metta/atoms.py, _match/unify; commit=WORKTREE].
+   Narrower on purpose: a caller asking for one answer-row name does not need
+   the whole mt_unify() binding set built to be handed one term out of it. */
 static size_t shorter_of(const mt_atom *a, const mt_atom *b)
 { return a->u.e.n < b->u.e.n ? a->u.e.n : b->u.e.n;
 }

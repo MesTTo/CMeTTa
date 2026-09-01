@@ -45,7 +45,7 @@ ENGINE_DEFINE="-DMT_ENGINE_PATH=\"$ROOT\""
 # an instrumented shared object deliberately cannot use -z defs. The ordinary
 # libraries do use it, and `make hardening` checks those linked artifacts.
 LINK="-L$PLLIBDIR -Wl,-rpath,$PLLIBDIR -Wl,-z,relro,-z,now -lswipl -lm"
-NORMAL_TESTS="test_cmetta test_bad_boot test_quoted_path test_batch_add"
+NORMAL_TESTS="test_cmetta test_bad_boot test_quoted_path test_batch_add test_unify"
 FAULT_TESTS="test_alloc_failure test_cursor_ids test_reopen test_internal_contracts test_hash"
 EXAMPLES="hello ops lower stream"
 FIXTURE="$ROOT/ai-tmp/cmetta-sanitize-path-o'brien-unicodé-$$"
@@ -117,6 +117,7 @@ run_ubsan() {
     "$out/tests/test_reopen" >> "$log" 2>&1
     "$out/tests/test_internal_contracts" >> "$log" 2>&1
     "$out/tests/test_batch_add" >> "$log" 2>&1
+    "$out/tests/test_unify" >> "$log" 2>&1
     "$out/tests/test_hash" >> "$log" 2>&1
     "$out/tests/test_threads" >> "$log" 2>&1
     python3 "$HERE/tests/test_kit.py" "$out/kit/driver" \
@@ -138,6 +139,7 @@ run_lsan() {
 
     : > "$log"
     LSAN_OPTIONS=exitcode=0 "$out/tests/test_cmetta" >> "$log" 2>&1
+    LSAN_OPTIONS=exitcode=0 "$out/tests/test_unify" >> "$log" 2>&1
     grep -Eq '[0-9]+ checks, 0 failures' "$log"
     if grep -Eq '^[[:space:]]*#1 .*[/ ](cmetta\.c|test_[^ /]*\.c):[0-9]+' "$log"; then
         cat "$log"

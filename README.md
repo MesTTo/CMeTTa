@@ -127,6 +127,32 @@ distinct NaN payloads and distinct C atoms carrying the same object identity.
 The hash is fast and non-cryptographic. It includes process-local object
 addresses and native byte order, so do not store or transmit it as an atom ID.
 
+Pure term unification needs no engine either. `mt_unify(left, right)` borrows
+both atoms and returns an owned `mt_bindings`; `mt_unifyv` makes three or more
+terms agree through the same substitution. Variables in either operand bind,
+values are normalized, and `_` remains anonymous. A mismatch is ordinary
+absence, so it returns NULL without setting the error channel:
+
+```c
+mt_atom *pattern = E("job", V("who"), V("rank"));
+mt_atom *fact = E("job", "ada", 9);
+mt_atom *template = E("hired", V("who"), V("rank"));
+mt_bindings *bindings = mt_unify(pattern, fact);
+mt_atom *answer = bindings ? mt_substitute(template, bindings) : NULL;
+
+if ( answer ) printf("%s\n", mt_show(answer));  /* (hired ada 9) */
+
+mt_drop(answer);
+mt_bindings_free(bindings);
+mt_drop(template);
+mt_drop(fact);
+mt_drop(pattern);
+```
+
+`mt_binding(bindings, "who")` borrows one value. Iterate the whole mapping with
+`mt_bindings_len`, `mt_binding_var` and `mt_binding_value`. Unification retains
+its values, so the inputs may be dropped before those accessors are used.
+
 Building and reading them starts no engine. `mt_parse()`, `mt_parsen()`,
 `mt_show()` and `mt_write_dup()` do, because text goes through the engine's own
 reader and writers rather than a second set grown here. `mt_show()` is
