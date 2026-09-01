@@ -811,7 +811,8 @@ static bool eq_shallow(const mt_atom *a, const mt_atom *b)
          enters a term. The space predicates therefore distinguish the zeros
          and identify every NaN, so the pure-C door must too.
          [tested: tests/test_cmetta.c,
-         test_float_identity_agrees_with_the_engine; commit=WORKTREE] */
+         test_float_identity_agrees_with_the_engine;
+         commit=2e13376bb6e1662655525533a1ab02800940aec5] */
       return (isnan(a->u.f) && isnan(b->u.f)) ||
              (!isnan(a->u.f) && !isnan(b->u.f) &&
               memcmp(&a->u.f, &b->u.f, sizeof(a->u.f)) == 0);
@@ -1478,7 +1479,8 @@ static bool encode_leaf(const mt_atom *a, term_t out, encode_ctx *ctx)
          not a success flag. The acquire callback pairs one box reference with
          each created blob and an existing unique blob needs no second one.
          [tested: tests/test_cmetta.c,
-         test_the_same_c_object_is_one_engine_identity; commit=WORKTREE] */
+         test_the_same_c_object_is_one_engine_identity;
+         commit=2e13376bb6e1662655525533a1ab02800940aec5] */
       (void)PL_put_blob(out, a->u.box, sizeof(*a->u.box), &mt_object_blob);
       return true;
     case MT_HANDLE:
