@@ -4108,6 +4108,54 @@ mt_stats mt_stats_since(mt_stats before, mt_stats after)
 /* Fault-library probes exercise engine terms that the public bridge cannot
    honestly produce. They keep invalid fixtures out of the installed surface
    while testing the conversion helpers themselves. */
+static int test_handle_write(IOSTREAM *stream, atom_t atom, int flags)
+{ (void)atom;
+  (void)flags;
+  Sfprintf(stream, "<cmetta-test-handle>");
+  return TRUE;
+}
+
+static PL_blob_t test_handle_blob =
+{ .magic = PL_BLOB_MAGIC,
+  .flags = PL_BLOB_UNIQUE,
+  .name  = "cmetta_test_handle",
+  .write = test_handle_write
+};
+
+/* Construct somebody else's real SWI blob inside the fault library, decode it
+   through the MT_HANDLE branch, then prove its printed name cannot be encoded
+   as though it were the engine value. No public constructor is invented for a
+   native value C cannot itself own.
+   [tested: tests/test_internal_contracts.c,
+   test_native_handle_decode_and_encode_contract; commit=WORKTREE] */
+bool mt_test_native_handle_codec_is_guarded(void)
+{ static const unsigned payload = UINT32_C(0xc0decafe);
+  fid_t frame = frame_open("testing a native engine handle");
+  term_t encoded, destination;
+  mt_atom *decoded = NULL;
+  bool guarded = false;
+
+  if ( !frame ) return false;
+  encoded = PL_new_term_ref();
+  destination = PL_new_term_ref();
+  if ( !encoded || !destination ||
+       !PL_put_blob(encoded, (void *)&payload, sizeof(payload),
+                    &test_handle_blob) )
+    goto done;
+  decoded = decode(encoded, 0);
+  if ( !decoded || decoded->kind != MT_HANDLE ||
+       strcmp(decoded->u.t.text, "<cmetta-test-handle>") != 0 )
+    goto done;
+  mt_clear();
+  guarded = !put_atom(decoded, destination) &&
+            mt_error() == MT_UNSUPPORTED && mt_errmsg() &&
+            strstr(mt_errmsg(), "cannot be sent back by its printed form");
+done:
+  mt_drop(decoded);
+  frame_close(frame);
+  return guarded;
+}
+
 bool mt_test_improper_apply_is_rejected(void)
 { fid_t f = frame_open("testing an improper apply list");
   term_t callable, args, head, tail, result;

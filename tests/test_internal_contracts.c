@@ -3,8 +3,9 @@
  * Assumes: this binary links tests/libcmetta_fault.so, whose probes can build
  *   invalid engine terms that the public bridge never returns.
  * Guarantees: exits nonzero if allocation arithmetic wraps, an improper
- *   callback list is accepted, a negative count wraps, a counter loses bits,
- *   or clearing limits does not restore SWI's original stack limit.
+ *   callback list is accepted, a foreign native handle bypasses its codec
+ *   guard, a negative count wraps, a counter loses bits, or clearing limits
+ *   does not restore SWI's original stack limit.
  * Owns resources: drops its atom and closes the runtime before exit.
  */
 
@@ -14,6 +15,7 @@
 #include <stdio.h>
 
 extern bool mt_test_improper_apply_is_rejected(void);
+extern bool mt_test_native_handle_codec_is_guarded(void);
 extern bool mt_test_negative_count_is_rejected(void);
 extern bool mt_test_large_stats_are_exact(void);
 extern bool mt_test_decode_growth_overflow_is_rejected(void);
@@ -26,6 +28,14 @@ static void expect(bool condition, const char *claim)
   failures++;
   fprintf(stderr, "internal contract regression failed: %s\nlast error: %s\n",
           claim, mt_errmsg() ? mt_errmsg() : "(none)");
+}
+
+static void test_native_handle_decode_and_encode_contract(void)
+{ mt_clear();
+  expect(mt_test_native_handle_codec_is_guarded(),
+         "a foreign native blob must decode as MT_HANDLE and refuse encoding");
+  expect(mt_error() == MT_UNSUPPORTED,
+         "the native-handle encode guard must report MT_UNSUPPORTED");
 }
 
 int main(void)
@@ -53,6 +63,8 @@ int main(void)
   mt_clear();
   expect(mt_test_improper_apply_is_rejected(),
          "an applied function must reject an improper argument list");
+
+  test_native_handle_decode_and_encode_contract();
 
   mt_clear();
   expect(mt_test_negative_count_is_rejected(),
