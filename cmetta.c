@@ -2508,7 +2508,7 @@ static mt_answers *answers_alloc(metta *runtime)
 /* One-shot fault injection for the separate allocator regression binary. It
    is absent from the installed library and counts successful vector growths
    before refusing one [tested: test_eager_growth_is_transactional;
-   commit=WORKTREE]. */
+   commit=31075a6fadc4bf7508bd089f7abb2a542ec9a787]. */
 static MT_TLS size_t test_eager_grows_before_failure = SIZE_MAX;
 
 void mt_test_fail_eager_grow_after(size_t successful_grows)
