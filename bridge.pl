@@ -43,7 +43,8 @@
 %     table. The C half carries the runtime generation beside the identifier,
 %     so a cursor retained across cleanup cannot close a new runtime's cursor
 %     after SWI resets its flags [tested: extensions/cmetta/tests/test_cursor_ids.c,
-%     test_cursor_ids_are_monotone_and_constant_cost; commit=WORKTREE]
+%     test_cursor_ids_are_monotone_and_constant_cost;
+%     commit=b5ddebe73273447caa7c57212d6ee86fc71e0d4a]
 %   - no answer is encoded, tagged, or stringified on the way out: the C half
 %     receives the engine's own term. This seat is in-process with the engine
 %     and has no marshalling boundary to cross, which is the whole reason it

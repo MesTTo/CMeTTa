@@ -2571,7 +2571,7 @@ void mt_test_fail_eager_grow_after(size_t successful_grows)
 /* Expose the identifier but not the engine-owned cursor itself. The regression
    uses it to prove that an emptied table cannot recycle a stale identifier
    [tested: test_cursor_ids_are_monotone_and_constant_cost;
-   commit=WORKTREE]. */
+   commit=b5ddebe73273447caa7c57212d6ee86fc71e0d4a]. */
 int64_t mt_test_cursor_id(const mt_answers *answers)
 { return answers && answers->lazy ? answers->cursor_id : -1;
 }
@@ -3078,7 +3078,7 @@ void mt_answers_free(mt_answers *answers)
        other half of the handle: an old C cursor can release its own memory,
        but cannot close a new runtime's engine
        [tested: test_cursor_ids_are_monotone_and_constant_cost;
-       commit=WORKTREE]. */
+       commit=b5ddebe73273447caa7c57212d6ee86fc71e0d4a]. */
     if ( g_open && answers->generation == g_runtime.generation )
     { fid_t f = frame_open("mt_answers_free");
       term_t av = f ? PL_new_term_refs(1) : 0;
