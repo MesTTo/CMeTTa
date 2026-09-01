@@ -26,7 +26,7 @@
 #   library symbols, and emits stack-protected full-RELRO objects. `make
 #   sanitize` rebuilds in root ai-tmp so sanitizer and ordinary objects never
 #   contaminate one another [tested: make -C extensions/cmetta sanitize;
-#   commit=WORKTREE].
+#   commit=b339084bb5625996fc88a31608d48ad31c575d1f].
 
 SWIPL       ?= swipl
 PLBASE      := $(shell $(SWIPL) --dump-runtime-variables 2>/dev/null | sed -n 's/^PLBASE="\(.*\)";$$/\1/p')

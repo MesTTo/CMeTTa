@@ -5,7 +5,7 @@
  *   table as unguarded after worker evaluation starts.
  * Guarantees: exits 0 only after two attached workers have received their own
  *   error text, exercised mt_of, isolated the mt_show ring, and detached
- *   [tested: tests/test_threads; commit=WORKTREE].
+ *   [tested: tests/test_threads; commit=b339084bb5625996fc88a31608d48ad31c575d1f].
  * Owns resources: two pthreads and their joined lifetimes; one runtime closed
  *   after both workers have detached.
  * Guarded by: C atomics coordinate rendezvous; each worker owns its result.

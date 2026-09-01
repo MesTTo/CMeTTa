@@ -78,7 +78,7 @@
 % shared, so two attached C threads could retract or read one another's reason.
 % thread_local/1 gives each attached engine its own clause list, which SWI
 % reclaims when that thread detaches
-% [tested: tests/test_threads.c; commit=WORKTREE].
+% [tested: tests/test_threads.c; commit=b339084bb5625996fc88a31608d48ad31c575d1f].
 :- thread_local metta_c_captured/1.
 
 %%%%%%%%%% Rendering an exception %%%%%%%%%%
