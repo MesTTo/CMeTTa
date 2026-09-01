@@ -1239,7 +1239,7 @@ static void substitution_cleanup(substitution_stack *frames, mt_atom *value)
    names cache completed subgraphs. Unchanged expressions retain their exact
    node and allocate no child array.
    [source: extensions/python/metta/atoms.py, _resolve_binding/_map_atoms;
-   commit=WORKTREE] */
+   commit=e927fffde3a19d9927892bf64a7fc6202b866ae0] */
 static mt_atom *substitute_impl(const mt_atom *root, mt_bindings *bindings,
                                 bool follow_values, unsigned char *active,
                                 unsigned char *resolved)
@@ -1410,7 +1410,7 @@ static bool bindings_normalize(mt_bindings *bindings)
    stack order and no-occurs-check behavior. `matched` distinguishes a clean
    structural mismatch from an allocation failure in this C implementation.
    [source: extensions/python/metta/atoms.py, _unify_symmetric;
-   commit=WORKTREE] */
+   commit=e927fffde3a19d9927892bf64a7fc6202b866ae0] */
 static bool unify_pair(mt_bindings *bindings, const mt_atom *left,
                        const mt_atom *right, bool *matched)
 { pair_frame fixed[MT_WALK_FRAMES];
@@ -3889,7 +3889,8 @@ void mt_list_free(mt_list list)
    This is one variable's half of the directional match the Python seat spells
    `unify(pattern, atom)`, whose documented reconstruction is
    `substitute(pattern, unify(pattern, atom))`
-   [source: extensions/python/metta/atoms.py, _match/unify; commit=WORKTREE].
+   [source: extensions/python/metta/atoms.py, _match/unify;
+   commit=e927fffde3a19d9927892bf64a7fc6202b866ae0].
    Narrower on purpose: a caller asking for one answer-row name does not need
    the whole mt_unify() binding set built to be handed one term out of it. */
 static size_t shorter_of(const mt_atom *a, const mt_atom *b)

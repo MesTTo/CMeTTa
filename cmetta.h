@@ -407,7 +407,8 @@ MT_API uint64_t mt_hash(const mt_atom *atom);
    mt_substitute() BORROWS both arguments and returns an OWNED atom. It applies
    one normalized substitution without walking a replacement again, so a
    cyclic binding such as `$x = (f $x)` remains a finite `(f $x)`.
-   [tested: tests/test_unify.c; commit=WORKTREE] */
+   [tested: tests/test_unify.c;
+   commit=e927fffde3a19d9927892bf64a7fc6202b866ae0] */
 typedef struct mt_bindings mt_bindings;
 
 MT_API MT_MUST_USE mt_bindings *mt_unify(const mt_atom *left,
