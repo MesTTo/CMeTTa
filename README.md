@@ -121,6 +121,12 @@ C's single flat namespace. The long names always work.
 | `MT_OBJECT` | a live C value crossing by reference |
 | `MT_HANDLE` | a native engine value held by reference |
 
+`mt_eq(a, b)` compares this structure and `mt_hash(a)` supplies the matching
+64-bit hash for a caller-owned table. Equal atoms always hash alike, including
+distinct NaN payloads and distinct C atoms carrying the same object identity.
+The hash is fast and non-cryptographic. It includes process-local object
+addresses and native byte order, so do not store or transmit it as an atom ID.
+
 Building and reading them starts no engine. `mt_parse()`, `mt_parsen()`,
 `mt_show()` and `mt_write_dup()` do, because text goes through the engine's own
 reader and writers rather than a second set grown here. `mt_show()` is

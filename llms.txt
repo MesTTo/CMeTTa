@@ -62,6 +62,10 @@ No count, and no constructor per child: `_Generic` reads each argument's C
 type. `S() V() T() N() R() B() E()` are the same builders under
 `MT_SHORTHAND`.
 
+`mt_hash(atom)` is the 64-bit structural hash paired with `mt_eq`. It is
+iterative and covers counted text, signed zero, canonical NaNs and C-object
+identity. It is non-cryptographic and process-local, not a persistent atom ID.
+
 ## Taking one answer
 
 `mt_one(r)` is exactly one and refuses zero or many; `mt_first(r)` takes

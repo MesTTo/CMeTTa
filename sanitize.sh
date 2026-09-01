@@ -46,7 +46,7 @@ ENGINE_DEFINE="-DMT_ENGINE_PATH=\"$ROOT\""
 # libraries do use it, and `make hardening` checks those linked artifacts.
 LINK="-L$PLLIBDIR -Wl,-rpath,$PLLIBDIR -Wl,-z,relro,-z,now -lswipl -lm"
 NORMAL_TESTS="test_cmetta test_bad_boot test_quoted_path test_batch_add"
-FAULT_TESTS="test_alloc_failure test_cursor_ids test_reopen test_internal_contracts"
+FAULT_TESTS="test_alloc_failure test_cursor_ids test_reopen test_internal_contracts test_hash"
 EXAMPLES="hello ops lower stream"
 FIXTURE="$ROOT/ai-tmp/cmetta-sanitize-path-o'brien-unicodé-$$"
 
@@ -117,6 +117,7 @@ run_ubsan() {
     "$out/tests/test_reopen" >> "$log" 2>&1
     "$out/tests/test_internal_contracts" >> "$log" 2>&1
     "$out/tests/test_batch_add" >> "$log" 2>&1
+    "$out/tests/test_hash" >> "$log" 2>&1
     "$out/tests/test_threads" >> "$log" 2>&1
     python3 "$HERE/tests/test_kit.py" "$out/kit/driver" \
         "$BUILD_ROOT" >> "$log" 2>&1

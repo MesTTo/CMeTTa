@@ -380,6 +380,15 @@ MT_API const mt_atom *mt_at(const mt_atom *atom, size_t index);
    cannot hold the walk's own stack. */
 MT_API bool mt_eq(const mt_atom *a, const mt_atom *b);
 
+/* Structural FNV-1a hash matching mt_eq(): equal atoms always hash alike,
+   signed zeros remain distinct, all NaN payloads agree, counted text includes
+   embedded NUL, and C objects hash by identity. This is a non-cryptographic,
+   in-process hash for caller-owned tables, not a persistent or portable wire
+   identifier. NULL records MT_MISUSE and returns 0; an exhausted deep-walk
+   stack records MT_NOMEM and returns 0
+   [tested: tests/test_hash.c; commit=WORKTREE]. */
+MT_API uint64_t mt_hash(const mt_atom *atom);
+
 /* --- text, through the engine's own reader and writer --- */
 
 /* Read one MeTTa form. The engine's reader is the only reader. */

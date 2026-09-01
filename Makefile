@@ -68,7 +68,7 @@ LIB       := libcmetta.so
 FAULT_LIB := tests/libcmetta_fault.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower
 FAULT_TESTS := tests/test_alloc_failure tests/test_cursor_ids tests/test_reopen \
-               tests/test_internal_contracts
+               tests/test_internal_contracts tests/test_hash
 THREAD_TESTS := tests/test_threads
 TESTS     := tests/test_cmetta tests/test_bad_boot tests/test_quoted_path \
              tests/test_batch_add $(FAULT_TESTS) $(THREAD_TESTS)
@@ -198,6 +198,7 @@ test: $(TESTS) $(EXAMPLES) $(KIT) surface docs version hardening
 	@./tests/test_reopen
 	@./tests/test_internal_contracts
 	@./tests/test_batch_add
+	@./tests/test_hash
 	@./tests/test_threads
 	@python3 ./tests/test_kit.py ./kit/driver "$(abspath ../../ai-tmp)"
 	@for example in $(EXAMPLES); do \

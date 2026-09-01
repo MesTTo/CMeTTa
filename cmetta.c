@@ -434,6 +434,15 @@ static mt_atom *atom_text(mt_kind kind, const char *text, size_t len)
   return a;
 }
 
+#ifdef MT_TEST_FAULTS
+/* MT_HANDLE is a native engine value and cannot be constructed by the public
+   C surface. The fault library exposes one only so the pure-C hash regression
+   covers the final kind without inventing a public constructor. */
+mt_atom *mt_test_handle_atom(const char *text)
+{ return atom_text(MT_HANDLE, text, text ? strlen(text) : 0);
+}
+#endif
+
 static void box_release(mt_box_t *box)
 { if ( !box ) return;
   if ( MT_DEC(&box->refs) == 1 )
@@ -929,6 +938,110 @@ bool mt_eq(const mt_atom *a, const mt_atom *b)
   stack_free(&frames);
   return equal;
 }
+
+/* RFC 9923 defines FNV-1a as xor-then-multiply per input octet and recommends
+   it for general non-cryptographic use. This hash is deliberately an
+   in-process table hash rather than a persistent wire value, so native byte
+   order and object addresses are part of its contract
+   [source: https://www.rfc-editor.org/rfc/rfc9923.html#section-2;
+   commit=WORKTREE]. */
+#define MT_FNV64_OFFSET UINT64_C(14695981039346656037)
+#define MT_FNV64_PRIME  UINT64_C(1099511628211)
+
+static uint64_t hash_bytes(uint64_t hash, const void *data, size_t len)
+{ const unsigned char *bytes = data;
+  size_t i;
+  for (i = 0; i < len; i++)
+  { hash ^= bytes[i];
+    hash *= MT_FNV64_PRIME;
+  }
+  return hash;
+}
+
+static uint64_t hash_shallow(uint64_t hash, const mt_atom *atom)
+{ unsigned char kind = (unsigned char)atom->kind;
+  hash = hash_bytes(hash, &kind, sizeof(kind));
+  switch ( atom->kind )
+  { case MT_SYMBOL:
+    case MT_VARIABLE:
+    case MT_TEXT:
+    case MT_SPACE:
+    case MT_BIGINT:
+    case MT_HANDLE:
+      hash = hash_bytes(hash, &atom->u.t.len, sizeof(atom->u.t.len));
+      return hash_bytes(hash, atom->u.t.text, atom->u.t.len);
+    case MT_INT:
+      return hash_bytes(hash, &atom->u.i, sizeof(atom->u.i));
+    case MT_FLOAT:
+    { unsigned char nan_value = isnan(atom->u.f) ? 1u : 0u;
+      hash = hash_bytes(hash, &nan_value, sizeof(nan_value));
+      return nan_value ? hash
+                       : hash_bytes(hash, &atom->u.f, sizeof(atom->u.f));
+    }
+    case MT_BOOL:
+    { unsigned char value = atom->u.b ? 1u : 0u;
+      return hash_bytes(hash, &value, sizeof(value));
+    }
+    case MT_RATIONAL:
+      hash = hash_bytes(hash, &atom->u.r.num, sizeof(atom->u.r.num));
+      return hash_bytes(hash, &atom->u.r.den, sizeof(atom->u.r.den));
+    case MT_EXPR:
+      return hash_bytes(hash, &atom->u.e.n, sizeof(atom->u.e.n));
+    case MT_OBJECT:
+    { uintptr_t identity = (uintptr_t)atom->u.box;
+      return hash_bytes(hash, &identity, sizeof(identity));
+    }
+    case MT_NONE:
+      break;
+  }
+  return hash;
+}
+
+typedef struct hash_frame
+{ const mt_atom *atom;
+  size_t at;
+} hash_frame;
+
+typedef MT_STACK(hash_frame) hash_stack;
+
+uint64_t mt_hash(const mt_atom *atom)
+{ hash_frame fixed[MT_WALK_FRAMES];
+  hash_stack frames;
+  const mt_atom *current = atom;
+  uint64_t hash = MT_FNV64_OFFSET;
+
+  if ( !atom )
+  { err_set(MT_MISUSE, "mt_hash was given NULL");
+    return 0;
+  }
+  stack_init(&frames, fixed);
+  while ( current )
+  { hash = hash_shallow(hash, current);
+    if ( current->kind == MT_EXPR && current->u.e.n )
+    { hash_frame frame = { current, 1 };
+      if ( !stack_push(&frames, frame) )
+      { stack_free(&frames);
+        return 0;
+      }
+      current = current->u.e.kids[0];
+      continue;
+    }
+    current = NULL;
+    while ( stack_top(&frames) )
+    { hash_frame *frame = stack_top(&frames);
+      if ( frame->at < frame->atom->u.e.n )
+      { current = frame->atom->u.e.kids[frame->at++];
+        break;
+      }
+      stack_pop(&frames);
+    }
+  }
+  stack_free(&frames);
+  return hash;
+}
+
+#undef MT_FNV64_OFFSET
+#undef MT_FNV64_PRIME
 
 void *mt_value(const mt_atom *atom)
 { return ( atom && atom->kind == MT_OBJECT ) ? atom->u.box->value : NULL;
