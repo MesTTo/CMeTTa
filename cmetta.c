@@ -987,7 +987,8 @@ static mt_space g_catalog = { &g_runtime, (char *)"&metta", true };
 #ifdef MT_TEST_FAULTS
 /* Inspect only the ownership boundary exercised by the restart regression;
    this symbol is absent from the installed library
-   [tested: test_restart_replaces_runtime_owned_predicates; commit=WORKTREE]. */
+   [tested: test_restart_replaces_runtime_owned_predicates;
+   commit=802878f86f478c23fc05f7e68cbe605160eedb59]. */
 void *mt_test_cached_space_predicate(void)
 { return g_runtime.space_operand;
 }
@@ -2154,7 +2155,7 @@ metta *mt_open(const mt_config *config)
      invalidates them. Resolve the cache after the bridge has loaded, then
      clear it only after cleanup succeeds
      [tested: test_restart_replaces_runtime_owned_predicates;
-     commit=WORKTREE]. */
+     commit=802878f86f478c23fc05f7e68cbe605160eedb59]. */
   g_runtime.space_operand =
     PL_predicate("metta_c_space_operand", 1, "user");
   g_runtime.open = true;
