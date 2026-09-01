@@ -34,10 +34,12 @@
  *   - allocator sizes, callback lists, space counts, engine counters and stack
  *     defaults are validated at their representation boundaries
  *     [tested: tests/test_internal_contracts.c and
- *     test_a_refused_stack_limit_clears_the_engine_exception; commit=WORKTREE]
+ *     test_a_refused_stack_limit_clears_the_engine_exception;
+ *     commit=da8c4da9df83114ab1d32f3e4049008f37535886]
  *   - a cursor refusal names the public step door used, and cached predicate
  *     and variable-pair handles are rebuilt after successful engine cleanup
- *     [tested: tests/test_cursor_ids.c and tests/test_reopen.c; commit=WORKTREE]
+ *     [tested: tests/test_cursor_ids.c and tests/test_reopen.c;
+ *     commit=da8c4da9df83114ab1d32f3e4049008f37535886]
  *
  * Owns resources: the process's Prolog runtime, released by mt_close(); the
  *   op table; one malloc'ed box per live mt_object, released when both the

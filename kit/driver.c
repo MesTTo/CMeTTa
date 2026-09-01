@@ -8,7 +8,8 @@
  *   defect on stderr, exits 1 and writes no partial report. A program that
  *   raises is reported as an `error` field rather than ending the run,
  *   because a seat that stopped at the first divergence would hide the rest
- *   [tested: tests/test_kit.py; commit=WORKTREE].
+ *   [tested: tests/test_kit.py;
+ *   commit=da8c4da9df83114ab1d32f3e4049008f37535886].
  * Owns resources: the corpus buffer, decoded source vector and one runtime,
  *   all released before returning.
  * Decides: the report carries each answer's KIND and the engine's own TEXT
