@@ -2038,11 +2038,12 @@ static bool goal(const char *text)
 /* Pass one atom argument as term data. Engine paths used to be pasted into a
    quoted Prolog term, so an ordinary apostrophe in a directory name changed
    the term rather than naming the directory
-   [tested: test_engine_path_is_passed_as_data; commit=WORKTREE]. SWI defines
+   [tested: test_engine_path_is_passed_as_data;
+   commit=2ed500695e8c9ecefaeeaa2b3fd30e4fef32a8e2]. SWI defines
    REP_FN as the platform's filename representation, rather than the legacy
    byte interpretation used by PL_put_atom_chars
    [source: https://github.com/SWI-Prolog/swipl-devel/blob/dec2acf760a8571381fb6b554438bd7d90c8cacf/src/SWI-Prolog.h#L969-L981;
-   commit=WORKTREE]. */
+   commit=2ed500695e8c9ecefaeeaa2b3fd30e4fef32a8e2]. */
 static bool goal_atom(const char *name, const char *value)
 { fid_t f = frame_open("running an engine goal with an atom argument");
   term_t av;
