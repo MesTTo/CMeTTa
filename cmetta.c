@@ -4127,7 +4127,8 @@ static PL_blob_t test_handle_blob =
    as though it were the engine value. No public constructor is invented for a
    native value C cannot itself own.
    [tested: tests/test_internal_contracts.c,
-   test_native_handle_decode_and_encode_contract; commit=WORKTREE] */
+   test_native_handle_decode_and_encode_contract;
+   commit=1156a16d24228f183466264ba51f9086ce435266] */
 bool mt_test_native_handle_codec_is_guarded(void)
 { static const unsigned payload = UINT32_C(0xc0decafe);
   fid_t frame = frame_open("testing a native engine handle");
