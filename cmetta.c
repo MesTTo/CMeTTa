@@ -1807,20 +1807,36 @@ struct mt_call
   bool                failed;
 };
 
+/* A callback context belongs to one invocation, but a host helper can still
+   be handed NULL or retain a stale nullable slot. Every public callback door
+   refuses the missing context through the same errno-shaped channel instead
+   of reading it [tested: test_a_door_that_takes_an_atom_refuses_null;
+   commit=WORKTREE]. */
+static bool call_given(const mt_call *call, const char *door)
+{ if ( call ) return true;
+  err_set(MT_MISUSE, "%s was given a NULL operation call", door);
+  return false;
+}
+
 size_t mt_arity(const mt_call *call)
-{ return call->arity;
+{ return call_given(call, "mt_arity") ? call->arity : 0;
 }
 
 const mt_atom *mt_arg(const mt_call *call, size_t index)
-{ return index < call->arity ? call->args[index] : NULL;
+{ return call_given(call, "mt_arg") && index < call->arity
+       ? call->args[index] : NULL;
 }
 
 metta *mt_of(const mt_call *call)
-{ return call->runtime;
+{ return call_given(call, "mt_of") ? call->runtime : NULL;
 }
 
 mt_status mt_answer(mt_call *call, mt_atom *atom)
-{ if ( call->answered )
+{ if ( !call_given(call, "mt_answer") )
+  { mt_drop(atom);
+    return MT_MISUSE;
+  }
+  if ( call->answered )
   { mt_drop(atom);
     return err_set(MT_MISUSE,
                    "this application already answered; a function that has "
@@ -1836,7 +1852,8 @@ mt_status mt_answer(mt_call *call, mt_atom *atom)
 /* Returns MT_ERROR so an op can spell its refusal as one line:
        if ( !mt_ok() ) return mt_fail(call, "wanted two numbers"); */
 mt_status mt_fail(mt_call *call, const char *message)
-{ snprintf(call->error, sizeof(call->error), "%s",
+{ if ( !call_given(call, "mt_fail") ) return MT_MISUSE;
+  snprintf(call->error, sizeof(call->error), "%s",
            message ? message : "the C function refused this application");
   call->failed = true;
   return MT_ERROR;

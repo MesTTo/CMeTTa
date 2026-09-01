@@ -709,6 +709,27 @@ static void test_spaces_store_and_query(metta *m)
    ai-tmp/cseat-probe-d1.c; C32 in ai-cmetta-c-constraints.md]. */
 static void test_a_door_that_takes_an_atom_refuses_null(metta *m)
 { mt_space *kb = mt_space_open(m, "&cmetta-null-atom");
+  release_probe probe = {0};
+
+  CASE("operation callback doors refuse a NULL call instead of dereferencing it");
+  mt_clear();
+  CHECK(mt_arity(NULL) == 0);
+  CHECK(mt_error() == MT_MISUSE);
+  mt_clear();
+  CHECK(mt_arg(NULL, 0) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  mt_clear();
+  CHECK(mt_of(NULL) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  mt_clear();
+  CHECK(mt_answer(NULL,
+                  mt_object(&probe, "null-call-release", count_release)) ==
+        MT_MISUSE);
+  CHECK(probe.calls == 1);
+  CHECK(mt_error() == MT_MISUSE);
+  mt_clear();
+  CHECK(mt_fail(NULL, "unused") == MT_MISUSE);
+  CHECK(mt_error() == MT_MISUSE);
 
   CASE("a write door refuses a NULL atom instead of matching everything");
   CHECK(kb != NULL);
