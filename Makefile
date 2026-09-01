@@ -26,7 +26,7 @@
 #   library symbols, and emits stack-protected full-RELRO objects. `make
 #   sanitize` rebuilds in root ai-tmp so sanitizer and ordinary objects never
 #   contaminate one another [tested: make -C extensions/cmetta sanitize;
-#   commit=76cb4d82793b6c61a5e6c138f5b98723a2917153].
+#   commit=WORKTREE].
 
 SWIPL       ?= swipl
 PLBASE      := $(shell $(SWIPL) --dump-runtime-variables 2>/dev/null | sed -n 's/^PLBASE="\(.*\)";$$/\1/p')
@@ -68,8 +68,9 @@ LIB       := libcmetta.so
 FAULT_LIB := tests/libcmetta_fault.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower
 FAULT_TESTS := tests/test_alloc_failure tests/test_cursor_ids tests/test_reopen
+THREAD_TESTS := tests/test_threads
 TESTS     := tests/test_cmetta tests/test_bad_boot tests/test_quoted_path \
-             $(FAULT_TESTS)
+             $(FAULT_TESTS) $(THREAD_TESTS)
 KIT       := kit/driver
 BENCH     := benchmarks/cases
 
@@ -138,6 +139,10 @@ $(FAULT_TESTS): %: %.c $(FAULT_LIB)
 	$(CC) $(CFLAGS) -DMT_TEST_FAULTS -o $@ $< -Ltests \
 	    -Wl,-rpath,$(CURDIR)/tests -lcmetta_fault $(LDFLAGS) $(LDLIBS) -lm
 
+$(THREAD_TESTS): %: %.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -pthread -L. -Wl,-rpath,$(CURDIR) \
+	    -lcmetta $(LDFLAGS) $(LDLIBS) -lm
+
 # Every MT_API declaration must have a definition in the library. A header and
 # an implementation drift apart silently: an edit that removes a function
 # leaves its declaration behind, and nothing notices until a consumer that
@@ -190,6 +195,7 @@ test: $(TESTS) $(EXAMPLES) surface docs version hardening
 	@./tests/test_alloc_failure
 	@./tests/test_cursor_ids
 	@./tests/test_reopen
+	@./tests/test_threads
 	@for example in $(EXAMPLES); do \
 	    ./$$example > /dev/null || { echo "$$example failed" >&2; exit 1; }; \
 	    echo "$$example ok"; \

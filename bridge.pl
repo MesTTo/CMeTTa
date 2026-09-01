@@ -74,7 +74,12 @@
 
 :- dynamic metta_c_cursor/2.
 :- dynamic metta_c_op_spec/3.
-:- dynamic metta_c_captured/1.
+% Exception rendering is scratch for ONE caller. A normal dynamic predicate is
+% shared, so two attached C threads could retract or read one another's reason.
+% thread_local/1 gives each attached engine its own clause list, which SWI
+% reclaims when that thread detaches
+% [tested: tests/test_threads.c; commit=WORKTREE].
+:- thread_local metta_c_captured/1.
 
 %%%%%%%%%% Rendering an exception %%%%%%%%%%
 %

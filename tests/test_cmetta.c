@@ -101,6 +101,45 @@ static void test_atoms_need_no_engine(void)
   mt_drop(b); mt_drop(v); mt_drop(e); mt_drop(unit);
 }
 
+static void test_public_scalar_readers_cover_their_whole_domain(void)
+{ static const char counted[] = { 'a', '\0', 'b' };
+  static const char *statuses[] = {
+    "ok", "row", "done", "no answer", "engine error", "out of memory",
+    "misuse", "unsupported value", "stopped by a bound"
+  };
+  static const char *effects[] = {
+    "pureStructural", "readOnlyLookup", "nondeterministicReadOnly",
+    "writesState", "oracleIO"
+  };
+  mt_atom *text = mt_textn(counted, sizeof(counted));
+  mt_atom *yes = B(true), *no = B(false), *wrong = S("true");
+  size_t i;
+
+  CASE("counted names and truth values are read without losing their domain");
+  CHECK(text && mt_name_len(text) == sizeof(counted));
+  CHECK(yes && mt_truth(yes));
+  CHECK(no && !mt_truth(no));
+  CHECK(mt_ok());
+  mt_clear();
+  CHECK(!mt_truth(wrong));
+  CHECK(mt_error() == MT_MISUSE);
+  mt_clear();
+
+  CASE("every public status and effect has one stable name");
+  for (i = 0; i < sizeof(statuses) / sizeof(statuses[0]); i++)
+    CHECK(strcmp(mt_status_str((mt_status)i), statuses[i]) == 0);
+  CHECK(strcmp(mt_status_str((mt_status)99), "unknown status") == 0);
+  for (i = 0; i < sizeof(effects) / sizeof(effects[0]); i++)
+    CHECK(strcmp(mt_effect_str((mt_effect)i), effects[i]) == 0);
+  CHECK(mt_effect_str((mt_effect)99) == NULL);
+  CHECK(strcmp(mt_version(), "0.1.0") == 0);
+
+  mt_drop(text);
+  mt_drop(yes);
+  mt_drop(no);
+  mt_drop(wrong);
+}
+
 static void test_the_builder_coerces_each_child_by_its_c_type(void)
 { mt_atom *e, *nested;
 
@@ -639,6 +678,13 @@ static void test_one_and_first_make_different_claims(metta *m)
                        mt_int(all.items[2]) == 6);
     mt_list_free(all);
   }
+
+  CASE("the scalar one-answer readers release their answer behind them");
+  mt_clear();
+  CHECK(mt_one_truth(mt_eval(m, B(true))));
+  CHECK(mt_ok());
+  CHECK(strcmp(mt_one_name(mt_eval(m, S("one-name"))), "one-name") == 0);
+  CHECK(mt_ok());
 }
 
 /* ================================================================== *
@@ -704,6 +750,31 @@ static void test_spaces_store_and_query(metta *m)
   CHECK(mt_wipe(kb));
   CHECK(mt_count(kb) == 0);
   mt_space_close(kb);
+}
+
+static void test_catalog_and_file_load_are_live_runtime_doors(metta *m)
+{ mt_space *catalog = mt_catalog(m);
+  mt_answers *loaded;
+  const char *fixture = MT_ENGINE_PATH
+                        "/extensions/cmetta/tests/fixtures/load_test.metta";
+
+  CASE("the catalog handle names and queries the live &metta space");
+  CHECK(catalog != NULL);
+  CHECK(catalog && strcmp(mt_space_name(catalog), "&metta") == 0);
+  CHECK(catalog && mt_count(catalog) > 0);
+
+  CASE("mt_load reaches the reload-aware real-file door");
+  loaded = mt_load(m, fixture);
+  CHECK(loaded != NULL);
+  mt_answers_free(loaded);
+  CHECK(mt_one_int(mt_run(m, "!(cmetta-loaded-value)")) == 73);
+  CHECK(mt_ok());
+
+  loaded = mt_load(m, fixture);
+  CHECK(loaded != NULL);
+  mt_answers_free(loaded);
+  CHECK(mt_one_int(mt_run(m, "!(cmetta-loaded-value)")) == 73);
+  CHECK(mt_ok());
 }
 
 /* A NULL atom is what a failed constructor hands a door, and the errno shape
@@ -952,6 +1023,26 @@ static mt_status op_answer_nothing(mt_call *call, void *user)
   return MT_OK;
 }
 
+typedef struct callback_probe
+{ metta *runtime;
+  bool saw_runtime;
+  mt_status first_answer;
+  mt_status second_answer;
+} callback_probe;
+
+static mt_status op_report_runtime(mt_call *call, void *user)
+{ callback_probe *probe = user;
+  probe->saw_runtime = mt_of(call) == probe->runtime;
+  return mt_answer(call, B(probe->saw_runtime));
+}
+
+static mt_status op_answer_twice(mt_call *call, void *user)
+{ callback_probe *probe = user;
+  probe->first_answer = mt_answer(call, N(1));
+  probe->second_answer = mt_answer(call, N(2));
+  return probe->second_answer;
+}
+
 static mt_status op_fail_silently_after_new_error(mt_call *call, void *user)
 { (void)call;
   (void)user;
@@ -982,7 +1073,9 @@ static void test_an_answerless_operation_uses_only_its_own_error(metta *m)
 }
 
 static void test_a_c_function_is_callable_from_metta(metta *m)
-{ CASE("a published C function answers a MeTTa call");
+{ callback_probe probe = { .runtime = m };
+
+  CASE("a published C function answers a MeTTa call");
   CHECK(mt_def(m, (mt_op){ .name = "cdouble", .arity = 1,
                                  .effect = MT_PURE, .fn = op_double }));
   CHECK(mt_one_int(mt_run(m, "!(cdouble 21)")) == 42);
@@ -1020,6 +1113,26 @@ static void test_a_c_function_is_callable_from_metta(metta *m)
   mt_each (a, mt_run(m, "!(cdouble 21)"))
       CHECK(mt_kind_of(a) == MT_EXPR);
   CHECK(mt_undef(m, "tag_it"));
+
+  CASE("a live callback can recover the runtime that invoked it");
+  CHECK(mt_def(m, (mt_op){ .name = "callback-runtime", .arity = 0,
+                           .effect = MT_PURE, .fn = op_report_runtime,
+                           .user = &probe }));
+  CHECK(mt_one_truth(mt_run(m, "!(callback-runtime)")));
+  CHECK(probe.saw_runtime);
+  CHECK(mt_undef(m, "callback-runtime"));
+
+  CASE("a callback cannot answer one application twice");
+  CHECK(mt_def(m, (mt_op){ .name = "answer-twice", .arity = 0,
+                           .effect = MT_PURE, .fn = op_answer_twice,
+                           .user = &probe }));
+  mt_clear();
+  CHECK(mt_run(m, "!(answer-twice)") == NULL);
+  CHECK(probe.first_answer == MT_OK);
+  CHECK(probe.second_answer == MT_MISUSE);
+  CHECK(mt_error() == MT_ERROR);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "already answered"));
+  CHECK(mt_undef(m, "answer-twice"));
 }
 
 typedef struct { int bumps; } counter;
@@ -1213,13 +1326,21 @@ static mt_status fn_triple(mt_call *call, void *user)
 }
 
 static void test_a_function_value_is_applicable(metta *m)
-{ mt_atom *fn;
+{ release_probe release = {0};
+  mt_atom *fn;
 
   CASE("a C function carried as a value is applied where it lands");
   fn = mt_function(fn_triple, NULL, NULL);
   CHECK(fn != NULL);
   CHECK(mt_one_int(mt_eval(m, E(mt_keep(fn), 5))) == 15);
+
+  CASE("a function value's release callback runs once on explicit release");
   mt_drop(fn);
+  fn = mt_function(fn_triple, &release, count_release);
+  CHECK(fn != NULL);
+  CHECK(mt_one_int(mt_eval(m, E(mt_keep(fn), 7))) == 21);
+  CHECK(mt_object_free(fn));
+  CHECK(release.calls == 1);
 }
 
 /* ================================================================== *
@@ -1328,6 +1449,15 @@ static void test_a_bound_stops_a_runaway_and_says_so(metta *m)
   CHECK(mt_run(m, "!(from 0)") == NULL);
   CHECK(mt_error() == MT_LIMIT);
 
+  CASE("a wall bound stops an eager call that does not finish");
+  bounded.inferences = 0;
+  bounded.seconds = 0.001;
+  CHECK(mt_limit(m, bounded));
+  mt_clear();
+  CHECK(mt_run(m, "!(from 0)") == NULL);
+  CHECK(mt_error() == MT_LIMIT);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "second") != NULL);
+
   CASE("clearing the bounds restores unbounded evaluation");
   CHECK(mt_limit(m, none));
   CHECK(mt_limits_of(m).inferences == 0);
@@ -1431,6 +1561,7 @@ int main(void)
   }
 
   test_atoms_need_no_engine();
+  test_public_scalar_readers_cover_their_whole_domain();
   test_the_builder_coerces_each_child_by_its_c_type();
   test_a_macro_evaluates_each_argument_exactly_once(m);
   test_a_failed_child_does_not_leak_its_siblings();
@@ -1447,6 +1578,7 @@ int main(void)
   test_the_walk_closes_its_cursor_on_break(m);
   test_one_and_first_make_different_claims(m);
   test_spaces_store_and_query(m);
+  test_catalog_and_file_load_are_live_runtime_doors(m);
   test_a_door_that_takes_an_atom_refuses_null(m);
   test_a_deep_term_does_not_overrun_the_stack(m);
   test_closing_an_exhausted_cursor_is_quiet(m);

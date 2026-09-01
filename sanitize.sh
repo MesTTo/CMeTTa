@@ -5,7 +5,7 @@
 # Guarantees: UBSan runs every current executable with recovery disabled;
 #   standalone LSan preserves the main suite tally with exitcode=0 and refuses
 #   a leak whose first frame after the allocator belongs to this seat
-#   [tested: make -C extensions/cmetta sanitize; commit=76cb4d82793b6c61a5e6c138f5b98723a2917153].
+#   [tested: make -C extensions/cmetta sanitize; commit=WORKTREE].
 # Owns resources: ai-tmp/cmetta-sanitize, replaced on each run; its temporary
 #   quoted-path symlink is removed on every shell exit.
 
@@ -83,6 +83,10 @@ build_matrix() {
             -L"$out/tests" -Wl,-rpath,"$out/tests" -lcmetta_fault \
             $sanitize_flags $LINK
     done
+    # shellcheck disable=SC2086
+    $CC $COMMON "$ENGINE_DEFINE" $sanitize_flags \
+        -o "$out/tests/test_threads" "$HERE/tests/test_threads.c" -pthread \
+        -L"$out" -Wl,-rpath,"$out" -lcmetta $sanitize_flags $LINK
     for example_name in $EXAMPLES; do
         # shellcheck disable=SC2086
         $CC $COMMON "$ENGINE_DEFINE" $sanitize_flags \
@@ -107,6 +111,7 @@ run_ubsan() {
     "$out/tests/test_alloc_failure" >> "$log" 2>&1
     "$out/tests/test_cursor_ids" >> "$log" 2>&1
     "$out/tests/test_reopen" >> "$log" 2>&1
+    "$out/tests/test_threads" >> "$log" 2>&1
     for example_name in $EXAMPLES; do
         "$out/examples/$example_name" > /dev/null 2>> "$log"
         echo "$example_name ok" >> "$log"
