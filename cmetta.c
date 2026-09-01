@@ -1630,7 +1630,7 @@ bool mt_object_free(mt_atom *atom)
   /* PL_cleanup() has already released every registered blob. What remains is
      the C reference, and consuming it is both sufficient and safe without an
      FLI engine [tested: test_an_object_can_be_released_without_waiting_for_atom_gc;
-     commit=WORKTREE]. */
+     commit=1bd77577f263374ada1452e47bbc8dea17319d62]. */
   if ( !g_open )
   { mt_drop(atom);
     return true;
@@ -1648,7 +1648,7 @@ bool mt_object_free(mt_atom *atom)
      surviving Prolog aliases explicitly invalid; blob_box() and decode_leaf()
      reject those aliases before touching their former payload
      [tested: test_an_object_can_be_released_without_waiting_for_atom_gc;
-     commit=WORKTREE]. */
+     commit=1bd77577f263374ada1452e47bbc8dea17319d62]. */
   if ( !PL_free_blob(blob) )
   { err_set(MT_ERROR, "the engine refused to release the object's blob");
     goto done;
