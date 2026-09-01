@@ -944,7 +944,7 @@ bool mt_eq(const mt_atom *a, const mt_atom *b)
    in-process table hash rather than a persistent wire value, so native byte
    order and object addresses are part of its contract
    [source: https://www.rfc-editor.org/rfc/rfc9923.html#section-2;
-   commit=WORKTREE]. */
+   commit=d37f1a5192999fdaa1a617e86191de4fe3570f91]. */
 #define MT_FNV64_OFFSET UINT64_C(14695981039346656037)
 #define MT_FNV64_PRIME  UINT64_C(1099511628211)
 

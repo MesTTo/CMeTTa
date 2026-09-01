@@ -386,7 +386,8 @@ MT_API bool mt_eq(const mt_atom *a, const mt_atom *b);
    in-process hash for caller-owned tables, not a persistent or portable wire
    identifier. NULL records MT_MISUSE and returns 0; an exhausted deep-walk
    stack records MT_NOMEM and returns 0
-   [tested: tests/test_hash.c; commit=WORKTREE]. */
+   [tested: tests/test_hash.c;
+   commit=d37f1a5192999fdaa1a617e86191de4fe3570f91]. */
 MT_API uint64_t mt_hash(const mt_atom *atom);
 
 /* --- text, through the engine's own reader and writer --- */
