@@ -2035,6 +2035,44 @@ static bool goal(const char *text)
   return status == MT_OK;
 }
 
+/* Pass one atom argument as term data. Engine paths used to be pasted into a
+   quoted Prolog term, so an ordinary apostrophe in a directory name changed
+   the term rather than naming the directory
+   [tested: test_engine_path_is_passed_as_data; commit=WORKTREE]. SWI defines
+   REP_FN as the platform's filename representation, rather than the legacy
+   byte interpretation used by PL_put_atom_chars
+   [source: https://github.com/SWI-Prolog/swipl-devel/blob/dec2acf760a8571381fb6b554438bd7d90c8cacf/src/SWI-Prolog.h#L969-L981;
+   commit=WORKTREE]. */
+static bool goal_atom(const char *name, const char *value)
+{ fid_t f = frame_open("running an engine goal with an atom argument");
+  term_t av;
+  mt_status status;
+
+  if ( !f ) return false;
+  av = PL_new_term_refs(1);
+  if ( !av )
+    status = err_set(MT_NOMEM, "out of memory holding the argument for %s/1",
+                     name);
+  else if ( !PL_put_chars(av, PL_ATOM | REP_FN, (size_t)-1, value) )
+  { term_t ex = PL_exception(0);
+    if ( ex )
+    { record_t saved = PL_record(ex);
+      PL_clear_exception();
+      status = saved ? ball_status(saved, name, 1)
+                     : err_set(MT_ERROR,
+                               "%s/1 rejected its filename argument and its "
+                               "exception could not be copied", name);
+    } else
+      status = err_set(MT_NOMEM,
+                       "the filename argument for %s/1 could not be copied",
+                       name);
+  }
+  else
+    status = call_bridge(name, 1, av);
+  frame_close(f);
+  return status == MT_OK;
+}
+
 static char *default_path(void)
 { const char *env = getenv("METTA_PATH");
   return strdup(env && *env ? env : MT_ENGINE_PATH);
@@ -2140,14 +2178,14 @@ metta *mt_open(const mt_config *config)
      and the Python seat has run the same shape through main.pl all along
      [measured 2026-08-29: 6/6, examples/hello, set made stale by touching
      engine/spaces/foreign.pl; commit=888a73c7d231188cd90fafcb8b0cce3799ef5e97]. */
-  snprintf(buf, bufsz, "consult('%s/engine/qlf_boot.pl')", path);
-  if ( !goal(buf) )
+  snprintf(buf, bufsz, "%s/engine/qlf_boot.pl", path);
+  if ( !goal_atom("consult", buf) )
   { free(path); free(buf);
     return NULL;
   }
 
-  snprintf(buf, bufsz, "consult('%s/engine/metta.pl')", path);
-  if ( !goal(buf) )
+  snprintf(buf, bufsz, "%s/engine/metta.pl", path);
+  if ( !goal_atom("consult", buf) )
   { free(path); free(buf);
     return NULL;
   }

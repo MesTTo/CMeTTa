@@ -21,7 +21,7 @@ static int check(int condition, const char *claim)
 }
 
 int main(void)
-{ const char *missing = "/definitely/not/a/cmetta-engine-d2c9ddc3";
+{ const char *missing = "/definitely/not/a/cmetta-engine-o'brien-d2c9ddc3";
   mt_config bad = { .path = missing };
   metta *runtime;
   int failed = 0;

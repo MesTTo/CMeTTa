@@ -61,7 +61,8 @@ LIB       := libcmetta.so
 FAULT_LIB := tests/libcmetta_fault.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower
 FAULT_TESTS := tests/test_alloc_failure tests/test_cursor_ids tests/test_reopen
-TESTS     := tests/test_cmetta tests/test_bad_boot $(FAULT_TESTS)
+TESTS     := tests/test_cmetta tests/test_bad_boot tests/test_quoted_path \
+             $(FAULT_TESTS)
 KIT       := kit/driver
 BENCH     := benchmarks/cases
 
@@ -172,6 +173,13 @@ docs:
 test: $(TESTS) $(EXAMPLES) surface docs
 	@./tests/test_cmetta
 	@./tests/test_bad_boot
+	@set -e; \
+	fixture="$(abspath ../../ai-tmp)/cmetta-path-o'brien-unicodé-$$$$"; \
+	mkdir -p "$(abspath ../../ai-tmp)"; \
+	trap 'rm -f "$$fixture"' 0 1 2 15; \
+	rm -f "$$fixture"; \
+	ln -s "$(ENGINE_PATH)" "$$fixture"; \
+	CMETTA_TEST_ENGINE_PATH="$$fixture" ./tests/test_quoted_path
 	@./tests/test_alloc_failure
 	@./tests/test_cursor_ids
 	@./tests/test_reopen
