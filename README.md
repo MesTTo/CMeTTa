@@ -235,9 +235,13 @@ Each call makes ONE value, and this seat does not intern: two `mt_object` calls
 on the same pointer are two atoms that answer `False` to `==` and fail to
 `unify`, where the Node seat interns by identity and Python answers `True`. Wrap
 once and pass the atom. Every crossing of that one atom uses one engine identity,
-so it can be matched and deleted with `mt_keep(handle)`. The blob is released by SWI's garbage collector through
-the `mt_free_fn` you hand it, so not interning costs no memory; what it costs is
-that comparison. `get-type` answers `%Undefined%` for one, because this seat
+so it can be matched and deleted with `mt_keep(handle)`. Ordinarily SWI's atom
+garbage collector releases the engine reference and the `mt_free_fn` runs after
+the last C reference goes too. When the resource must close now, call
+`mt_object_free(handle)`: it consumes that C reference, invalidates any Prolog
+aliases, and makes a later attempt to return such an alias fail as
+`MT_UNSUPPORTED` rather than touching released memory. Other C references made
+with `mt_keep` remain valid until dropped. `get-type` answers `%Undefined%` for one, because this seat
 declares no `seam:host_object/1`, the seam by which a host tells the engine a
 value is its own; `mt_type()` is how C reads the name back, and MeTTa is not
 told it.

@@ -1015,22 +1015,27 @@ static bool handle_ready(const void *handle, const char *door)
 /* --- blob type for a live C value --------------------------------- */
 
 static int object_write(IOSTREAM *s, atom_t a, int flags)
-{ mt_box_t *box = PL_blob_data(a, NULL, NULL);
+{ size_t len = 0;
+  mt_box_t *box = PL_blob_data(a, &len, NULL);
   (void)flags;
   /* What it IS, never what it contains: a live value that printed its
      contents would have become text, which is the one thing it must not do. */
-  Sfprintf(s, "<%s>", box->type ? box->type : "cvalue");
+  if ( !box || len != sizeof(*box) ) Sfprintf(s, "<released-cvalue>");
+  else Sfprintf(s, "<%s>", box->type ? box->type : "cvalue");
   return TRUE;
 }
 
 static int object_release_blob(atom_t a)
-{ box_release(PL_blob_data(a, NULL, NULL));
+{ size_t len = 0;
+  mt_box_t *box = PL_blob_data(a, &len, NULL);
+  if ( box && len == sizeof(*box) ) box_release(box);
   return TRUE;
 }
 
 static void object_acquire_blob(atom_t a)
-{ mt_box_t *box = PL_blob_data(a, NULL, NULL);
-  if ( box ) MT_INC(&box->refs);
+{ size_t len = 0;
+  mt_box_t *box = PL_blob_data(a, &len, NULL);
+  if ( box && len == sizeof(*box) ) MT_INC(&box->refs);
 }
 
 static PL_blob_t mt_object_blob =
@@ -1235,13 +1240,21 @@ static mt_atom *decode_leaf(term_t t, term_t names)
      The PL_BLOB_TEXT mask is the other half: without it an ordinary symbol
      reads as a native value instead. */
   { void *blob;
+    size_t blob_len;
     PL_blob_t *type;
-    if ( PL_get_blob(t, &blob, NULL, &type) && !(type->flags & PL_BLOB_TEXT) )
+    if ( PL_get_blob(t, &blob, &blob_len, &type) &&
+         !(type->flags & PL_BLOB_TEXT) )
     { size_t len;
       char *text;
       mt_atom *a;
       if ( type == &mt_object_blob )
       { mt_box_t *box = blob;
+        if ( !box || blob_len != sizeof(*box) )
+        { err_set(MT_UNSUPPORTED,
+                  "a C object in the engine was explicitly released; its "
+                  "remaining Prolog aliases are invalid");
+          return NULL;
+        }
         MT_INC(&box->refs);
         return object_from_box(box);
       }
@@ -1597,6 +1610,57 @@ static bool put_atom_named(const mt_atom *a, term_t out, term_t names)
   return ok;
 }
 
+bool mt_object_free(mt_atom *atom)
+{ fid_t f = 0;
+  term_t t = 0;
+  atom_t blob = 0;
+  bool released = false;
+
+  if ( !atom )
+  { err_set(MT_MISUSE, "mt_object_free was given NULL");
+    return false;
+  }
+  if ( atom->kind != MT_OBJECT )
+  { err_set(MT_MISUSE, "mt_object_free needs an object atom, not %s",
+            mt_kind_str(atom->kind));
+    mt_drop(atom);
+    return false;
+  }
+
+  /* PL_cleanup() has already released every registered blob. What remains is
+     the C reference, and consuming it is both sufficient and safe without an
+     FLI engine [tested: test_an_object_can_be_released_without_waiting_for_atom_gc;
+     commit=WORKTREE]. */
+  if ( !g_open )
+  { mt_drop(atom);
+    return true;
+  }
+
+  if ( !(f = frame_open("mt_object_free")) ) goto done;
+  t = PL_new_term_ref();
+  if ( !t || !put_atom(atom, t) || !PL_get_atom(t, &blob) )
+  { if ( mt_ok() )
+      err_set(MT_ERROR, "the engine could not identify the object's blob");
+    goto done;
+  }
+  /* A unique NOCOPY blob has one engine reference regardless of how many
+     terms contain it. PL_free_blob() releases that reference now and makes
+     surviving Prolog aliases explicitly invalid; blob_box() and decode_leaf()
+     reject those aliases before touching their former payload
+     [tested: test_an_object_can_be_released_without_waiting_for_atom_gc;
+     commit=WORKTREE]. */
+  if ( !PL_free_blob(blob) )
+  { err_set(MT_ERROR, "the engine refused to release the object's blob");
+    goto done;
+  }
+  released = true;
+
+done:
+  frame_close(f);
+  mt_drop(atom);
+  return released;
+}
+
 /* ================================================================== *
  * Calling the bridge
  * ================================================================== */
@@ -1888,9 +1952,12 @@ static foreign_t pl_cmetta_dispatch(term_t name, term_t args, term_t result)
 
 static mt_box_t *blob_box(term_t t)
 { void *blob;
+  size_t len;
   PL_blob_t *type;
-  if ( PL_get_blob(t, &blob, NULL, &type) && type == &mt_object_blob )
-    return blob;
+  if ( PL_get_blob(t, &blob, &len, &type) && type == &mt_object_blob )
+  { if ( blob && len == sizeof(mt_box_t) ) return blob;
+    PL_existence_error("cmetta_object", t);
+  }
   return NULL;
 }
 
@@ -1913,13 +1980,27 @@ static foreign_t pl_cmetta_apply(term_t t, term_t args, term_t result)
 static bool goal(const char *text)
 { fid_t f = frame_open("running an engine goal");
   term_t t;
-  bool ok;
+  mt_status status;
 
   if ( !f ) return false;
   t = PL_new_term_ref();
-  ok = t && PL_chars_to_term(text, t) && PL_call(t, NULL);
+  if ( !t )
+    status = err_set(MT_NOMEM, "out of memory holding an engine goal");
+  else if ( !PL_chars_to_term(text, t) )
+  { term_t ex = PL_exception(0);
+    if ( ex )
+    { record_t saved = PL_record(ex);
+      PL_clear_exception();
+      status = saved ? ball_status(saved, "reading an engine goal", 1)
+                     : err_set(MT_ERROR,
+                               "the engine goal was invalid and its exception "
+                               "could not be copied");
+    } else
+      status = err_set(MT_ERROR, "the engine goal could not be read");
+  } else
+    status = call_bridge("call", 1, t);
   PL_discard_foreign_frame(f);
-  return ok;
+  return status == MT_OK;
 }
 
 static char *default_path(void)
@@ -1980,8 +2061,7 @@ metta *mt_open(const mt_config *config)
              config->stack_limit);
     if ( !goal(buf) )
     { free(path); free(buf);
-      return err_null(MT_ERROR, "the stack limit %zu was refused",
-                     config->stack_limit);
+      return NULL;
     }
   }
 
@@ -1991,7 +2071,7 @@ metta *mt_open(const mt_config *config)
   if ( !goal(config->verbose ? "set_prolog_flag(argv, [extensions])"
                              : "set_prolog_flag(argv, [silent, extensions])") )
   { free(path); free(buf);
-    return err_null(MT_ERROR, "the engine refused its argv");
+    return NULL;
   }
 
   /* The purge FIRST, and this seat is the one that has to ask for it. A host
@@ -2025,24 +2105,14 @@ metta *mt_open(const mt_config *config)
      engine/spaces/foreign.pl; commit=888a73c7d231188cd90fafcb8b0cce3799ef5e97]. */
   snprintf(buf, bufsz, "consult('%s/engine/qlf_boot.pl')", path);
   if ( !goal(buf) )
-  { void *refused =
-      err_null(MT_ERROR,
-              "the engine's artifact freshness check would not load from %s; "
-              "set config.path or METTA_PATH to the tree holding engine/",
-              path);
-    free(path); free(buf);
-    return refused;
+  { free(path); free(buf);
+    return NULL;
   }
 
   snprintf(buf, bufsz, "consult('%s/engine/metta.pl')", path);
   if ( !goal(buf) )
-  { void *refused =
-      err_null(MT_ERROR,
-              "the engine would not load from %s; set config.path or "
-              "METTA_PATH to the tree holding engine/, lib/ and "
-              "extensions/", path);
-    free(path); free(buf);
-    return refused;
+  { free(path); free(buf);
+    return NULL;
   }
   free(buf);
 
@@ -2918,10 +2988,7 @@ bool mt_limit(metta *runtime, mt_limits limits)
     snprintf(goal_text, sizeof(goal_text),
              "set_prolog_flag(stack_limit, %zu)", runtime->limits.stack_bytes);
     if ( !goal(goal_text) )
-    { err_set(MT_ERROR, "the stack ceiling %zu was refused",
-              runtime->limits.stack_bytes);
       return false;
-    }
   }
   return true;
 }

@@ -809,11 +809,21 @@ MT_API mt_status mt_fail(mt_call *call, const char *message);
 typedef void (*mt_free_fn)(void *value);
 
 /* Wrap a C pointer as a grounded atom. MeTTa carries it by reference, never
-   serialises it, and hands it back unchanged. */
+   serialises it, and hands it back unchanged. The release callback runs when
+   the last C and engine owner lets go; engine blob garbage collection decides
+   the ordinary timing after a value has crossed. */
 MT_API MT_MUST_USE mt_atom *mt_object(void *value, const char *type_name,
                                    mt_free_fn release);
 MT_API void *mt_value(const mt_atom *atom);
 MT_API const char *mt_type(const mt_atom *atom);
+
+/* Deterministically release an object's engine blob and CONSUME this C atom.
+   Other C references keep the box alive until they too are dropped. Existing
+   Prolog aliases become invalid and a later attempt to return one is refused
+   as a released object instead of being dereferenced. Before mt_open(), or
+   after mt_close() has already released every blob, this is mt_drop() with the
+   same take semantics. False only for NULL, a non-object, or an FLI failure. */
+MT_API bool mt_object_free(mt_atom *atom);
 
 /* A C function as a VALUE rather than a name, so `($f 2)` calls it wherever
    the atom lands. This is what C answers to a Python callable being an atom;

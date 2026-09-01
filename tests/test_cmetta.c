@@ -12,6 +12,7 @@
 
 #define MT_SHORTHAND
 #include <cmetta.h>
+#include <SWI-Prolog.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -212,6 +213,21 @@ static void test_a_door_before_the_runtime_refuses(void)
 
   mt_drop(x);
   mt_clear();
+}
+
+typedef struct { int calls; } release_probe;
+
+static void count_release(void *value)
+{ release_probe *probe = value;
+  probe->calls++;
+}
+
+static void test_an_uncrossed_object_can_be_released_without_an_engine(void)
+{ release_probe probe = {0};
+
+  CASE("mt_object_free consumes an uncrossed object before the engine exists");
+  CHECK(mt_object_free(mt_object(&probe, "release-probe", count_release)));
+  CHECK(probe.calls == 1);
 }
 
 static void test_a_failed_child_does_not_leak_its_siblings(void)
@@ -1096,6 +1112,35 @@ static void test_a_c_value_crosses_by_reference(metta *m)
   CHECK(mt_undef(m, "bump"));
 }
 
+static void test_an_object_can_be_released_without_waiting_for_atom_gc(metta *m)
+{ release_probe probe = {0};
+  mt_space *space;
+  mt_answers *answers;
+  mt_atom *handle;
+
+  CASE("mt_object_free releases a crossed object immediately");
+  space = mt_space_open(m, "&cmetta-explicit-release");
+  handle = mt_object(&probe, "release-probe", count_release);
+  CHECK(space != NULL);
+  CHECK(handle != NULL);
+  CHECK(mt_add(space, mt_keep(handle)));
+  CHECK(probe.calls == 0);
+  CHECK(mt_object_free(handle));
+  CHECK(probe.calls == 1);
+
+  CASE("an engine alias left by explicit release is refused without a dereference");
+  mt_clear();
+  answers = mt_match(space, V("x"));
+  CHECK(answers != NULL);
+  CHECK(mt_next(answers) == NULL);
+  CHECK(mt_error() == MT_UNSUPPORTED);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "explicitly released") != NULL);
+  mt_answers_free(answers);
+  mt_clear();
+  CHECK(mt_space_wipe(space));
+  mt_space_close(space);
+}
+
 static double double_from_bits(uint64_t bits)
 { double value;
   memcpy(&value, &bits, sizeof(value));
@@ -1172,6 +1217,25 @@ static void test_an_engine_error_reaches_c_as_words(metta *m)
     CHECK(strcmp(mt_name(mt_at(got, 0)), "Error") == 0);
     mt_drop(got);
   }
+}
+
+static void test_a_refused_stack_limit_clears_the_engine_exception(metta *m)
+{ mt_limits old = mt_limits_of(m);
+  mt_limits refused = old;
+
+  CASE("a refused stack limit reports its exception and leaves none pending");
+  refused.stack_bytes = 1;
+  mt_clear();
+  CHECK(!mt_limit(m, refused));
+  CHECK(mt_error() == MT_ERROR);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "stack") != NULL);
+  CHECK(PL_exception(0) == 0);
+
+  CASE("the host can call the engine after the caught exception");
+  mt_clear();
+  CHECK(mt_limit(m, old));
+  CHECK(mt_one_int(mt_run(m, "!(+ 1 2)")) == 3);
+  CHECK(mt_ok());
 }
 
 static void test_a_wide_integer_keeps_its_digits(metta *m)
@@ -1329,6 +1393,7 @@ int main(void)
   /* Before the runtime exists, because that is the only moment its absence
      can be asked about. */
   test_a_door_before_the_runtime_refuses();
+  test_an_uncrossed_object_can_be_released_without_an_engine();
 
   if ( !(m = mt_open(NULL)) )
   { fprintf(stderr, "cannot boot the engine: %s\n", mt_errmsg());
@@ -1363,9 +1428,11 @@ int main(void)
   test_a_c_body_lowers_into_an_equation_the_engine_can_see(m);
   test_raw_lowering_preserves_tokens_that_are_c_macros(m);
   test_a_c_value_crosses_by_reference(m);
+  test_an_object_can_be_released_without_waiting_for_atom_gc(m);
   test_float_identity_agrees_with_the_engine(m);
   test_a_function_value_is_applicable(m);
   test_an_engine_error_reaches_c_as_words(m);
+  test_a_refused_stack_limit_clears_the_engine_exception(m);
   test_a_wide_integer_keeps_its_digits(m);
   test_variable_identity_survives_the_round_trip();
   test_a_bound_stops_a_runaway_and_says_so(m);

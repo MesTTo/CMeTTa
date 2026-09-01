@@ -59,7 +59,7 @@ LDLIBS  += -lswipl
 
 LIB       := libcmetta.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower
-TESTS     := tests/test_cmetta
+TESTS     := tests/test_cmetta tests/test_bad_boot
 KIT       := kit/driver
 BENCH     := benchmarks/cases
 
@@ -161,6 +161,7 @@ docs:
 # directly. The Python seat gates its examples for the same reason.
 test: $(TESTS) $(EXAMPLES) surface docs
 	@./tests/test_cmetta
+	@./tests/test_bad_boot
 	@for example in $(EXAMPLES); do \
 	    ./$$example > /dev/null || { echo "$$example failed" >&2; exit 1; }; \
 	    echo "$$example ok"; \

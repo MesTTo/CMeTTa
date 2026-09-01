@@ -75,6 +75,13 @@ owned counted `mt_string` that `mt_parsen(data, len)` reads back exactly; free
 
 ## Calling back into C
 
+A C pointer can cross by identity with
+`mt_object(value, type_name, release)`. Its callback normally runs after both
+C references and SWI's blob reference are gone. `mt_object_free(atom)` consumes
+one C reference and releases the blob immediately; engine aliases left behind
+are invalid and are refused as `MT_UNSUPPORTED` if returned. A reference made
+with `mt_keep` remains a live C owner until it is dropped.
+
 ```c
 mt_def(m, (mt_op){ .name = "hypot", .arity = 2,
                    .effect = MT_PURE, .fn = op_hypot });
