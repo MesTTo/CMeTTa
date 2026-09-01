@@ -426,6 +426,13 @@ typedef struct metta metta;
 typedef struct mt_space mt_space;
 typedef struct mt_answers mt_answers;
 
+/* An owned array and its length. Doors that take an mt_list take both the
+   atoms and the array, so an mt_all() result composes directly with them. */
+typedef struct mt_list {
+  mt_atom **items;
+  size_t    len;
+} mt_list;
+
 typedef struct mt_config {
   const char *path;      /* engine tree; NULL takes $METTA_PATH then the
                             tree this library was built beside          */
@@ -573,6 +580,8 @@ MT_API MT_MUST_USE mt_answers *mt_self_atoms(metta *runtime);
 MT_API MT_MUST_USE mt_answers *mt_space_atoms(mt_space *space);
 MT_API bool mt_self_add(metta *runtime, mt_atom *atom);
 MT_API bool mt_space_add(mt_space *space, mt_atom *atom);
+MT_API bool mt_self_add_all(metta *runtime, mt_list atoms);
+MT_API bool mt_space_add_all(mt_space *space, mt_list atoms);
 MT_API bool mt_self_del(metta *runtime, mt_atom *atom);
 MT_API bool mt_space_del(mt_space *space, mt_atom *atom);
 MT_API size_t mt_self_count(metta *runtime);
@@ -598,6 +607,15 @@ MT_API bool mt_space_wipe(mt_space *space);
 
 /* Add one atom. TAKES it. */
 #define mt_add(target, atom)    MT_ON((target), add)((target), (atom))
+
+/* Add one batch through one engine call. TAKES every atom and the array;
+   {NULL, 0} is a valid empty batch. A refused member writes none
+   [tested: tests/test_batch_add.c; commit=WORKTREE]. At 2,000 atoms the batch
+   costs 12,045 engine inferences against 46,028 sequentially
+   [measured: 46028 sequential and 12045 batch inferences;
+   command=for run in 1 2 3; do extensions/cmetta/tests/test_batch_add; done;
+   fixture=2000 distinct integer atoms per fresh named space; commit=WORKTREE]. */
+#define mt_add_all(target, atoms) MT_ON((target), add_all)((target), (atoms))
 
 /* Remove one exact atom; true when it was there. TAKES it. */
 #define mt_del(target, atom)    MT_ON((target), del)((target), (atom))
@@ -699,14 +717,6 @@ MT_API int64_t mt_one_int(mt_answers *answers);
 MT_API double mt_one_float(mt_answers *answers);
 MT_API bool mt_one_truth(mt_answers *answers);
 MT_API const char *mt_one_name(mt_answers *answers);
-
-/* An owned array and its length, which are one thing and so travel as one.
-   The alternative is an out-parameter for the count and a loop bound the
-   caller has to keep in step with it by hand. */
-typedef struct mt_list {
-  mt_atom **items;
-  size_t    len;
-} mt_list;
 
 /* Every answer in order, the eager door for a caller who wants them all.
    CONSUMES `answers`. An empty or failed call answers {NULL, 0}, which loops

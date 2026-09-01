@@ -311,6 +311,10 @@ metta_c_close(Id) :-
 % is how a seat grows its own half of the write path.
 metta_c_add(Space, Term) :- metta_add_atoms(Space, [Term]).
 
+% The batch form preserves the engine door's transaction and announcement
+% boundary instead of paying it once per term.
+metta_c_add_all(Space, Terms) :- metta_add_atoms(Space, Terms).
+
 % The engine's verdict is the plain boolean `true` when the atom was there
 % [measured 2026-08-27]; anything else means it was not, and the C half is
 % told which rather than being left to infer it from a count.

@@ -72,7 +72,7 @@ if ( !mt_ok() ) return mt_fail(c, "wanted two numbers");
 ```
 
 **3. One verb, either receiver.** `mt_eval`, `mt_match`, `mt_atoms`,
-`mt_add`, `mt_del`, `mt_count` and `mt_wipe` each take a `metta *`,
+`mt_add`, `mt_add_all`, `mt_del`, `mt_count` and `mt_wipe` each take a `metta *`,
 meaning its `&self`, or a `mt_space *`. `_Generic` picks, the way `tgmath.h`
 does; the pair it picks between is declared beside each one.
 
@@ -180,6 +180,18 @@ When you want one value rather than a walk:
 
 Each consumes the cursor. `one` and `first` draw the same line the Python seat
 draws between `one()` and `first()`.
+
+An `mt_list` also composes directly into a space write. `mt_add_all` takes the
+array and every atom in it, validates the whole list before writing, and calls
+the engine's batch door once:
+
+```c
+mt_list values = mt_all(mt_run(m, "!(superpose (red green blue))"));
+if ( !mt_add_all(kb, values) ) fprintf(stderr, "%s\n", mt_errmsg());
+```
+
+Use `{NULL, 0}` for an empty batch. A refused member releases the complete
+owned list and leaves the space unchanged.
 
 `mt_run()` is the eager door, because running a program means running it, and
 each row's `group` says which `!` form the answer came from. When the point is

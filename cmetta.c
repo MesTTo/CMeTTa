@@ -2643,6 +2643,56 @@ bool mt_space_add(mt_space *space, mt_atom *atom)
   return status == MT_OK;
 }
 
+static bool atom_list_given(mt_list atoms, const char *door)
+{ size_t i;
+
+  if ( atoms.len && !atoms.items )
+  { err_set(MT_MISUSE, "%s was given a length but no atom array", door);
+    return false;
+  }
+  for (i = 0; i < atoms.len; i++)
+    if ( !atoms.items[i] )
+    { err_set(MT_MISUSE, "%s was given NULL at index %zu", door, i);
+      return false;
+    }
+  return true;
+}
+
+/* Build the complete Prolog list before calling metta_add_atoms/2. Each atom
+   gets its own variable-name context, as it does through repeated mt_add(),
+   while the bridge receives one batch and therefore one engine transaction. */
+bool mt_space_add_all(mt_space *space, mt_list atoms)
+{ mt_status status = MT_MISUSE;
+  fid_t f = 0;
+  term_t av = 0, item = 0;
+  size_t i;
+
+  if ( handle_ready(space, "mt_space_add_all") &&
+       atom_list_given(atoms, "mt_space_add_all") )
+  { f = frame_open("mt_space_add_all");
+    av = f ? PL_new_term_refs(2) : 0;
+    item = av ? PL_new_term_ref() : 0;
+    if ( !av || !item || !PL_put_atom_chars(av, space->name) ||
+         !PL_put_nil(av + 1) )
+      status = err_set(MT_NOMEM, "out of memory encoding an atom batch");
+    else
+    { status = MT_OK;
+      for (i = atoms.len; i > 0; i--)
+        if ( !put_atom(atoms.items[i - 1], item) ||
+             !PL_cons_list(av + 1, item, av + 1) )
+        { status = mt_ok()
+                 ? err_set(MT_NOMEM, "the engine could not hold an atom batch")
+                 : mt_error();
+          break;
+        }
+      if ( status == MT_OK ) status = call_bridge("metta_c_add_all", 2, av);
+    }
+  }
+  frame_close(f);
+  mt_list_free(atoms);
+  return status == MT_OK;
+}
+
 bool mt_space_del(mt_space *space, mt_atom *atom)
 { fid_t f = 0;
   term_t av = 0;
@@ -2702,6 +2752,11 @@ bool mt_space_wipe(mt_space *space)
    reaches. Written out rather than generated so each one is greppable. */
 bool mt_self_add(metta *runtime, mt_atom *atom)
 { return mt_space_add(mt_self(runtime), atom); }
+bool mt_self_add_all(metta *runtime, mt_list atoms)
+{ mt_space *self = mt_self(runtime);
+  return self ? mt_space_add_all(self, atoms)
+              : (mt_list_free(atoms), false);
+}
 bool mt_self_del(metta *runtime, mt_atom *atom)
 { return mt_space_del(mt_self(runtime), atom); }
 size_t mt_self_count(metta *runtime)

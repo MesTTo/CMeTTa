@@ -45,7 +45,7 @@ ENGINE_DEFINE="-DMT_ENGINE_PATH=\"$ROOT\""
 # an instrumented shared object deliberately cannot use -z defs. The ordinary
 # libraries do use it, and `make hardening` checks those linked artifacts.
 LINK="-L$PLLIBDIR -Wl,-rpath,$PLLIBDIR -Wl,-z,relro,-z,now -lswipl -lm"
-NORMAL_TESTS="test_cmetta test_bad_boot test_quoted_path"
+NORMAL_TESTS="test_cmetta test_bad_boot test_quoted_path test_batch_add"
 FAULT_TESTS="test_alloc_failure test_cursor_ids test_reopen test_internal_contracts"
 EXAMPLES="hello ops lower stream"
 FIXTURE="$ROOT/ai-tmp/cmetta-sanitize-path-o'brien-unicodé-$$"
@@ -116,6 +116,7 @@ run_ubsan() {
     "$out/tests/test_cursor_ids" >> "$log" 2>&1
     "$out/tests/test_reopen" >> "$log" 2>&1
     "$out/tests/test_internal_contracts" >> "$log" 2>&1
+    "$out/tests/test_batch_add" >> "$log" 2>&1
     "$out/tests/test_threads" >> "$log" 2>&1
     python3 "$HERE/tests/test_kit.py" "$out/kit/driver" \
         "$BUILD_ROOT" >> "$log" 2>&1
