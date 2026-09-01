@@ -356,7 +356,11 @@ static void test_a_ratio_is_canonical_in_both_halves(metta *m)
   CHECK(mt_kind_of(whole) == MT_INT);
   CHECK(mt_int(whole) == 3);
   CHECK(mt_ratio_of(whole).num == 3 && mt_ratio_of(whole).den == 1);
-  CHECK(mt_eq(whole, N(3)));
+  { mt_atom *three = N(3);
+    CHECK(three != NULL);
+    CHECK(mt_eq(whole, three));
+    mt_drop(three);
+  }
   CHECK(mt_ok());
 
   CASE("and it comes back from a space as the atom that went in");
@@ -1162,17 +1166,13 @@ static void test_an_object_can_be_released_without_waiting_for_atom_gc(metta *m)
   mt_space_close(space);
 }
 
-static double double_from_bits(uint64_t bits)
-{ double value;
-  memcpy(&value, &bits, sizeof(value));
-  return value;
-}
-
 static void test_float_identity_agrees_with_the_engine(metta *m)
 { mt_atom *positive_zero = R(0.0);
   mt_atom *negative_zero = R(-0.0);
-  mt_atom *nan_a = R(double_from_bits(UINT64_C(0x7ff8000000000001)));
-  mt_atom *nan_b = R(double_from_bits(UINT64_C(0xfff8000000000042)));
+  mt_atom *nan_a = R(nan("1"));
+  mt_atom *nan_b = R(-nan("42"));
+  mt_atom *finite_a = R(1.5);
+  mt_atom *finite_b = R(1.5);
   mt_space *space = mt_space_open(m, "&cmetta-float-identity");
 
   CASE("float structural equality distinguishes signed zero");
@@ -1187,10 +1187,17 @@ static void test_float_identity_agrees_with_the_engine(metta *m)
   CHECK(mt_del(space, mt_keep(nan_b)));
   CHECK(mt_count(space) == 0);
 
+  CASE("ordinary equal floats remain structurally identical");
+  CHECK(mt_eq(finite_a, finite_b));
+  CHECK(mt_add(space, mt_keep(finite_a)));
+  CHECK(mt_del(space, mt_keep(finite_b)));
+
   mt_drop(positive_zero);
   mt_drop(negative_zero);
   mt_drop(nan_a);
   mt_drop(nan_b);
+  mt_drop(finite_a);
+  mt_drop(finite_b);
   mt_space_close(space);
 }
 

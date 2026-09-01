@@ -22,6 +22,11 @@
 #   boots with no environment set, and $METTA_PATH still overrides it at run
 #   time. A checkout that moves needs a rebuild, which is the same bargain
 #   setup.py makes when it copies the runtime into the Python wheel.
+#   Every ordinary build treats warnings as errors, refuses undefined shared-
+#   library symbols, and emits stack-protected full-RELRO objects. `make
+#   sanitize` rebuilds in root ai-tmp so sanitizer and ordinary objects never
+#   contaminate one another [tested: make -C extensions/cmetta sanitize;
+#   commit=WORKTREE].
 
 SWIPL       ?= swipl
 PLBASE      := $(shell $(SWIPL) --dump-runtime-variables 2>/dev/null | sed -n 's/^PLBASE="\(.*\)";$$/\1/p')
@@ -52,9 +57,11 @@ endif
 
 CC      ?= cc
 CFLAGS  ?= -O2 -g
-CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -fPIC -I. -I$(PLBASE)/include \
-           -DMT_ENGINE_PATH='"$(ENGINE_PATH)"'
-LDFLAGS += -L$(PLLIBDIR) -Wl,-rpath,$(PLLIBDIR)
+CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -Werror -fPIC \
+           -D_FORTIFY_SOURCE=2 -fstack-protector-strong \
+           -I. -I$(PLBASE)/include -DMT_ENGINE_PATH='"$(ENGINE_PATH)"'
+LDFLAGS += -L$(PLLIBDIR) -Wl,-rpath,$(PLLIBDIR) -Wl,-z,defs \
+           -Wl,-z,relro,-z,now
 LDLIBS  += -lswipl
 
 LIB       := libcmetta.so
@@ -94,8 +101,8 @@ SOVERSION := 0
 SOFILE    := libcmetta.so.$(VERSION)
 SONAME    := libcmetta.so.$(SOVERSION)
 
-.PHONY: all test bench examples kit surface docs version install uninstall \
-        install-check clean FORCE
+.PHONY: all test bench examples kit surface docs version hardening sanitize \
+        install uninstall install-check clean FORCE
 
 kit: $(KIT)
 
@@ -170,7 +177,7 @@ docs:
 # The examples run too. An example that no longer compiles, or that compiles
 # and then fails, is documentation that lies, and the README quotes all four
 # directly. The Python seat gates its examples for the same reason.
-test: $(TESTS) $(EXAMPLES) surface docs
+test: $(TESTS) $(EXAMPLES) surface docs version hardening
 	@./tests/test_cmetta
 	@./tests/test_bad_boot
 	@set -e; \
@@ -201,6 +208,23 @@ version: $(LIB)
 they name the same release and must agree" >&2; exit 1; \
 	fi; \
 	echo "version: $(VERSION), and mt_version() agrees"
+
+# These are link properties, so ask the linked object rather than trusting the
+# flags above. Both are cheap and stay in the ordinary test dependency graph.
+hardening: $(LIB) $(FAULT_LIB)
+	@for library in $(LIB) $(FAULT_LIB); do \
+	    readelf -lW $$library | grep -q 'GNU_RELRO' || { \
+	        echo "$$library has no GNU_RELRO segment" >&2; exit 1; }; \
+	    readelf -dW $$library | grep -Eq 'BIND_NOW|FLAGS.*NOW' || { \
+	        echo "$$library does not request immediate binding" >&2; exit 1; }; \
+	done
+	@echo "hardening: GNU_RELRO and BIND_NOW on both shared libraries"
+
+# AddressSanitizer cannot model SWI's private stacks. UBSan and standalone
+# LeakSanitizer can, and sanitize.sh keeps their differently instrumented
+# objects outside this directory so no target can silently reuse the wrong one.
+sanitize:
+	@sh ./sanitize.sh
 
 # The installed library is a DIFFERENT build: it bakes the installed engine's
 # path rather than this checkout's, so a program linked against it boots
@@ -234,7 +258,7 @@ cmetta.pc: Makefile
 	    'URL: https://github.com/MesTTo/MeTTa-Kernel' \
 	    'Version: $(VERSION)' \
 	    'Libs: -L$${libdir} -lcmetta' \
-	    'Cflags: -I$${includedir}' > $@
+	    'Cflags: -I$${includedir} -std=c11' > $@
 
 # The engine tree, its libraries, and this seat's own control file, which is
 # what the engine globs to find the C bridge. The .qlf files are NOT installed:
@@ -282,7 +306,7 @@ install-check:
 	@cd build/install-check && \
 	    export PKG_CONFIG_PATH=$(CURDIR)/build/install-check/lib/pkgconfig && \
 	    flags=$$(pkg-config --cflags --libs cmetta) && \
-	    $(CC) -std=c11 -o consumer $(CURDIR)/tests/install_consumer.c $$flags \
+	    $(CC) -o consumer $(CURDIR)/tests/install_consumer.c $$flags \
 	        -Wl,-rpath,$(CURDIR)/build/install-check/lib $(LDFLAGS) $(LDLIBS)
 	@answer=$$(env -u METTA_PATH ./build/install-check/consumer); \
 	if [ "$$answer" != "5" ]; then \

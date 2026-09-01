@@ -21,6 +21,9 @@
 
 #include <stdio.h>
 
+_Static_assert(__STDC_VERSION__ >= 201112L,
+               "cmetta's pkg-config metadata must select C11 or newer");
+
 int main(void)
 { metta *m = mt_open(NULL);
   int64_t answer;

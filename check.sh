@@ -43,6 +43,26 @@ suite will not run" >&2
 }
 run GATE c-binding check_c_binding
 
+# UBSan and standalone LeakSanitizer both work with an embedded SWI process.
+# The sanitizer runner keeps its objects under root ai-tmp and checks the
+# suite's own tally because LSan's exitcode=0 is required to let stdio flush.
+check_c_sanitize() {
+    binding="$HERE/extensions/cmetta"
+    [ -d "$binding" ] || return 0
+    if ! command -v clang >/dev/null 2>&1; then
+        echo "note: clang not found, the C sanitizer matrix will not run" >&2
+        return 0
+    fi
+    if [ ! -f "$(swipl --dump-runtime-variables 2>/dev/null \
+                  | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
+        echo "note: SWI-Prolog development headers not found, the C sanitizer \
+matrix will not run" >&2
+        return 0
+    fi
+    make --quiet -C "$binding" sanitize
+}
+run GATE c-sanitize check_c_sanitize
+
 # The same seat's benchmarks. Skipped for the same three reasons as the suite
 # above and for two more of its own, because a measurement needs instruments
 # the suite does not: perf, to read instructions:u, and a Python that can
