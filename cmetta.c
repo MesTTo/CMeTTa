@@ -962,12 +962,14 @@ struct metta
   char             *path;
   bool              verbose;
   mt_limits    limits;
+  predicate_t        space_operand;
   mt_op_entry_t *ops;
   size_t            nops, cap_ops;
 };
 
 static struct metta g_runtime;
 static bool         g_open = false;
+static bool         g_cleanup_failed = false;
 
 struct mt_space
 { metta *runtime;
@@ -981,6 +983,15 @@ struct mt_space
    null dereference. */
 static mt_space g_self    = { &g_runtime, (char *)"&self",  true };
 static mt_space g_catalog = { &g_runtime, (char *)"&metta", true };
+
+#ifdef MT_TEST_FAULTS
+/* Inspect only the ownership boundary exercised by the restart regression;
+   this symbol is absent from the installed library
+   [tested: test_restart_replaces_runtime_owned_predicates; commit=WORKTREE]. */
+void *mt_test_cached_space_predicate(void)
+{ return g_runtime.space_operand;
+}
+#endif
 
 /* Every door that reaches the engine asks this first. SWI's foreign-frame
    API reads the calling thread's Prolog environment, so a call made before
@@ -1094,26 +1105,27 @@ static mt_status call_bridge(const char *name, int arity, term_t av);
    The predicate is a test over a bound atom and cannot throw, so a plain
    call is enough; a failure is the answer "no" rather than an error.
 
-   The handle is resolved once. PL_predicate() interns the name and walks the
-   module's procedure table on every call, and this runs once per decoded
-   atom: caching it takes the question from 3,358 to 2,208 instructions per
-   atom [measured 2026-08-27, perf stat -e instructions:u, minimum of three
-   runs of kit/driver over 500 programs answering 40 symbols each:
+   The handle is resolved once per runtime. PL_predicate() interns the name
+   and walks the module's procedure table on every call, and this runs once
+   per decoded atom: caching it takes the question from 3,358 to 2,208
+   instructions per atom [measured 2026-08-27, perf stat -e instructions:u,
+   minimum of three runs of kit/driver over 500 programs answering 40 symbols each:
    3,018,075,923 asking nothing, 3,085,234,884 resolving per call,
    3,062,228,470 resolving once, so 1,150 saved of 3,358 and +1.46% over
-   asking nothing on a workload that is nothing but symbol decoding]. A static
-   is safe because this binding is one runtime per process by construction
-   (PL_initialise is process-wide, see cmetta.h's "Fails when") and a
-   predicate_t stays valid for the life of that process. */
+   asking nothing on a workload that is nothing but symbol decoding].
+   PL_cleanup() invalidates predicate handles, so the runtime owns this one
+   and mt_open() resolves it again after every successful restart. */
 static bool is_space(term_t t)
-{ static predicate_t space_operand = NULL;
-  fid_t f;
+{ fid_t f;
   int rc;
 
-  if ( !space_operand )
-    space_operand = PL_predicate("metta_c_space_operand", 1, "user");
+  if ( !g_runtime.space_operand )
+  { err_set(MT_ERROR,
+            "the runtime has no metta_c_space_operand/1 predicate handle");
+    return false;
+  }
   if ( !(f = frame_open("decoding a symbol")) ) return false;
-  rc = PL_call_predicate(NULL, PL_Q_NORMAL, space_operand, t);
+  rc = PL_call_predicate(NULL, PL_Q_NORMAL, g_runtime.space_operand, t);
   PL_discard_foreign_frame(f);
   return rc == TRUE;
 }
@@ -2035,6 +2047,11 @@ metta *mt_open(const mt_config *config)
 
   if ( !config ) config = &defaults;
 
+  if ( g_cleanup_failed )
+    return err_null(MT_ERROR,
+                    "a previous SWI-Prolog cleanup could not reclaim the "
+                    "runtime; this process cannot safely initialise it again");
+
   if ( g_open )
   { /* One runtime per process; PL_initialise sets up the process's single
        Prolog heap and there is no second one to hand out. */
@@ -2133,6 +2150,13 @@ metta *mt_open(const mt_config *config)
   }
   free(buf);
 
+  /* predicate_t values point into SWI's procedure table and PL_cleanup()
+     invalidates them. Resolve the cache after the bridge has loaded, then
+     clear it only after cleanup succeeds
+     [tested: test_restart_replaces_runtime_owned_predicates;
+     commit=WORKTREE]. */
+  g_runtime.space_operand =
+    PL_predicate("metta_c_space_operand", 1, "user");
   g_runtime.open = true;
   g_runtime.path = path;
   g_runtime.verbose = config->verbose;
@@ -2148,17 +2172,38 @@ static void show_ring_release(void);
 
 void mt_close(metta *runtime)
 { size_t i;
+  int cleaned;
+
   if ( !runtime || !g_open ) return;
+
+  /* Halt hooks may cancel cleanup. Until SWI confirms completion, every C
+     handle and the g_open state still describe the live engine and must stay
+     intact. A failed reclamation has passed the point of cancellation but
+     cannot be restarted safely, so it is closed and remembered as terminal. */
+  cleaned = PL_cleanup(0);
+  if ( cleaned == PL_CLEANUP_CANCELED )
+  { err_set(MT_ERROR,
+            "SWI-Prolog canceled runtime cleanup; the runtime remains open");
+    return;
+  }
+  if ( cleaned == PL_CLEANUP_RECURSIVE )
+  { err_set(MT_ERROR,
+            "mt_close was called recursively from SWI-Prolog cleanup; the "
+            "outer cleanup still owns the runtime");
+    return;
+  }
+
+  g_cleanup_failed = cleaned != PL_CLEANUP_SUCCESS;
   for (i = 0; i < runtime->nops; i++) free(runtime->ops[i].name);
   free(runtime->ops);
-  runtime->ops = NULL;
-  runtime->nops = runtime->cap_ops = 0;
   free(runtime->path);
-  runtime->path = NULL;
-  runtime->open = false;
+  memset(runtime, 0, sizeof(*runtime));
   g_open = false;
   show_ring_release();
-  PL_cleanup(0);
+  if ( g_cleanup_failed )
+    err_set(MT_ERROR,
+            "SWI-Prolog cleanup failed to reclaim the runtime; this process "
+            "cannot safely initialise it again");
 }
 
 bool mt_verbose(metta *runtime, bool verbose)

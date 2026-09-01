@@ -60,7 +60,8 @@ LDLIBS  += -lswipl
 LIB       := libcmetta.so
 FAULT_LIB := tests/libcmetta_fault.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower
-TESTS     := tests/test_cmetta tests/test_bad_boot tests/test_alloc_failure
+FAULT_TESTS := tests/test_alloc_failure tests/test_reopen
+TESTS     := tests/test_cmetta tests/test_bad_boot $(FAULT_TESTS)
 KIT       := kit/driver
 BENCH     := benchmarks/cases
 
@@ -125,7 +126,7 @@ benchmarks/%: benchmarks/%.c $(LIB)
 tests/%: tests/%.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS) $(LDLIBS) -lm
 
-tests/test_alloc_failure: tests/test_alloc_failure.c $(FAULT_LIB)
+$(FAULT_TESTS): %: %.c $(FAULT_LIB)
 	$(CC) $(CFLAGS) -DMT_TEST_FAULTS -o $@ $< -Ltests \
 	    -Wl,-rpath,$(CURDIR)/tests -lcmetta_fault $(LDFLAGS) $(LDLIBS) -lm
 
@@ -172,6 +173,7 @@ test: $(TESTS) $(EXAMPLES) surface docs
 	@./tests/test_cmetta
 	@./tests/test_bad_boot
 	@./tests/test_alloc_failure
+	@./tests/test_reopen
 	@for example in $(EXAMPLES); do \
 	    ./$$example > /dev/null || { echo "$$example failed" >&2; exit 1; }; \
 	    echo "$$example ok"; \

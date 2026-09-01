@@ -443,7 +443,10 @@ MT_API MT_MUST_USE metta *mt_open(const mt_config *config);
    already collected. Every door that needs the engine refuses afterwards,
    naming mt_open(); the four release doors -- this one, mt_answers_free(),
    mt_space_close() and mt_thread_detach() -- stay no-ops instead, so a host
-   is not punished for the order it tidies up in. */
+   is not punished for the order it tidies up in. A SWI halt hook may cancel
+   cleanup; then the runtime remains open and mt_error() is MT_ERROR. If SWI
+   completes shutdown but cannot reclaim its memory, the handle closes with
+   MT_ERROR and this process refuses a later unsafe restart. */
 MT_API void mt_close(metta *runtime);
 
 /* Whether the engine prints compiled forms. Returns the previous setting. */
