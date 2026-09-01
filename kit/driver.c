@@ -142,7 +142,7 @@ static size_t put_utf8(char *out, unsigned int code)
 /* This is the same bounded escape and surrogate-pair algorithm as the
    engine's fast JSON reader, adapted to return owned C text rather than an
    SWI term [source: engine/json_codec.c, read_string;
-   commit=f5445b076112ab8d3f33b810a879d51cefa83823]. */
+   commit=da8c4da9df83114ab1d32f3e4049008f37535886]. */
 static bool read_json_string(const unsigned char **cursor,
                              const unsigned char *end, json_text *out,
                              const char **reason)
