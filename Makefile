@@ -58,8 +58,9 @@ LDFLAGS += -L$(PLLIBDIR) -Wl,-rpath,$(PLLIBDIR)
 LDLIBS  += -lswipl
 
 LIB       := libcmetta.so
+FAULT_LIB := tests/libcmetta_fault.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower
-TESTS     := tests/test_cmetta tests/test_bad_boot
+TESTS     := tests/test_cmetta tests/test_bad_boot tests/test_alloc_failure
 KIT       := kit/driver
 BENCH     := benchmarks/cases
 
@@ -106,6 +107,10 @@ all: $(LIB) examples $(KIT) $(BENCH)
 $(LIB): cmetta.c cmetta.h
 	$(CC) $(CFLAGS) -shared -o $@ cmetta.c $(LDFLAGS) $(LDLIBS)
 
+$(FAULT_LIB): cmetta.c cmetta.h
+	$(CC) $(CFLAGS) -DMT_TEST_FAULTS -shared -o $@ cmetta.c \
+	    $(LDFLAGS) $(LDLIBS)
+
 examples: $(EXAMPLES)
 
 examples/%: examples/%.c $(LIB)
@@ -119,6 +124,10 @@ benchmarks/%: benchmarks/%.c $(LIB)
 
 tests/%: tests/%.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS) $(LDLIBS) -lm
+
+tests/test_alloc_failure: tests/test_alloc_failure.c $(FAULT_LIB)
+	$(CC) $(CFLAGS) -DMT_TEST_FAULTS -o $@ $< -Ltests \
+	    -Wl,-rpath,$(CURDIR)/tests -lcmetta_fault $(LDFLAGS) $(LDLIBS) -lm
 
 # Every MT_API declaration must have a definition in the library. A header and
 # an implementation drift apart silently: an edit that removes a function
@@ -162,6 +171,7 @@ docs:
 test: $(TESTS) $(EXAMPLES) surface docs
 	@./tests/test_cmetta
 	@./tests/test_bad_boot
+	@./tests/test_alloc_failure
 	@for example in $(EXAMPLES); do \
 	    ./$$example > /dev/null || { echo "$$example failed" >&2; exit 1; }; \
 	    echo "$$example ok"; \
@@ -270,7 +280,7 @@ install-check:
 	@echo "install-check: a consumer outside this checkout booted the installed engine"
 
 clean:
-	rm -f $(LIB) $(SOFILE) cmetta.pc .enginedir-stamp \
+	rm -f $(LIB) $(FAULT_LIB) $(SOFILE) cmetta.pc .enginedir-stamp \
 	      .version-probe .version-probe.c \
 	      $(EXAMPLES) $(TESTS) $(KIT) $(BENCH)
 	rm -rf build/install-check

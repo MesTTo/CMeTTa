@@ -2475,6 +2475,12 @@ bool mt_self_wipe(metta *runtime)
  * Answers
  * ================================================================== */
 
+typedef struct eager_answer
+{ mt_atom *atom;
+  char    *text;
+  size_t   group;
+} eager_answer;
+
 /* A cursor is one of two things wearing one face: a table of answers a run
    already computed, or an engine suspended between them. */
 struct mt_answers
@@ -2482,9 +2488,7 @@ struct mt_answers
   bool          lazy;
   mt_atom      *pattern;        /* what mt_bound lines each answer against */
   int64_t       cursor_id;      /* lazy: the bridge's engine id     */
-  mt_atom **rows;          /* eager: every answer, in order    */
-  char        **texts;
-  size_t       *groups;
+  eager_answer *items;          /* eager: every answer, in order    */
   size_t        n, at;
   bool          started, done;
   mt_atom      *current;
@@ -2500,6 +2504,32 @@ static mt_answers *answers_alloc(metta *runtime)
   return a;
 }
 
+#ifdef MT_TEST_FAULTS
+/* One-shot fault injection for the separate allocator regression binary. It
+   is absent from the installed library and counts successful vector growths
+   before refusing one [tested: test_eager_growth_is_transactional;
+   commit=WORKTREE]. */
+static MT_TLS size_t test_eager_grows_before_failure = SIZE_MAX;
+
+void mt_test_fail_eager_grow_after(size_t successful_grows)
+{ test_eager_grows_before_failure = successful_grows;
+}
+#endif
+
+static void *eager_grow(void *items, size_t bytes)
+{
+#ifdef MT_TEST_FAULTS
+  if ( test_eager_grows_before_failure != SIZE_MAX )
+  { if ( test_eager_grows_before_failure == 0 )
+    { test_eager_grows_before_failure = SIZE_MAX;
+      return NULL;
+    }
+    test_eager_grows_before_failure--;
+  }
+#endif
+  return realloc(items, bytes);
+}
+
 /* Read the engine's Groups term: a list of groups, each a list of answers. */
 static mt_status collect_groups(term_t groups, mt_answers *out)
 { term_t group = PL_new_term_ref();
@@ -2507,9 +2537,7 @@ static mt_status collect_groups(term_t groups, mt_answers *out)
   term_t answer = PL_new_term_ref();
   size_t cap = 8, index = 0;
 
-  if ( !(out->rows = malloc(cap * sizeof(*out->rows))) ||
-       !(out->texts = malloc(cap * sizeof(*out->texts))) ||
-       !(out->groups = malloc(cap * sizeof(*out->groups))) )
+  if ( !(out->items = malloc(cap * sizeof(*out->items))) )
     return err_set(MT_NOMEM, "out of memory collecting answers");
 
   while ( PL_get_list(gtail, group, gtail) )
@@ -2532,16 +2560,23 @@ static mt_status collect_groups(term_t groups, mt_answers *out)
         return MT_UNSUPPORTED;
       }
       if ( out->n == cap )
-      { cap *= 2;
-        out->rows = realloc(out->rows, cap * sizeof(*out->rows));
-        out->texts = realloc(out->texts, cap * sizeof(*out->texts));
-        out->groups = realloc(out->groups, cap * sizeof(*out->groups));
-        if ( !out->rows || !out->texts || !out->groups )
+      { eager_answer *grown;
+        size_t next;
+
+        if ( cap > SIZE_MAX / 2 ||
+             (next = cap * 2) > SIZE_MAX / sizeof(*out->items) ||
+             !(grown = eager_grow(out->items,
+                                  next * sizeof(*out->items))) )
+        { mt_drop(atom);
+          free(text);
           return err_set(MT_NOMEM, "out of memory collecting answers");
+        }
+        out->items = grown;
+        cap = next;
       }
-      out->rows[out->n] = atom;
-      out->texts[out->n] = text;
-      out->groups[out->n] = index;
+      out->items[out->n].atom = atom;
+      out->items[out->n].text = text;
+      out->items[out->n].group = index;
       out->n++;
     }
     index++;
@@ -2724,9 +2759,9 @@ static mt_status answers_step(mt_answers *answers)
       answers->current_text = NULL;
       return MT_DONE;
     }
-    answers->current = answers->rows[answers->at];
-    answers->current_text = answers->texts[answers->at];
-    answers->current_group = answers->groups[answers->at];
+    answers->current = answers->items[answers->at].atom;
+    answers->current_text = answers->items[answers->at].text;
+    answers->current_group = answers->items[answers->at].group;
     answers->at++;
     return MT_ROW;
   }
@@ -2982,12 +3017,10 @@ void mt_answers_free(mt_answers *answers)
     clear_current(answers);
   } else
   { for (i = 0; i < answers->n; i++)
-    { mt_drop(answers->rows[i]);
-      free(answers->texts[i]);
+    { mt_drop(answers->items[i].atom);
+      free(answers->items[i].text);
     }
-    free(answers->rows);
-    free(answers->texts);
-    free(answers->groups);
+    free(answers->items);
   }
   free(answers);
 }
