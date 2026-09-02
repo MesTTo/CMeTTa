@@ -25,25 +25,25 @@ Build with `sh build.sh`, test with `sh test.sh`. It needs a C compiler and
 SWI-Prolog's development headers; `swipl --dump-runtime-variables` is how the
 Makefile finds them.
 
-## Where this seat sits
+## Where this extension sits
 
 `extensions/` holds one folder per driver of the engine, and this is the C
 one, beside `python` and `node`. It is not the vendored CeTTa C substrate,
 which is a different track: an extension under `extensions/` DRIVES the
 engine.
 
-What makes this seat different from the other two is that it is IN the
+What makes this extension different from the other two is that it is IN the
 engine's process. Python reaches the engine through janus and Node through a
 WebAssembly build, so both have a language boundary to cross and both encode
 every term into the tagged arrays `CODEC.md` describes. C has no boundary: it
 reads `term_t` directly with `PL_get_*`. There is no wire codec here, and that
-is the reason the seat exists.
+is the reason the extension exists.
 
 ## Five rules, and then you know the library
 
 Everything below is one of these five. They are in `cmetta.h` too, at the top.
 
-**1. `const` borrows, non-`const` takes.** Every door you hand a freshly built
+**1. `const` borrows, non-`const` takes.** Every function you hand a freshly built
 term to TAKES it, so the common shape leaks nothing and needs no cleanup line:
 
 ```c
@@ -158,7 +158,7 @@ Building and reading them starts no engine. `mt_parse()`, `mt_parsen()`,
 reader and writers rather than a second set grown here. `mt_show()` is
 presentation and writes into a per-thread rotating buffer so it drops straight
 into `printf`; `mt_show_dup()` gives you a copy to keep. `mt_write_dup()` is the
-strict, reader-inverse door. It returns counted `mt_string` data, so an embedded
+strict, reader-inverse function. It returns counted `mt_string` data, so an embedded
 NUL survives through `mt_parsen(written.data, written.len)`, and refuses a value
 whose display spelling would read back differently.
 
@@ -198,24 +198,24 @@ mt_rows (row, mt_match(kb, E("edge", "a", V("y"))))
 
 rather than `mt_at(row, 2)` and a comment explaining why 2. It works at any
 depth in the pattern and costs one walk of the term, no engine call. The Python
-seat spells the same thing `row.y`, and draws the same line this does between
+extension spells the same thing `row.y`, and draws the same line this does between
 iterating `Answers` and iterating `Rows`.
 
 When you want one value rather than a walk:
 
-| door | what it claims |
+| function | what it claims |
 |---|---|
 | `mt_one(r)` | EXACTLY one answer, owned; refuses zero or many |
 | `mt_first(r)` | the first, owned; claims nothing about the rest |
 | `mt_one_int(r)`, `_float`, `_truth`, `_name` | the value, no atom in your hands |
 | `mt_all(r)` | every answer, as an `mt_list` of items and length |
 
-Each consumes the cursor. `one` and `first` draw the same line the Python seat
+Each consumes the cursor. `one` and `first` draw the same line the Python extension
 draws between `one()` and `first()`.
 
 An `mt_list` also composes directly into a space write. `mt_add_all` takes the
 array and every atom in it, validates the whole list before writing, and calls
-the engine's batch door once:
+the engine's batch call once:
 
 ```c
 mt_list values = mt_all(mt_run(m, "!(superpose (red green blue))"));
@@ -225,7 +225,7 @@ if ( !mt_add_all(kb, values) ) fprintf(stderr, "%s\n", mt_errmsg());
 Use `{NULL, 0}` for an empty batch. A refused member releases the complete
 owned list and leaves the space unchanged.
 
-`mt_run()` is the eager door, because running a program means running it, and
+`mt_run()` is the eager one, because running a program means running it, and
 each row's `group` says which `!` form the answer came from. When the point is
 the effect rather than the answers, `mt_do(m, src)` runs and discards:
 
@@ -275,9 +275,9 @@ A C value can cross MeTTa untouched and come back the same object:
 mt_atom *handle = mt_object(&account, "account", NULL);
 ```
 
-Each call makes ONE value, and this seat does not intern: two `mt_object` calls
+Each call makes ONE value, and this extension does not intern: two `mt_object` calls
 on the same pointer are two atoms that answer `False` to `==` and fail to
-`unify`, where the Node seat interns by identity and Python answers `True`. Wrap
+`unify`, where the Node extension interns by identity and Python answers `True`. Wrap
 once and pass the atom. Every crossing of that one atom uses one engine identity,
 so it can be matched and deleted with `mt_keep(handle)`. Ordinarily SWI's atom
 garbage collector releases the engine reference and the `mt_free_fn` runs after
@@ -285,7 +285,7 @@ the last C reference goes too. When the resource must close now, call
 `mt_object_free(handle)`: it consumes that C reference, invalidates any Prolog
 aliases, and makes a later attempt to return such an alias fail as
 `MT_UNSUPPORTED` rather than touching released memory. Other C references made
-with `mt_keep` remain valid until dropped. `get-type` answers `%Undefined%` for one, because this seat
+with `mt_keep` remain valid until dropped. `get-type` answers `%Undefined%` for one, because this extension
 declares no `seam:host_object/1`, the seam by which a host tells the engine a
 value is its own; `mt_type()` is how C reads the name back, and MeTTa is not
 told it.
@@ -346,7 +346,7 @@ int64_t poly(int64_t x) { return POLY(C_ADD, C_MUL, x); }
 mt_lower(m, (poly $x), POLY(M_ADD, M_MUL, $x));
 ```
 
-That is what the other seats' twins buy, bought the way C buys things.
+That is what the other extensions' twins buy, bought the way C buys things.
 `examples/lower.c` runs all of it.
 
 What is out of reach: an ARBITRARY existing C function cannot be lowered. The
@@ -427,13 +427,13 @@ that evaluate start, the same restriction `sqlite3_create_function()` carries.
 | `cmetta.h` | the public API, and the only file a consumer includes |
 | `cmetta.c` | the C half: boot, term conversion, cursors, ops |
 | `bridge.pl` | the Prolog half, calling published engine surface only |
-| `extension.pl` | the seat declaration the engine reads at boot |
+| `extension.pl` | the extension declaration the engine reads at boot |
 | `examples/` | `hello`, `ops`, `stream`, `lower` |
 | `tests/` | the C suite, run by `sh test.sh` and by the gate |
-| `kit/` | the corpus and driver the cross-seat parity test uses |
+| `kit/` | the corpus and driver the cross-extension parity test uses |
 | `benchmarks/` | what a C host pays, pinned to `baseline.json` |
 
-The Python seat's `test_c_binding.py` runs both this seat and the Python host
+The Python extension's `test_c_binding.py` runs both this extension and the Python host
 over `kit/corpus.json` and requires the same answers.
 
 Constraints and issues found while building this are recorded in
