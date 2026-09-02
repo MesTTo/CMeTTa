@@ -6,7 +6,6 @@ examples/hello
 examples/ops
 examples/stream
 examples/lower
-tests/test_cmetta
 kit/driver
 benchmarks/cases
 
@@ -16,3 +15,14 @@ libcmetta.so.*
 cmetta.pc
 .enginedir-stamp
 build/
+
+# The C suite's own binaries, and the library the fault-injection tests link.
+# Every one has its source beside it under the same stem, so the rule ignores
+# the extensionless build product and keeps anything carrying an extension.
+# Written as a pattern rather than a list because the list went stale: it named
+# tests/test_cmetta alone while the Makefile's TESTS grew to eleven, and the ten
+# others sat untracked in git status where one git add would have committed a
+# machine's binary.
+tests/test_*
+!tests/test_*.*
+tests/*.so
