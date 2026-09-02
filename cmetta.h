@@ -660,7 +660,7 @@ MT_API bool mt_space_wipe(mt_space *space);
    [tested: tests/test_batch_add.c;
    commit=c591b4e77d4ca20fcedcf4c87a942d5afc2bf625]. At 2,000 atoms the batch
    costs 12,045 engine inferences against 46,028 sequentially
-   [measured: 46028 sequential and 12045 batch inferences;
+   [measured 2026-09-01: 46028 sequential and 12045 batch inferences;
    command=for run in 1 2 3; do extensions/cmetta/tests/test_batch_add; done;
    fixture=2000 distinct integer atoms per fresh named space;
    commit=c591b4e77d4ca20fcedcf4c87a942d5afc2bf625]. */

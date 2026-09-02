@@ -25,7 +25,7 @@
 #   Every ordinary build treats warnings as errors, refuses undefined shared-
 #   library symbols, and emits stack-protected full-RELRO objects. `make
 #   sanitize` rebuilds in root ai-tmp so sanitizer and ordinary objects never
-#   contaminate one another [tested: make -C extensions/cmetta sanitize;
+#   contaminate one another [tested: GATE_ONLY=1 sh check.sh c-sanitize;
 #   commit=b339084bb5625996fc88a31608d48ad31c575d1f].
 
 SWIPL       ?= swipl

@@ -2196,7 +2196,7 @@ static bool encode_leaf(const mt_atom *a, term_t out, encode_ctx *ctx)
          not a success flag. The acquire callback pairs one box reference with
          each created blob and an existing unique blob needs no second one.
          [tested: tests/test_cmetta.c,
-         test_the_same_c_object_is_one_engine_identity;
+         "the same C object is one engine identity across store, match and delete";
          commit=2e13376bb6e1662655525533a1ab02800940aec5] */
       (void)PL_put_blob(out, a->u.box, sizeof(*a->u.box), &mt_object_blob);
       return true;
