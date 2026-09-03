@@ -33,13 +33,13 @@ check_c_binding() {
         echo "note: no C compiler found, the C binding suite will not run" >&2
         return 0
     fi
-    if [ ! -f "$(swipl --dump-runtime-variables 2>/dev/null \
+    if [ ! -f "$(bounded swipl --dump-runtime-variables 2>/dev/null \
                   | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
         echo "note: SWI-Prolog development headers not found, the C binding \
 suite will not run" >&2
         return 0
     fi
-    sh "$HERE/extensions/cmetta/test.sh"
+    bounded sh "$HERE/extensions/cmetta/test.sh"
 }
 run GATE c-binding check_c_binding
 
@@ -53,13 +53,13 @@ check_c_sanitize() {
         echo "note: clang not found, the C sanitizer matrix will not run" >&2
         return 0
     fi
-    if [ ! -f "$(swipl --dump-runtime-variables 2>/dev/null \
+    if [ ! -f "$(bounded swipl --dump-runtime-variables 2>/dev/null \
                   | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
         echo "note: SWI-Prolog development headers not found, the C sanitizer \
 matrix will not run" >&2
         return 0
     fi
-    make --quiet -C "$binding" sanitize
+    bounded make --quiet -C "$binding" sanitize
 }
 run GATE c-sanitize check_c_sanitize
 
@@ -83,7 +83,7 @@ check_c_bench() {
         echo "note: no C compiler found, the C benchmark suite will not run" >&2
         return 0
     fi
-    if [ ! -f "$(swipl --dump-runtime-variables 2>/dev/null \
+    if [ ! -f "$(bounded swipl --dump-runtime-variables 2>/dev/null \
                   | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
         echo "note: SWI-Prolog development headers not found, the C benchmark \
 suite will not run" >&2
@@ -94,13 +94,13 @@ suite will not run" >&2
 run; instructions:u is what decides these cases" >&2
         return 0
     fi
-    if ! "$PY" -c 'import metta' >/dev/null 2>&1 &&
-       ! ( cd "$HERE/extensions/python" && "$PY" -c 'import metta' ) >/dev/null 2>&1; then
+    if ! bounded "$PY" -c 'import metta' >/dev/null 2>&1 &&
+       ! ( cd "$HERE/extensions/python" && bounded "$PY" -c 'import metta' ) >/dev/null 2>&1; then
         echo "note: this python cannot import metta, the C benchmark suite \
 will not run; it compares through metta's BenchmarkBaseline" >&2
         return 0
     fi
-    CHECK_PY="$PY" sh "$HERE/extensions/cmetta/bench.sh"
+    bounded env CHECK_PY="$PY" sh "$HERE/extensions/cmetta/bench.sh"
 }
 
 run GATE c-bench check_c_bench
@@ -126,12 +126,12 @@ check_c_install() {
 is how a consumer finds an installed library" >&2
         return 0
     fi
-    if [ ! -f "$(swipl --dump-runtime-variables 2>/dev/null \
+    if [ ! -f "$(bounded swipl --dump-runtime-variables 2>/dev/null \
                   | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
         echo "note: SWI-Prolog development headers not found, the C install \
 check will not run" >&2
         return 0
     fi
-    make --quiet -C "$HERE/extensions/cmetta" install-check
+    bounded make --quiet -C "$HERE/extensions/cmetta" install-check
 }
 run GATE c-install check_c_install
