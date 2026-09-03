@@ -6,7 +6,7 @@
  *   expression, its file and its line otherwise.
  *   Engine-owned &self and &metta refuse wipe without damaging catalog,
  *   typing, or arithmetic state; an ordinary named space still wipes
- *   [tested: test_engine_owned_base_spaces_refuse_wipe; commit=WORKTREE].
+ *   [tested: test_engine_owned_base_spaces_refuse_wipe; commit=6229e43cb68cc3685360810d462d992874992f6c].
  * Open Obligations:
  *   To Do: None
  *   Hacks: None
