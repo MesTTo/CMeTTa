@@ -4,6 +4,9 @@
  *   case that writes to &self cleans up after itself.
  * Guarantees: exits 0 only when every case passed; prints the failing
  *   expression, its file and its line otherwise.
+ *   Engine-owned &self and &metta refuse wipe without damaging catalog,
+ *   typing, or arithmetic state; an ordinary named space still wipes
+ *   [tested: test_engine_owned_base_spaces_refuse_wipe; commit=WORKTREE].
  * Open Obligations:
  *   To Do: None
  *   Hacks: None
@@ -775,6 +778,47 @@ static void test_catalog_and_file_load_are_live_runtime_doors(metta *m)
   mt_answers_free(loaded);
   CHECK(mt_one_int(mt_run(m, "!(cmetta-loaded-value)")) == 73);
   CHECK(mt_ok());
+}
+
+static void test_engine_owned_base_spaces_refuse_wipe(metta *m)
+{ mt_space *catalog = mt_catalog(m);
+  mt_space *ordinary = mt_space_open(m, "&cmetta-base-clear-control");
+  const char *type_name;
+  size_t catalog_before = mt_count(catalog);
+
+  CASE("&self refuses wipe with the caller-owned-space remedy");
+  mt_clear();
+  CHECK(!mt_self_wipe(m));
+  CHECK(mt_error() == MT_ERROR);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "&self") != NULL);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "clear") != NULL);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "caller's own context space") != NULL);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "named space") != NULL);
+
+  CASE("&metta refuses wipe with the caller-owned-space remedy");
+  mt_clear();
+  CHECK(!mt_space_wipe(catalog));
+  CHECK(mt_error() == MT_ERROR);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "&metta") != NULL);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "clear") != NULL);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "caller's own context space") != NULL);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "named space") != NULL);
+
+  CASE("the refusals preserve catalog, typing and arithmetic");
+  mt_clear();
+  CHECK(mt_count(catalog) == catalog_before);
+  type_name = mt_one_name(mt_run(m, "!(get-type 1)"));
+  CHECK(type_name && strcmp(type_name, "Number") == 0);
+  CHECK(mt_one_int(mt_run(m, "!(+ 1 2)")) == 3);
+  CHECK(mt_ok());
+
+  CASE("an ordinary named space still wipes");
+  CHECK(ordinary != NULL);
+  CHECK(mt_add(ordinary, E("ordinary", "clear")));
+  CHECK(mt_count(ordinary) == 1);
+  CHECK(mt_space_wipe(ordinary));
+  CHECK(mt_count(ordinary) == 0);
+  mt_space_close(ordinary);
 }
 
 /* A NULL atom is what a failed constructor hands a door, and the errno shape
@@ -1582,6 +1626,7 @@ int main(void)
   test_one_and_first_make_different_claims(m);
   test_spaces_store_and_query(m);
   test_catalog_and_file_load_are_live_runtime_doors(m);
+  test_engine_owned_base_spaces_refuse_wipe(m);
   test_a_door_that_takes_an_atom_refuses_null(m);
   test_a_deep_term_does_not_overrun_the_stack(m);
   test_closing_an_exhausted_cursor_is_quiet(m);
