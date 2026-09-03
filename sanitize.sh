@@ -13,6 +13,25 @@
 
 set -eu
 
+# Every sanitizer diagnostic is symbolized by llvm-symbolizer, which this box
+# configures to consult a debuginfod server: /etc/debuginfod/elfutils.urls sets
+# DEBUGINFOD_URLS=https://debuginfod.ubuntu.com, and the symbolizer makes a
+# network request per module it cannot resolve locally. That request does not
+# return here, so the symbolizer sits at 0% CPU and the sanitized process blocks
+# forever on its pipe. Measured 2026-09-03: `LSAN_OPTIONS=exitcode=0
+# tests/test_cmetta` never finishes and `timeout 100 make sanitize` exits 124,
+# while the same run with DEBUGINFOD_URLS empty finishes in seconds and reports
+# `SUMMARY: LeakSanitizer: 44104 byte(s) leaked in 27 allocation(s)` and
+# `472 checks, 0 failures`. A bare `llvm-symbolizer` with one query hangs the
+# same way and answers instantly with the variable cleared.
+#
+# Nothing is lost. The only symbols debuginfod would add are SWI-Prolog's, and
+# the rule below reads frame #1 for a C-SEAT source file, whose debug info is
+# local and built here. What was lost was the whole lane: it never reached that
+# rule at all.
+DEBUGINFOD_URLS=
+export DEBUGINFOD_URLS
+
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH='' cd -- "$HERE/../.." && pwd)
 BUILD_ROOT="$ROOT/ai-tmp/cmetta-sanitize"
