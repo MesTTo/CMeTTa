@@ -1779,8 +1779,10 @@ static mt_status call_bridge(const char *name, int arity, term_t av);
 /* Whether this atom is a space, asked of the engine and of the term itself:
    no text conversion, and no list of names to rebuild per answer.
    metta_c_space_operand/1 is metta_space_operand/1, the test the engine's own
-   metatype_of/2 consults, so this seat, the Python seat and get-metatype
-   classify one atom alike. Asking the engine per atom is a question only an
+   get_type_candidate/2 consults before answering SpaceType, so this seat and
+   the Python seat classify one atom alike. get-metatype asks a different
+   question since 2026-09-05, upstream PeTTa's one about whether a function
+   carries the name. Asking the engine per atom is a question only an
    in-process seat can afford, and it is the reason this seat exists.
 
    The predicate is a test over a bound atom and cannot throw, so a plain

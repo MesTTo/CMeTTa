@@ -341,9 +341,11 @@ metta_c_stats([Inferences, CpuTime, GcCount, GcFreed, GcTimeMs, TableBytes]) :-
 
 % Whether this atom is a space, asked of every atom the C half decodes and of
 % the atom itself. metta_space_operand/1 is the test the engine's own species
-% classifier consults (engine/metta/types.pl, metatype_of/2), and the wire
-% codec's `p` tag asks the same one, so this seat, the Python seat and
-% get-metatype classify an atom alike. CODEC.md's "The question p asks"
+% classifier consults (engine/metta/types.pl, get_type_candidate/2 answering
+% SpaceType), and the wire codec's `p` tag asks the same one, so this seat and
+% the Python seat classify an atom alike. get-metatype is a DIFFERENT question
+% since 2026-09-05, upstream PeTTa's one about whether a function carries the
+% name, and it calls `&self` a Symbol. CODEC.md's "The question p asks"
 % section states the rule and its price.
 %
 % It used to be metta_space_names/1, the same set as a sorted LIST: the C half
