@@ -2928,37 +2928,72 @@ metta *mt_open(const mt_config *config)
      program runs the previous compile and nothing says so
      [tested: tests/checks/check_qlf_freshness.py; commit=888a73c7d231188cd90fafcb8b0cce3799ef5e97].
 
-     It also makes the boot CHEAPER, which is not why it is here but is most of
-     what it does to the counters. qlf_boot sets encoding(utf8), and this seat
-     consults the engine with an explicit .pl so the umbrella is read from
-     SOURCE; without the flag that read goes through the locale's multibyte
-     conversion. Boot measures 1,961,762,311 retired instructions with neither,
-     1,735,405,359 with the encoding flag alone and 1,761,830,644 with
-     qlf_boot, so the flag is worth -11.5% and the purge machinery costs about
-     26M of it back, plus 6,955 inferences for globbing the artifact set and
-     reading its stamp [measured 2026-08-29, min-of-three per arm, one arm per
-     mechanism]. The purge is what makes this correct and the encoding comes
-     with it; neither is worth having alone.
+     It also makes the boot CHEAPER, which is not why it is here but was most
+     of what it did to the counters while this seat still read the umbrella
+     from source: qlf_boot sets encoding(utf8), and a source read goes through
+     the locale's multibyte conversion without it. Boot measured 1,961,762,311
+     retired instructions with neither, 1,735,405,359 with the encoding flag
+     alone and 1,761,830,644 with qlf_boot, so the flag was worth -11.5% and
+     the purge machinery cost about 26M of it back, plus 6,955 inferences for
+     globbing the artifact set and reading its stamp [measured 2026-08-29,
+     min-of-three per arm, one arm per mechanism, all three in the source
+     regime the load below has since left]. The purge is what makes this
+     correct and the encoding comes with it; neither is worth having alone.
 
      Concurrent opens are safe, which is the question deleting files at boot
-     invites. Six hello processes started at once against a STALE artifact set,
-     so all six purge and regenerate together, all answered correctly; qlf_boot
-     publishes its stamp through a temporary file and rename/2 for that reason,
-     and the Python seat has run the same shape through main.pl all along
+     invites, and it is the sharper question now that this seat GENERATES the
+     artifacts it purges. Six hello processes started at once against a STALE
+     artifact set, so all six purge and regenerate together, all answered
+     correctly; qlf_boot publishes its stamp through a temporary file and
+     rename/2 for that reason, and SWI publishes each .qlf the same way,
+     through `.<name>.qlf.<pid>` and rename(2)
      [measured 2026-08-29: 6/6, examples/hello, set made stale by touching
-     engine/spaces/foreign.pl; commit=888a73c7d231188cd90fafcb8b0cce3799ef5e97]. */
+     engine/spaces/foreign.pl; commit=888a73c7d231188cd90fafcb8b0cce3799ef5e97;
+     re-run 2026-09-05 against an EMPTY artifact set, so all six generate:
+     6/6]. */
   snprintf(buf, bufsz, "%s/engine/qlf_boot.pl", path);
   if ( !goal_atom("consult", buf) )
   { free(path); free(buf);
     return NULL;
   }
+  free(buf);
 
-  snprintf(buf, bufsz, "%s/engine/metta.pl", path);
-  if ( !goal_atom("consult", buf) )
-  { free(path); free(buf);
+  /* Then the engine, through the engine's OWN load rather than a consult
+     spelled here. metta_qlf_boot:qlf_load_engine is what engine/main.pl runs,
+     so the compiled regime and its recovery have one implementation in the
+     tree; the goal carries no file name because qlf_boot.pl asserted the
+     engine directory from its own load context when it was consulted above.
+
+     This seat used to name "%s/engine/metta.pl", and an explicit .pl is the
+     SOURCE: SWI read and compiled the umbrella and its eleven engine/metta/
+     units on every boot. Naming it without the extension takes
+     engine/metta.qlf instead and the boot case falls from 1,563,321
+     inferences to 633,848, three identical samples each way, and from
+     1,885,311,169 retired instructions to 1,107,958,359, so 929,473
+     inferences, 59.5% of the row, and 41.2% of the whole process, were the
+     compiler doing the same work again. The other five cases are identical
+     to the inference
+     [measured 2026-09-05; command=CHECK_PY=$CHECK_PY sh
+     extensions/cmetta/bench.sh; fixture=built C host with the mork, node and
+     python seats loaded;
+     commit=WORKTREE].
+
+     It also stops this seat being the one host that cannot warm its own tree.
+     On a tree with no artifacts the old spelling read 3,417,125 inferences,
+     wrote nothing, and the NEXT boot read 3,417,141: it never warmed, so an
+     installation that only ever ran a C program paid the whole source compile
+     on every run. Under qcompile(auto) the first boot reads 3,459,587 and
+     leaves the fourteen artifacts, and the second reads 633,837
+     [measured 2026-09-05, both binaries against the same artifact-free copy of
+     this checkout, in the harness's own built environment].
+     A tree the process may not write is unchanged: SWI falls back to source,
+     writes nothing and says nothing
+     [tested: test_a_read_only_engine_tree_boots_from_source;
+     commit=WORKTREE]. */
+  if ( !goal("metta_qlf_boot:qlf_load_engine") )
+  { free(path);
     return NULL;
   }
-  free(buf);
 
   /* predicate_t values point into SWI's procedure table and PL_cleanup()
      invalidates them. Resolve the cache after the bridge has loaded, then
