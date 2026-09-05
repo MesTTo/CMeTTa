@@ -10,4 +10,9 @@
 
 set -eu
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
-exec make --quiet -C "$HERE" all
+
+# One spelling of the bound, implemented in bounded.sh, which every runner in
+# this tree and a command typed by hand all reach. Spelled as the path here
+# rather than through a `bounded` function, because `exec` cannot exec a
+# function and this file's exit status must stay its delegate's.
+exec sh "$HERE/../../bounded.sh" make --quiet -C "$HERE" all

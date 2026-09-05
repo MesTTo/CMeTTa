@@ -19,5 +19,12 @@
 
 set -eu
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
-make --quiet -C "$HERE" clean >/dev/null 2>&1 || true
-exec make --quiet -C "$HERE" test
+# One spelling of the bound, implemented in bounded.sh, which every runner in
+# this tree and a command typed by hand all reach.
+# `make` is here for a measured reason: a gate run HUNG for 360 seconds in
+# `make sanitize` when LeakSanitizer spawned an llvm-symbolizer that went to
+# 0% CPU and never returned.
+bounded() { sh "$HERE/../../bounded.sh" "$@"; }
+
+bounded make --quiet -C "$HERE" clean >/dev/null 2>&1 || true
+exec sh "$HERE/../../bounded.sh" make --quiet -C "$HERE" test
