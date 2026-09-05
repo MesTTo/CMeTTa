@@ -37,5 +37,9 @@ METTA_ROOT="$HERE/../.."
     exit 2
 }
 
-make --quiet -C "$HERE" bench
-exec "$PY" "$HERE/benchmarks/bench.py" "$@"
+# One spelling of the bound, implemented in bounded.sh, which every runner in
+# this tree and a command typed by hand all reach.
+bounded() { sh "$HERE/../../bounded.sh" "$@"; }
+
+bounded make --quiet -C "$HERE" bench
+exec sh "$HERE/../../bounded.sh" "$PY" "$HERE/benchmarks/bench.py" "$@"

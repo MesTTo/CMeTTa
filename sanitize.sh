@@ -33,6 +33,10 @@ DEBUGINFOD_URLS=
 export DEBUGINFOD_URLS
 
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+
+# One spelling of the bound, implemented in bounded.sh, which every runner in
+# this tree and a command typed by hand all reach.
+bounded() { sh "$HERE/../../bounded.sh" "$@"; }
 ROOT=$(CDPATH='' cd -- "$HERE/../.." && pwd)
 BUILD_ROOT="$ROOT/ai-tmp/cmetta-sanitize"
 SWIPL=${SWIPL:-swipl}
@@ -139,7 +143,7 @@ run_ubsan() {
     "$out/tests/test_unify" >> "$log" 2>&1
     "$out/tests/test_hash" >> "$log" 2>&1
     "$out/tests/test_threads" >> "$log" 2>&1
-    python3 "$HERE/tests/test_kit.py" "$out/kit/driver" \
+    bounded python3 "$HERE/tests/test_kit.py" "$out/kit/driver" \
         "$BUILD_ROOT" >> "$log" 2>&1
     for example_name in $EXAMPLES; do
         "$out/examples/$example_name" > /dev/null 2>> "$log"
