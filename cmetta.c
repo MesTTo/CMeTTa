@@ -2976,7 +2976,7 @@ metta *mt_open(const mt_config *config)
      [measured 2026-09-05; command=CHECK_PY=$CHECK_PY sh
      extensions/cmetta/bench.sh; fixture=built C host with the mork, node and
      python seats loaded;
-     commit=WORKTREE].
+     commit=48b6cb4eea09e6f2f9637c7186e77c628d61b7e3].
 
      It also stops this seat being the one host that cannot warm its own tree.
      On a tree with no artifacts the old spelling read 3,417,125 inferences,
@@ -2989,7 +2989,7 @@ metta *mt_open(const mt_config *config)
      A tree the process may not write is unchanged: SWI falls back to source,
      writes nothing and says nothing
      [tested: test_a_read_only_engine_tree_boots_from_source;
-     commit=WORKTREE]. */
+     commit=48b6cb4eea09e6f2f9637c7186e77c628d61b7e3]. */
   if ( !goal("metta_qlf_boot:qlf_load_engine") )
   { free(path);
     return NULL;
