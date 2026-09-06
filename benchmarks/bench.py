@@ -19,6 +19,11 @@ per operation. A case comment says which counter decides it.
 Wall clock decides nothing here and is not recorded.
 
 Guarantees:
+  - a box that would not count is told apart from a tree that moved: this
+    lane exits 0 with a named skip on a developer's box and 1 where CI=true,
+    and never reports a refused measurement as a moved row
+    [tested: test_a_benchmark_lane_skips_a_refusal_locally_and_refuses_it_in_ci;
+    commit=WORKTREE]
   - one process per case, so a case never measures a runtime another case
     warmed [source: extensions/cmetta/benchmarks/cases.c, one runtime per
     process]
@@ -64,6 +69,7 @@ from metta.testing import (  # noqa: E402  -- the path above is what makes this 
     INSTRUCTIONS,
     BenchmarkBaseline,
     measure_counters,
+    measured_main,
 )
 
 DRIVER = SEAT / "benchmarks" / "cases"
@@ -469,4 +475,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(measured_main(main))

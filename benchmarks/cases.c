@@ -11,6 +11,9 @@
  *     _controlled answers on the Python side
  *
  * Guarantees:
+ *   - the handshake is bounded and a window that never opened exits 125, so
+ *     the driver reads it as "this run says nothing" rather than as a moved
+ *     row [tested: extensions/cmetta/bench.sh; commit=WORKTREE]
  *   - setup and teardown sit OUTSIDE the counted region, so a per-operation
  *     case measures the operation and not the engine boot in front of it.
  *     perf's own manual gives the reason for the mechanism: --delay=-1 starts
@@ -43,11 +46,32 @@
 
 #include <cmetta.h>
 
+#include <poll.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/* A window that never opened measured NOTHING, which is a different answer
+   from a case that ran and moved, and the driver has to tell them apart: read
+   as a regression, PMU contention on a shared box reports a code change that
+   did not happen. 125 is the status this tree already reads as "the wrapper
+   failed rather than the command" -- timeout(1) uses it for a failure in
+   itself, `git bisect run` reads it as "this run says nothing about the
+   commit", and bounded.sh refuses with it when the process that started a
+   command had already exited. metta.benchmarking names the same number
+   PERF_CONTROL_REFUSED and turns it into a named skip [source: coreutils
+   timeout(1) EXIT STATUS; git-bisect(1), "run <cmd>";
+   extensions/python/metta/benchmarking.py, PERF_CONTROL_REFUSED]. */
+#define METTA_PERF_CONTROL_REFUSED 125
+
+/* A bound on the handshake, the ten seconds the Prolog workloads also take:
+   without one, a perf that never armed leaves this process blocked in read(2)
+   until the driver's own deadline a minute later, and the driver cannot say
+   why. perf fails to open its counter while another session holds the PMU,
+   and it acknowledges nothing when it does. */
+#define METTA_ACK_TIMEOUT_MS 10000
 
 /* Read by main() and printed, so no case's work can be removed as dead. */
 static volatile unsigned long long sink;
@@ -68,16 +92,25 @@ static int wait_for_ack(int descriptor)
 { char reply[16] = {0};
   size_t filled = 0;
   while ( filled < sizeof(reply) && memchr(reply, '\n', filled) == NULL )
-  { ssize_t got = read(descriptor, reply + filled, sizeof(reply) - filled);
+  { struct pollfd waiting = { .fd = descriptor, .events = POLLIN, .revents = 0 };
+    ssize_t got;
+    if ( poll(&waiting, 1, METTA_ACK_TIMEOUT_MS) <= 0 )
+    { fprintf(stderr, "cases: perf did not acknowledge: it may have failed to "
+                      "open its counter, which it does while another session "
+                      "holds the PMU\n");
+      return METTA_PERF_CONTROL_REFUSED;
+    }
+    got = read(descriptor, reply + filled, sizeof(reply) - filled);
     if ( got <= 0 )
-    { fprintf(stderr, "cases: perf control acknowledgement pipe closed\n");
-      return 1;
+    { fprintf(stderr, "cases: perf closed its acknowledgement pipe before the "
+                      "window opened\n");
+      return METTA_PERF_CONTROL_REFUSED;
     }
     filled += (size_t)got;
   }
   if ( strncmp(reply, "ack\n", 4) != 0 )
   { fprintf(stderr, "cases: invalid perf control acknowledgement\n");
-    return 1;
+    return METTA_PERF_CONTROL_REFUSED;
   }
   return 0;
 }
@@ -407,6 +440,7 @@ int main(int argc, char **argv)
   long iterations;
   bool controlled = false;
   int status = 0;
+  int refused;
 
   memset(&w, 0, sizeof(w));
   memset(&before, 0, sizeof(before));
@@ -445,9 +479,12 @@ int main(int argc, char **argv)
      engine retired from process start. Every other case samples the pair
      around its own region. */
   if ( !chosen->whole_process ) before = mt_stats_now(w.m);
-  if ( control_send("enable\n") != 0 ) { teardown(&w); return 2; }
+  /* The handshake's own status is RETURNED rather than folded into 2: it is
+     METTA_PERF_CONTROL_REFUSED, and the driver reads that as "this run says
+     nothing" instead of as a moved row. */
+  if ( (refused = control_send("enable\n")) != 0 ) { teardown(&w); return refused; }
   status = chosen->run(&w);
-  if ( control_send("disable\n") != 0 ) { teardown(&w); return 2; }
+  if ( (refused = control_send("disable\n")) != 0 ) { teardown(&w); return refused; }
   after = mt_stats_now(w.m);
   spent = mt_stats_since(before, after);
 
