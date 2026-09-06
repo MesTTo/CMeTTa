@@ -1400,6 +1400,12 @@ static void test_an_engine_error_reaches_c_as_words(metta *m)
   CHECK(mt_run(m, "!(assertEqual 1 2)") == NULL);
   CHECK(mt_error() == MT_ERROR);
   CHECK(mt_errmsg() && strstr(mt_errmsg(), "ssertion") != NULL);
+  /* The report is THREE lines, and the two under the headline are the answers
+     that differed. They are continuation lines of one print_message/2 message,
+     so a capture window that took the headline and dropped the rest would
+     still satisfy the check above and lose the whole diagnosis. */
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "missing: (2)") != NULL);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "excess: (1)") != NULL);
 
   CASE("the runtime is still usable after one call raised");
   mt_clear();
