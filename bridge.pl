@@ -195,14 +195,18 @@ metta_c_timed(Goal, Seconds, Timed) :-
 % two ball shapes depending on which door produced it is a second name for one
 % thing. The wall bound keeps its own ball because it IS this seat's: it is
 % applied per pull, which is a policy the engine does not have.
+%
+% It is the engine's BUILDER and not a second copy of the limiter, for the
+% reason that builder exists: SWI disarms the limit before raising its bare
+% `inference_limit_exceeded` atom inside the goal, so a recovery catch under
+% the goal eats the ball and the limiter reports success for work that never
+% stopped. The cumulative counter read the builder pairs with it is what
+% refuses then [tested:
+% inference_budget:a_swallowed_ball_still_refuses_at_the_c_door].
 metta_c_counted(Goal, Inferences) :- Inferences =< 0, !, call(Goal).
 metta_c_counted(Goal, Inferences) :-
-    call_with_inference_limit(Goal, Inferences, Result),
-    (   Result == inference_limit_exceeded
-    ->  throw(error(metta_control_signal(inference_limit, Inferences),
-                    context(metta, inference_limit)))
-    ;   true
-    ).
+    metta_host_inference_budget(Goal, Inferences, Bounded),
+    call(Bounded).
 
 % The C half asks whether a ball it caught is a bound rather than a fault, so
 % a caller can tell "I stopped it" from "it broke". Both sources answer here:
