@@ -439,6 +439,62 @@ neither, and the error state is per-thread.
 The operation table is not guarded: publish every operation before the threads
 that evaluate start, the same restriction `sqlite3_create_function()` carries.
 
+## Extending this seat without forking it
+
+A library outside this repository extends this seat by including `cmetta.h`,
+linking against `libcmetta` and being LOADED by path:
+
+```c
+/* solars.c, a library nothing here has heard of */
+#include <cmetta.h>
+
+bool mt_extension_init(metta *runtime)
+{ mt_provider store = { .user = my_store, .add = store_add,
+                        .atom_at = store_atom_at, .clear = store_clear };
+  return mt_provider_open(runtime, "&stars", store) &&
+         mt_repr(runtime, "star", star_text, NULL) &&
+         mt_library(runtime, "solars", "/usr/share/solars/metta");
+}
+```
+
+```c
+mt_extension(m, "/usr/lib/solars.so");   /* and it is all registered */
+```
+
+`mt_extension_init` is the one symbol a library must export, which is
+sqlite3's loadable-extension shape entry point and all
+([loadext](https://www.sqlite.org/loadext.html)).
+
+What it may register:
+
+| door | what it gives MeTTa |
+|---|---|
+| `mt_def` | a C function MeTTa calls by name |
+| `mt_object` | a live C value crossing by reference |
+| `mt_repr` | how a C value of one type PRINTS |
+| `mt_provider_open` | a space whose atoms the library holds, not the engine |
+| `mt_library` | a directory of MeTTa or Prolog sources it ships |
+
+All five are ROWS against a declared extension point, and the points are the
+seam: `mt_point_declare` declares one, `mt_register` adds a row,
+`mt_point_at`, `mt_seam_at` and `mt_seam_count` read them back as data, and
+`mt_claim` consults an ownership point until a row takes the request. This is
+the seat-level twin of `engine/ext_points.pl`, with the same four kinds:
+`MT_DECLARATION` (every row read), `MT_OWNERSHIP` (the first row that claims),
+`MT_EVENT` (every row runs) and `MT_SERVICE` (the seat writes it, a registrant
+calls it). A library declares a point of its own exactly as this seat declares
+`op`, `repr`, `provider` and `library`.
+
+A provider speaks canonical MeTTa TEXT, which is what this seat already speaks
+over its bridge, and enumerates by index: `atom_at(user, i)` answers the atom
+at a position and NULL past the end, so a store with a stable order implements
+it directly. The engine walks it whole for a match and unifies in place, which
+is what the Redis provider does on the Prolog side.
+
+`tests/shell/test_a_stranger_extends_the_c_seat.sh` writes exactly such a
+library during the gate, compiles it against `cmetta.h` alone, and drives every
+door through it.
+
 ## Layout
 
 | file | what it is |

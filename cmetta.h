@@ -917,6 +917,150 @@ MT_API MT_MUST_USE mt_atom *mt_function(mt_fn fn, void *user,
                                      mt_free_fn release);
 
 /* ================================================================== *
+ * Extending this seat
+ * ================================================================== */
+
+/* This seat's own extension seam, the twin of engine/ext_points.pl one level
+   out and of metta.seam on the Python seat. A POINT is declared with a KIND
+   and the fields a row carries; a REGISTRANT is a row against a declared
+   point; and both read back as data, so "what can I extend here" is a query
+   rather than a source reading.
+
+   Four kinds where the engine declares five: host_service splits service by an
+   audience internal to the engine (host bindings against extensions) and a
+   seat has one audience. The kind decides how a point is READ, and reading it
+   another way is refused:
+
+     MT_DECLARATION  every row is read, as data
+     MT_OWNERSHIP    the FIRST row whose claims() answers takes the request
+     MT_EVENT        every row runs and its answer is discarded
+     MT_SERVICE      the SEAT writes it and a registrant CALLS it
+
+   Everything this seat lets a library do rides it: mt_def() writes a row
+   against `op`, mt_object() one against `type`, and the three doors below
+   write against `repr`, `provider` and `library`. */
+typedef enum mt_seam_kind {
+  MT_DECLARATION = 0,
+  MT_OWNERSHIP   = 1,
+  MT_EVENT       = 2,
+  MT_SERVICE     = 3
+} mt_seam_kind;
+
+/* One declared extension point. `fields` is the names a row carries, space
+   separated, and `doc` is what the point decides, both for a program reading
+   the seam back rather than for a compiler. */
+typedef struct mt_point {
+  const char  *name;
+  mt_seam_kind kind;
+  const char  *fields;
+  const char  *doc;
+} mt_point;
+
+/* Declare a point. A second declaration of the same name is refused naming the
+   first, because a point with two kinds has two read rules and neither is
+   true. A library declares one of its own exactly as this seat declares its
+   shipped ones, which is seam:kind/2 being multifile one level out. */
+MT_API bool mt_point_declare(metta *runtime, mt_point point);
+
+/* The declared points, by index and by name. mt_point_at() answers NULL past
+   the end, so a walk is `for (i = 0; (p = mt_point_at(m, i)); i++)`, the same
+   shape mt_arg() takes inside a published function. */
+MT_API size_t mt_point_count(metta *runtime);
+MT_API const mt_point *mt_point_at(metta *runtime, size_t index);
+MT_API const mt_point *mt_point_of(metta *runtime, const char *name);
+
+/* One registration against a declared point.
+
+   `value` is whatever that point's contract says and is not interpreted here;
+   `release` runs when the row is withdrawn or the runtime closes. `claims` is
+   for an MT_OWNERSHIP point only: it answers non-NULL to take the request and
+   NULL to decline, which is pluggy's firstresult and the engine's own
+   ownership rule. */
+typedef struct mt_seam_row {
+  const char *point;
+  const char *name;
+  void       *value;
+  void       *(*claims)(void *value, void *subject);
+  mt_free_fn  release;
+} mt_seam_row;
+
+/* Add a row. Refuses an undeclared point naming every declared one, and a row
+   with no claims() against an ownership point. Registering an existing name
+   REPLACES that row in place, which keeps ownership order stable. */
+MT_API bool mt_register(metta *runtime, mt_seam_row row);
+MT_API bool mt_unregister(metta *runtime, const char *point, const char *name);
+
+/* The rows against one point, in registration order. NULL past the end. */
+MT_API size_t mt_seam_count(metta *runtime, const char *point);
+MT_API const mt_seam_row *mt_seam_at(metta *runtime, const char *point,
+                                    size_t index);
+
+/* Consult an MT_OWNERSHIP point: the first row that claims `subject`, with its
+   answer written through `answer` when that is not NULL. NULL when no row
+   claims, which is an answer rather than a failure. */
+MT_API const mt_seam_row *mt_claim(metta *runtime, const char *point,
+                                   void *subject, void **answer);
+
+/* --- what a library may register --- */
+
+/* How a C object of one type PRINTS in MeTTa. Without one, an object renders
+   as its type name, which is honest and useless for reading an answer; this is
+   the door that makes it readable without pretending the value has a MeTTa
+   form it does not have. The text is COPIED, so a caller may free or reuse its
+   buffer as soon as the call returns. */
+typedef const char *(*mt_text_fn)(void *value, void *user);
+MT_API bool mt_repr(metta *runtime, const char *type_name, mt_text_fn text,
+                    void *user);
+
+/* Atoms held somewhere that is not the engine: a space this library backs.
+
+   Every callback takes the library's own `user` and speaks CANONICAL METTA
+   TEXT, which is what this seat already speaks over its bridge; the engine
+   reads and writes the atoms. `atom_at` answers the atom at an index and NULL
+   past the end, so a store with a stable order implements it directly and one
+   without builds an array first; the engine walks it whole for a match and
+   unifies in place, exactly as it does for the Redis provider.
+
+   This is the engine's foreign-space seam, whose ownership-guard protocol the
+   bridge holds up on this seat's behalf: a space this library did not open is
+   another provider's and these are never called for it. */
+typedef struct mt_provider {
+  void       *user;
+  bool        (*add)(void *user, const char *atom);
+  bool        (*remove)(void *user, const char *atom);
+  const char *(*atom_at)(void *user, size_t index);
+  bool        (*clear)(void *user);
+  mt_free_fn  release;
+} mt_provider;
+
+/* Back a named space with a provider, and stop backing it. The name is a
+   space name, `&stars`; the engine refuses one another provider already owns.
+   Closing releases the provider's `user` through its own release callback. */
+MT_API bool mt_provider_open(metta *runtime, const char *space,
+                             mt_provider provider);
+MT_API bool mt_provider_close(metta *runtime, const char *space);
+
+/* A directory of MeTTa or Prolog sources this library ships, under an alias,
+   so `(library <alias> <file>)` resolves from MeTTa and from C. This is SWI's
+   own file_search_path/2, so an alias registered here is one every SWI tool
+   already understands. */
+MT_API bool mt_library(metta *runtime, const char *alias, const char *directory);
+
+/* Load a shared object and let it register.
+
+   The library must export `mt_extension_init`, which this calls with the
+   runtime; everything it registers is ordinary and nothing here knows its
+   name. This is sqlite3's loadable-extension shape, entry point and all
+   [source: https://www.sqlite.org/loadext.html], and it is what makes a
+   library a SATELLITE of this seat rather than a fork of it. The handle stays
+   open for the life of the runtime, because a row may hold a pointer into it.
+
+   Refuses when the file cannot be opened, when it exports no
+   mt_extension_init, or when that function answers false, each naming which. */
+typedef bool (*mt_extension_fn)(metta *runtime);
+MT_API bool mt_extension(metta *runtime, const char *path);
+
+/* ================================================================== *
  * Bounding and measuring
  * ================================================================== */
 

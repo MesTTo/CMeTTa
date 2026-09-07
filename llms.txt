@@ -142,6 +142,34 @@ calls `mt_thread_attach()`.
 `mt_stats_now()` twice with `mt_stats_since()` between reads the engine's
 own counters around a region, which is how a C host measures without guessing.
 
+## Extending this seat
+
+A library outside this repository extends the seat by including `cmetta.h`,
+exporting `bool mt_extension_init(metta *runtime)` and being loaded by path
+with `mt_extension(m, "/usr/lib/solars.so")`, which is sqlite3's
+loadable-extension shape. Five doors, each a ROW against a declared point:
+`mt_def` (a C function MeTTa calls by name), `mt_object` (a live C value by
+reference), `mt_repr` (how a C value of one type prints), `mt_provider_open`
+(a space whose atoms the library holds) and `mt_library` (a directory of MeTTa
+or Prolog sources it ships).
+
+The points are the seam, the seat-level twin of `engine/ext_points.pl`:
+`mt_point_declare` declares one with a kind and the fields a row carries,
+`mt_register` and `mt_unregister` write rows, `mt_point_count`, `mt_point_at`,
+`mt_point_of`, `mt_seam_count` and `mt_seam_at` read the whole table back as
+data, and `mt_claim` consults an `MT_OWNERSHIP` point until a row's `claims()`
+answers non-NULL. The four kinds are `MT_DECLARATION`, `MT_OWNERSHIP`,
+`MT_EVENT` and `MT_SERVICE`; declaring a point twice is refused naming the
+kind it already has, a row against an undeclared point is refused listing the
+declared ones, and `mt_claim` on a declaration point is refused naming
+`mt_seam_at()`. The seat declares `op`, `repr`, `provider` and `library` at
+boot.
+
+An `mt_provider` speaks canonical MeTTa TEXT and enumerates by index:
+`add`, `remove`, `atom_at(user, i)` answering NULL past the end, `clear` and
+`release`. A callback left NULL is a capability the provider declines, which
+the engine refuses by name rather than reading as an empty answer.
+
 ## Where to read next
 
 - `extensions/cmetta/cmetta.h` is the contract, and it documents each call.

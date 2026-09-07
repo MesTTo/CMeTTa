@@ -466,3 +466,92 @@ metta_c_text(In, Out) :- atom_string(In, Out).
 
 metta_c_atom(In, Out) :- atom(In), !, Out = In.
 metta_c_atom(In, Out) :- atom_string(Out, In).
+
+%%%%%%%%%% Extending this seat %%%%%%%%%%
+%
+% The Prolog half of the three doors a library outside this repository
+% registers through. Each one dispatches into C, and the C half holds the
+% ROWS: this file knows only that a space has a C provider, never which
+% library opened it, so nothing here names one.
+
+% Which spaces a C provider backs. The ownership guard every clause below
+% leads with, and a pure lookup, so anything may ask it without performing an
+% operation, which is what the foreign-space protocol requires.
+:- dynamic metta_c_provider/1.
+
+metta_c_open_provider(Space) :-
+    (   metta_c_provider(Space)
+    ->  throw(error(permission_error(open, metta_space, Space),
+                    context(metta_c_open_provider/1,
+                            'a space already backed by a C provider')))
+    ;   assertz(metta_c_provider(Space))
+    ).
+
+metta_c_close_provider(Space) :-
+    retractall(metta_c_provider(Space)).
+
+:- multifile seam:foreign_space/1.
+seam:foreign_space(Space) :- metta_c_provider(Space).
+
+% Everything, declared rather than inferred, so the engine refuses an
+% operation this provider does not answer instead of reading the failure as
+% "there is nothing there". A C provider that leaves a callback NULL answers
+% false for it, which is a refusal the engine reports rather than a silence.
+:- multifile seam:foreign_capability/2.
+seam:foreign_capability(Space, Capability) :-
+    metta_c_provider(Space),
+    % policy-inventory-exempt: mechanism-internal; reason=a C provider implements the five fixed foreign-provider protocol hooks rather than choosing an engine policy; evidence=extensions/cmetta/bridge.pl:foreign_capability/2
+    member(Capability, [add, remove, match, enumerate, clear]).
+
+seam:foreign_add(Space, Atom) :-
+    metta_c_provider(Space), !,
+    swrite(Atom, Text),
+    '$cmetta_provider'(Space, add, Text, _).
+
+seam:foreign_remove(Space, Atom, Removed) :-
+    metta_c_provider(Space), !,
+    swrite(Atom, Text),
+    (   '$cmetta_provider'(Space, remove, Text, _)
+    ->  Removed = true
+    ;   Removed = false
+    ).
+
+seam:foreign_atoms(Space, Atom) :-
+    metta_c_provider(Space), !,
+    metta_c_provider_atom(Space, Atom).
+
+% The engine hands one non-conjunctive pattern at a time; candidates enumerate
+% here and unify in place. The options are ignored, which is always correct
+% because the engine applies its own bound afterwards, and a C store with no
+% index has nothing to narrow with anyway.
+seam:foreign_match(Space, Pattern, _Options) :-
+    metta_c_provider(Space), !,
+    metta_c_provider_atom(Space, Candidate),
+    Pattern = Candidate.
+
+seam:foreign_clear(Space) :-
+    metta_c_provider(Space), !,
+    '$cmetta_provider'(Space, clear, 0, _).
+
+% Walking a C store by index, which is the shape mt_provider.atom_at takes:
+% answer the atom at a position and nothing past the end. The generator stops
+% at the first index the provider declines, so a store of n atoms costs n+1
+% calls and never a length query the C side may not be able to answer.
+metta_c_provider_atom(Space, Atom) :-
+    between(0, inf, Index),
+    (   '$cmetta_provider'(Space, atom_at, Index, Text)
+    ->  sread(Text, Atom)
+    ;   !, fail
+    ).
+
+% How a C object renders. An ownership seam: the C half fails when no row
+% names that object's type, and the display renderer falls back to the term's
+% own text exactly as it does with no provider at all.
+:- multifile seam:grounded_text/2.
+seam:grounded_text(Obj, Text) :-
+    blob(Obj, cmetta_object),
+    '$cmetta_repr'(Obj, Text).
+
+% A directory of MeTTa or Prolog sources a library ships, under an alias.
+metta_c_library_path(Alias, Directory, Ok) :-
+    register_metta_library_path(Alias, Directory, Ok).

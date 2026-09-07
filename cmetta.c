@@ -84,6 +84,7 @@
 #include <SWI-Stream.h>
 
 #include <assert.h>
+#include <dlfcn.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1681,6 +1682,12 @@ struct metta
   functor_t          pair_functor;
   mt_op_entry_t *ops;
   size_t            nops, cap_ops;
+  mt_point         *points;
+  size_t            npoints, cap_points;
+  mt_seam_row      *rows;
+  size_t            nrows, cap_rows;
+  void            **handles;      /* every dlopen'd extension, kept open */
+  size_t            nhandles, cap_handles;
 };
 
 static struct metta g_runtime;
@@ -1812,6 +1819,14 @@ static char *term_text(term_t t, int cvt, size_t *len_out)
 }
 
 static mt_status call_bridge(const char *name, int arity, term_t av);
+/* The seam lives below `Publishing C functions`, where its doors read best
+   beside mt_def(); mt_close() and the boot's foreign registrations are above
+   it and reach it through these. */
+static void seam_release(metta *runtime);
+static bool seam_declare_shipped(metta *runtime);
+static foreign_t pl_cmetta_repr(term_t object, term_t out);
+static foreign_t pl_cmetta_provider(term_t space, term_t operation,
+                                    term_t payload, term_t result);
 
 /* Whether this atom is a space, asked of the engine and of the term itself:
    no text conversion, and no list of names to rebuild per answer.
@@ -2956,6 +2971,10 @@ metta *mt_open(const mt_config *config)
                       as_pl_function((mt_anyfn)pl_cmetta_object_callable), 0);
   PL_register_foreign("$cmetta_apply", 3,
                       as_pl_function((mt_anyfn)pl_cmetta_apply), 0);
+  PL_register_foreign("$cmetta_repr", 2,
+                      as_pl_function((mt_anyfn)pl_cmetta_repr), 0);
+  PL_register_foreign("$cmetta_provider", 4,
+                      as_pl_function((mt_anyfn)pl_cmetta_provider), 0);
   PL_register_blob_type(&mt_object_blob);
 
   if ( !prolog_size_flag("stack_limit", &initial_stack_bytes) )
@@ -3085,6 +3104,14 @@ metta *mt_open(const mt_config *config)
   g_runtime.verbose = config->verbose;
   g_open = true;
 
+  /* The seam's shipped points, declared once the runtime is open, so every
+     door this seat already had is a row from the first call and "what can I
+     extend here" is a query rather than a source reading. */
+  if ( !seam_declare_shipped(&g_runtime) )
+  { mt_close(&g_runtime);
+    return NULL;
+  }
+
   mt_verbose(&g_runtime, config->verbose);
   return &g_runtime;
 }
@@ -3119,6 +3146,7 @@ void mt_close(metta *runtime)
   g_cleanup_failed = cleaned != PL_CLEANUP_SUCCESS;
   for (i = 0; i < runtime->nops; i++) free(runtime->ops[i].name);
   free(runtime->ops);
+  seam_release(runtime);
   free(runtime->path);
   memset(runtime, 0, sizeof(*runtime));
   g_open = false;
@@ -4356,6 +4384,588 @@ size_t mt_test_stack_limit(void)
 }
 #endif
 
+
+/* ================================================================== *
+ * Extending this seat
+ * ================================================================== */
+
+/* The seam's own storage. Points and rows are flat arrays because both are
+   small and read far more often than written; a walk of ten rows is what a
+   dispatch costs, and a hash table would be more machinery than the question
+   deserves. Every string here is COPIED, so a caller may free or reuse its
+   own buffer as soon as the call returns. */
+
+static void point_release(mt_point *point)
+{ free((char *)point->name);
+  free((char *)point->fields);
+  free((char *)point->doc);
+}
+
+static void row_release(mt_seam_row *row)
+{ if ( row->release ) row->release(row->value);
+  free((char *)row->point);
+  free((char *)row->name);
+}
+
+static void seam_release(metta *runtime)
+{ size_t i;
+  for (i = 0; i < runtime->nrows; i++) row_release(&runtime->rows[i]);
+  free(runtime->rows);
+  for (i = 0; i < runtime->npoints; i++) point_release(&runtime->points[i]);
+  free(runtime->points);
+  /* The handles stay open on purpose and are not dlclose()d: a row may hold a
+     function pointer into one, and unloading a library whose code is still
+     reachable is a segfault with no line number on it. The process exiting is
+     what releases them, which is also what sqlite3 does for a loaded
+     extension. */
+  free(runtime->handles);
+  runtime->rows = NULL;
+  runtime->points = NULL;
+  runtime->handles = NULL;
+  runtime->nrows = runtime->cap_rows = 0;
+  runtime->npoints = runtime->cap_points = 0;
+  runtime->nhandles = runtime->cap_handles = 0;
+}
+
+static const char *seam_kind_str(mt_seam_kind kind)
+{ switch (kind)
+  { case MT_DECLARATION: return "declaration";
+    case MT_OWNERSHIP:   return "ownership";
+    case MT_EVENT:       return "event";
+    case MT_SERVICE:     return "service";
+  }
+  return NULL;
+}
+
+/* Every declared point, for a refusal that names them rather than saying no. */
+static void seam_name_points(metta *runtime, char *out, size_t size)
+{ size_t i, at = 0;
+  out[0] = '\0';
+  for (i = 0; i < runtime->npoints && at + 2 < size; i++)
+  { int wrote = snprintf(out + at, size - at, "%s%s",
+                         at ? ", " : "", runtime->points[i].name);
+    if ( wrote < 0 ) break;
+    at += (size_t)wrote;
+  }
+  if ( at == 0 && size ) snprintf(out, size, "none");
+}
+
+bool mt_point_declare(metta *runtime, mt_point point)
+{ mt_point *slot;
+  const char *kind;
+
+  if ( !handle_ready(runtime, "mt_point_declare") ) return false;
+  if ( !point.name || !point.fields || !point.doc )
+  { err_set(MT_MISUSE,
+            "an extension point needs a name, its fields and what it decides");
+    return false;
+  }
+  if ( !(kind = seam_kind_str(point.kind)) )
+  { err_set(MT_MISUSE,
+            "an extension point is one of declaration, ownership, event or "
+            "service; %d is not one of them", (int)point.kind);
+    return false;
+  }
+  if ( (slot = (mt_point *)mt_point_of(runtime, point.name)) )
+  { err_set(MT_MISUSE,
+            "extension point %s is already declared as %s with fields %s; a "
+            "point has one kind",
+            point.name, seam_kind_str(slot->kind), slot->fields);
+    return false;
+  }
+  if ( runtime->npoints == runtime->cap_points )
+  { size_t cap = runtime->cap_points ? runtime->cap_points * 2 : 8;
+    mt_point *grown = realloc(runtime->points, cap * sizeof(*grown));
+    if ( !grown )
+    { err_set(MT_NOMEM, "out of memory declaring an extension point");
+      return false;
+    }
+    runtime->points = grown;
+    runtime->cap_points = cap;
+  }
+  slot = &runtime->points[runtime->npoints];
+  slot->name = strdup(point.name);
+  slot->fields = strdup(point.fields);
+  slot->doc = strdup(point.doc);
+  slot->kind = point.kind;
+  if ( !slot->name || !slot->fields || !slot->doc )
+  { point_release(slot);
+    err_set(MT_NOMEM, "out of memory naming an extension point");
+    return false;
+  }
+  runtime->npoints++;
+  return true;
+}
+
+size_t mt_point_count(metta *runtime)
+{ return runtime ? runtime->npoints : 0;
+}
+
+const mt_point *mt_point_at(metta *runtime, size_t index)
+{ if ( !runtime || index >= runtime->npoints ) return NULL;
+  return &runtime->points[index];
+}
+
+const mt_point *mt_point_of(metta *runtime, const char *name)
+{ size_t i;
+  if ( !runtime || !name ) return NULL;
+  for (i = 0; i < runtime->npoints; i++)
+    if ( strcmp(runtime->points[i].name, name) == 0 ) return &runtime->points[i];
+  return NULL;
+}
+
+/* The rows against one point, without copying: an index into the flat array,
+   which is what makes mt_row_at() a walk rather than a build. */
+static mt_seam_row *row_of(metta *runtime, const char *point, const char *name)
+{ size_t i;
+  for (i = 0; i < runtime->nrows; i++)
+    if ( strcmp(runtime->rows[i].point, point) == 0 &&
+         strcmp(runtime->rows[i].name, name) == 0 )
+      return &runtime->rows[i];
+  return NULL;
+}
+
+bool mt_register(metta *runtime, mt_seam_row row)
+{ const mt_point *point;
+  mt_seam_row *slot;
+  char known[512];
+
+  if ( !handle_ready(runtime, "mt_register") ) return false;
+  if ( !row.point || !row.name )
+  { err_set(MT_MISUSE, "a registration needs a point and a name");
+    return false;
+  }
+  if ( !(point = mt_point_of(runtime, row.point)) )
+  { seam_name_points(runtime, known, sizeof(known));
+    err_set(MT_MISUSE,
+            "no extension point named %s; this seat declares: %s",
+            row.point, known);
+    return false;
+  }
+  if ( point->kind == MT_SERVICE )
+  { err_set(MT_MISUSE,
+            "%s is a service point, which the SEAT writes; a registrant "
+            "calls it rather than registering against it", row.point);
+    return false;
+  }
+  if ( point->kind == MT_OWNERSHIP && !row.claims )
+  { err_set(MT_MISUSE,
+            "an ownership point is consulted through a row's claims(), so a "
+            "registration against %s needs one", row.point);
+    return false;
+  }
+  if ( (slot = row_of(runtime, row.point, row.name)) )
+  { /* The registry's ordinary replacement, in place, so ownership order
+       stays stable across a reload. */
+    if ( slot->release ) slot->release(slot->value);
+    slot->value = row.value;
+    slot->claims = row.claims;
+    slot->release = row.release;
+    return true;
+  }
+  if ( runtime->nrows == runtime->cap_rows )
+  { size_t cap = runtime->cap_rows ? runtime->cap_rows * 2 : 16;
+    mt_seam_row *grown = realloc(runtime->rows, cap * sizeof(*grown));
+    if ( !grown )
+    { err_set(MT_NOMEM, "out of memory recording a registration");
+      return false;
+    }
+    runtime->rows = grown;
+    runtime->cap_rows = cap;
+  }
+  slot = &runtime->rows[runtime->nrows];
+  slot->point = strdup(row.point);
+  slot->name = strdup(row.name);
+  slot->value = row.value;
+  slot->claims = row.claims;
+  slot->release = row.release;
+  if ( !slot->point || !slot->name )
+  { free((char *)slot->point);
+    free((char *)slot->name);
+    err_set(MT_NOMEM, "out of memory naming a registration");
+    return false;
+  }
+  runtime->nrows++;
+  return true;
+}
+
+bool mt_unregister(metta *runtime, const char *point, const char *name)
+{ mt_seam_row *slot;
+  size_t at;
+
+  if ( !handle_ready(runtime, "mt_unregister") ) return false;
+  if ( !point || !name ) return false;
+  if ( !(slot = row_of(runtime, point, name)) ) return false;
+  at = (size_t)(slot - runtime->rows);
+  row_release(slot);
+  memmove(&runtime->rows[at], &runtime->rows[at + 1],
+          (runtime->nrows - at - 1) * sizeof(*runtime->rows));
+  runtime->nrows--;
+  return true;
+}
+
+size_t mt_seam_count(metta *runtime, const char *point)
+{ size_t i, total = 0;
+  if ( !runtime || !point ) return 0;
+  for (i = 0; i < runtime->nrows; i++)
+    if ( strcmp(runtime->rows[i].point, point) == 0 ) total++;
+  return total;
+}
+
+const mt_seam_row *mt_seam_at(metta *runtime, const char *point, size_t index)
+{ size_t i, seen = 0;
+  if ( !runtime || !point ) return NULL;
+  for (i = 0; i < runtime->nrows; i++)
+    if ( strcmp(runtime->rows[i].point, point) == 0 && seen++ == index )
+      return &runtime->rows[i];
+  return NULL;
+}
+
+const mt_seam_row *mt_claim(metta *runtime, const char *point, void *subject,
+                            void **answer)
+{ size_t i;
+  const mt_point *declared;
+
+  if ( !handle_ready(runtime, "mt_claim") ) return NULL;
+  if ( !(declared = mt_point_of(runtime, point)) )
+  { char known[512];
+    seam_name_points(runtime, known, sizeof(known));
+    err_set(MT_MISUSE, "no extension point named %s; this seat declares: %s",
+            point ? point : "(null)", known);
+    return NULL;
+  }
+  if ( declared->kind != MT_OWNERSHIP )
+  { err_set(MT_MISUSE,
+            "%s is a %s point, so mt_claim() is not how it is read; walk its "
+            "rows with mt_seam_at()", point, seam_kind_str(declared->kind));
+    return NULL;
+  }
+  for (i = 0; i < runtime->nrows; i++)
+  { mt_seam_row *row = &runtime->rows[i];
+    void *claimed;
+    if ( strcmp(row->point, point) != 0 || !row->claims ) continue;
+    if ( (claimed = row->claims(row->value, subject)) )
+    { if ( answer ) *answer = claimed;
+      return row;
+    }
+  }
+  return NULL;
+}
+
+/* --- how a C object prints ---------------------------------------- */
+
+typedef struct mt_repr_entry
+{ mt_text_fn text;
+  void      *user;
+} mt_repr_entry_t;
+
+bool mt_repr(metta *runtime, const char *type_name, mt_text_fn text, void *user)
+{ mt_repr_entry_t *entry;
+  mt_seam_row row;
+
+  if ( !handle_ready(runtime, "mt_repr") ) return false;
+  if ( !type_name || !text )
+  { err_set(MT_MISUSE, "mt_repr needs a type name and a function");
+    return false;
+  }
+  if ( !(entry = malloc(sizeof(*entry))) )
+  { err_set(MT_NOMEM, "out of memory registering a rendering");
+    return false;
+  }
+  entry->text = text;
+  entry->user = user;
+  memset(&row, 0, sizeof(row));
+  row.point = "repr";
+  row.name = type_name;
+  row.value = entry;
+  row.release = free;
+  if ( !mt_register(runtime, row) )
+  { free(entry);
+    return false;
+  }
+  return true;
+}
+
+/* Called from Prolog through seam:grounded_text/2, once per rendering.
+   It reads the blob QUIETLY rather than through blob_box(), which raises an
+   existence error for a released object: grounded_text is an ownership seam,
+   where declining is failing, and raising here turned an explicit release's
+   own refusal into this predicate's [tested: tests/test_cmetta.c,
+   an engine alias left by explicit release is refused without a
+   dereference]. */
+static foreign_t pl_cmetta_repr(term_t object, term_t out)
+{ mt_box_t *box = NULL;
+  void *blob = NULL;
+  size_t len = 0;
+  PL_blob_t *blob_type = NULL;
+  const mt_seam_row *row;
+  const mt_repr_entry_t *entry;
+  const char *text;
+
+  if ( PL_get_blob(object, &blob, &len, &blob_type) &&
+       blob_type == &mt_object_blob && blob && len == sizeof(mt_box_t) )
+    box = blob;
+  if ( !box || !box->value || !box->type ) return FALSE;
+  if ( !(row = row_of(&g_runtime, "repr", box->type)) ) return FALSE;
+  entry = row->value;
+  if ( !(text = entry->text(box->value, entry->user)) ) return FALSE;
+  return PL_unify_chars(out, PL_STRING | REP_UTF8, (size_t)-1, text);
+}
+
+/* --- atoms held somewhere that is not the engine ------------------- */
+
+typedef struct mt_provider_entry
+{ mt_provider provider;
+} mt_provider_entry_t;
+
+static void provider_entry_release(void *value)
+{ mt_provider_entry_t *entry = value;
+  if ( entry->provider.release ) entry->provider.release(entry->provider.user);
+  free(entry);
+}
+
+bool mt_provider_open(metta *runtime, const char *space, mt_provider provider)
+{ mt_provider_entry_t *entry;
+  mt_seam_row row;
+  fid_t f;
+  term_t av;
+  mt_status status;
+
+  if ( !handle_ready(runtime, "mt_provider_open") ) return false;
+  if ( !space || !provider.atom_at )
+  { err_set(MT_MISUSE,
+            "a provider needs a space name and an atom_at(); the other three "
+            "callbacks are the capabilities it declines by leaving NULL");
+    return false;
+  }
+  if ( !(entry = malloc(sizeof(*entry))) )
+  { err_set(MT_NOMEM, "out of memory registering a provider");
+    return false;
+  }
+  entry->provider = provider;
+
+  /* The engine-side claim first, so a name another provider already owns is
+     refused here by name rather than resolving by load order later. */
+  if ( !(f = frame_open("mt_provider_open")) )
+  { free(entry);
+    return false;
+  }
+  av = PL_new_term_refs(1);
+  if ( !av || !PL_put_atom_chars(av, space) )
+  { PL_discard_foreign_frame(f);
+    free(entry);
+    err_set(MT_NOMEM, "out of memory naming a provider's space");
+    return false;
+  }
+  status = call_bridge("metta_c_open_provider", 1, av);
+  PL_discard_foreign_frame(f);
+  if ( status != MT_OK )
+  { free(entry);
+    return false;
+  }
+
+  memset(&row, 0, sizeof(row));
+  row.point = "provider";
+  row.name = space;
+  row.value = entry;
+  row.release = provider_entry_release;
+  if ( !mt_register(runtime, row) )
+  { free(entry);
+    return false;
+  }
+  return true;
+}
+
+bool mt_provider_close(metta *runtime, const char *space)
+{ fid_t f;
+  term_t av;
+  mt_status status;
+
+  if ( !handle_ready(runtime, "mt_provider_close") ) return false;
+  if ( !space ) return false;
+  if ( !(f = frame_open("mt_provider_close")) ) return false;
+  av = PL_new_term_refs(1);
+  if ( !av || !PL_put_atom_chars(av, space) )
+  { PL_discard_foreign_frame(f);
+    err_set(MT_NOMEM, "out of memory naming a provider's space");
+    return false;
+  }
+  status = call_bridge("metta_c_close_provider", 1, av);
+  PL_discard_foreign_frame(f);
+  if ( status != MT_OK ) return false;
+  return mt_unregister(runtime, "provider", space);
+}
+
+/* Called from Prolog through the five foreign-space hooks. The operation is
+   an atom, the payload canonical MeTTa text, and the answer either a boolean
+   or the text of one atom. */
+static foreign_t pl_cmetta_provider(term_t space, term_t operation,
+                                    term_t payload, term_t result)
+{ char *space_text = NULL, *op_text = NULL, *atom_text = NULL;
+  const mt_seam_row *row;
+  const mt_provider_entry_t *entry;
+  foreign_t answered = FALSE;
+  size_t len;
+
+  if ( !(space_text = term_text(space, CVT_ATOM | CVT_STRING, &len)) )
+    return PL_type_error("atom", space);
+  if ( !(op_text = term_text(operation, CVT_ATOM | CVT_STRING, &len)) )
+  { free(space_text);
+    return PL_type_error("atom", operation);
+  }
+  row = row_of(&g_runtime, "provider", space_text);
+  if ( !row )
+  { free(space_text);
+    free(op_text);
+    return FALSE;
+  }
+  entry = row->value;
+
+  if ( strcmp(op_text, "atom_at") == 0 )
+  { int64_t index = 0;
+    const char *text;
+    if ( !PL_get_int64(payload, &index) || index < 0 ) goto done;
+    text = entry->provider.atom_at(entry->provider.user, (size_t)index);
+    answered = text ? PL_unify_chars(result, PL_STRING | REP_UTF8,
+                                     (size_t)-1, text)
+                    : FALSE;
+    goto done;
+  }
+  if ( strcmp(op_text, "clear") == 0 )
+  { answered = ( entry->provider.clear &&
+                 entry->provider.clear(entry->provider.user) ) ? TRUE : FALSE;
+    goto done;
+  }
+  if ( !(atom_text = term_text(payload, CVT_ATOM | CVT_STRING, &len)) )
+  { answered = PL_type_error("string", payload);
+    goto done;
+  }
+  if ( strcmp(op_text, "add") == 0 )
+    answered = ( entry->provider.add &&
+                 entry->provider.add(entry->provider.user, atom_text) )
+               ? TRUE : FALSE;
+  else if ( strcmp(op_text, "remove") == 0 )
+    answered = ( entry->provider.remove &&
+                 entry->provider.remove(entry->provider.user, atom_text) )
+               ? TRUE : FALSE;
+
+done:
+  free(space_text);
+  free(op_text);
+  free(atom_text);
+  return answered;
+}
+
+/* --- a directory of sources this library ships --------------------- */
+
+bool mt_library(metta *runtime, const char *alias, const char *directory)
+{ fid_t f;
+  term_t av;
+  mt_status status;
+  mt_seam_row row;
+  char *held;
+
+  if ( !handle_ready(runtime, "mt_library") ) return false;
+  if ( !alias || !directory )
+  { err_set(MT_MISUSE, "mt_library needs an alias and a directory");
+    return false;
+  }
+  if ( !(f = frame_open("mt_library")) ) return false;
+  av = PL_new_term_refs(3);
+  if ( !av || !PL_put_atom_chars(av, alias) ||
+       !PL_put_atom_chars(av + 1, directory) )
+  { PL_discard_foreign_frame(f);
+    err_set(MT_NOMEM, "out of memory naming a library path");
+    return false;
+  }
+  status = call_bridge("metta_c_library_path", 3, av);
+  PL_discard_foreign_frame(f);
+  if ( status != MT_OK ) return false;
+
+  if ( !(held = strdup(directory)) )
+  { err_set(MT_NOMEM, "out of memory recording a library path");
+    return false;
+  }
+  memset(&row, 0, sizeof(row));
+  row.point = "library";
+  row.name = alias;
+  row.value = held;
+  row.release = free;
+  if ( !mt_register(runtime, row) )
+  { free(held);
+    return false;
+  }
+  return true;
+}
+
+/* --- loading a library that extends this seat ---------------------- */
+
+bool mt_extension(metta *runtime, const char *path)
+{ void *handle;
+  mt_extension_fn init;
+  void **grown;
+
+  if ( !handle_ready(runtime, "mt_extension") ) return false;
+  if ( !path )
+  { err_set(MT_MISUSE, "mt_extension needs a path to a shared object");
+    return false;
+  }
+  if ( !(handle = dlopen(path, RTLD_NOW | RTLD_LOCAL)) )
+  { err_set(MT_ERROR, "cannot load %s: %s", path, dlerror());
+    return false;
+  }
+  /* The cast every POSIX dlsym() user makes, because dlsym answers void* and
+     ISO C has no conversion between an object pointer and a function pointer;
+     POSIX requires this one to work [source: POSIX.1-2024, dlsym, RATIONALE]. */
+  *(void **)(&init) = dlsym(handle, "mt_extension_init");
+  if ( !init )
+  { err_set(MT_MISUSE,
+            "%s exports no mt_extension_init; a library extends this seat by "
+            "exporting `bool mt_extension_init(metta *runtime)` and "
+            "registering from it", path);
+    dlclose(handle);
+    return false;
+  }
+  if ( runtime->nhandles == runtime->cap_handles )
+  { size_t cap = runtime->cap_handles ? runtime->cap_handles * 2 : 4;
+    if ( !(grown = realloc(runtime->handles, cap * sizeof(*grown))) )
+    { err_set(MT_NOMEM, "out of memory recording a loaded extension");
+      dlclose(handle);
+      return false;
+    }
+    runtime->handles = grown;
+    runtime->cap_handles = cap;
+  }
+  runtime->handles[runtime->nhandles++] = handle;
+  if ( !init(runtime) )
+  { if ( mt_ok() )
+      err_set(MT_ERROR, "%s: mt_extension_init answered false", path);
+    return false;
+  }
+  return true;
+}
+
+/* The points this seat declares at boot, so every door it already had is a
+   row and "what can I extend here" is a query from the first call. */
+static bool seam_declare_shipped(metta *runtime)
+{ static const mt_point shipped[] = {
+    { "op", MT_DECLARATION, "name arity effect fn",
+      "A C function MeTTa calls by name. mt_def() writes the row." },
+    { "repr", MT_DECLARATION, "type text",
+      "How a C object of one type prints in MeTTa. mt_repr() writes the row." },
+    { "provider", MT_DECLARATION, "space add remove atom_at clear",
+      "A space whose atoms this library holds. mt_provider_open() writes the "
+      "row and the engine's foreign-space seam reads it." },
+    { "library", MT_DECLARATION, "alias directory",
+      "A directory of MeTTa or Prolog sources this library ships. "
+      "mt_library() writes the row." }
+  };
+  size_t i;
+  for (i = 0; i < sizeof(shipped) / sizeof(shipped[0]); i++)
+    if ( !mt_point_declare(runtime, shipped[i]) ) return false;
+  return true;
+}
+
 /* ================================================================== *
  * Publishing C functions
  * ================================================================== */
@@ -4450,6 +5060,22 @@ bool mt_def(metta *runtime, mt_op op)
     }
     runtime->ops = grown;
     runtime->cap_ops = cap;
+  }
+  { /* The seam's own record of it, so mt_row_at(runtime, "op", i) walks what
+       this runtime publishes. The row's name is the PUBLISHED name, which is
+       what a reader wants; its value says the arity and the effect class,
+       which is everything else the declaration decided. */
+    mt_seam_row row;
+    char said[96];
+    char *held;
+    snprintf(said, sizeof(said), "%zu %s", arity, kind);
+    held = strdup(said);
+    memset(&row, 0, sizeof(row));
+    row.point = "op";
+    row.name = published;
+    row.value = held;
+    row.release = free;
+    if ( held && !mt_register(runtime, row) ) free(held);
   }
   slot = &runtime->ops[runtime->nops++];
   slot->name = published;

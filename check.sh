@@ -43,6 +43,28 @@ suite will not run" >&2
 }
 run GATE c-binding check_c_binding
 
+# The extension claim, proved rather than asserted: a shared library this
+# repository has never heard of is written, compiled against cmetta.h alone,
+# loaded by path with mt_extension() and used to extend the seat through five
+# doors, one of which is a point the library DECLARED for itself. Same skip
+# protocol as the suite above, since it reaches the same toolchain.
+check_stranger_c() {
+    binding="$HERE/extensions/cmetta"
+    [ -d "$binding" ] || return 0
+    if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+        echo "note: no C compiler found, the C extension proof will not run" >&2
+        return 0
+    fi
+    if [ ! -f "$(bounded swipl --dump-runtime-variables 2>/dev/null \
+                  | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
+        echo "note: SWI-Prolog development headers not found, the C extension \
+proof will not run" >&2
+        return 0
+    fi
+    bounded sh "$HERE/tests/shell/test_a_stranger_extends_the_c_seat.sh"
+}
+run GATE stranger-c check_stranger_c
+
 # UBSan and standalone LeakSanitizer both work with an embedded SWI process.
 # The sanitizer runner keeps its objects under root ai-tmp and checks the
 # suite's own tally because LSan's exitcode=0 is required to let stdio flush.
