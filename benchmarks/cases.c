@@ -13,7 +13,7 @@
  * Guarantees:
  *   - the handshake is bounded and a window that never opened exits 125, so
  *     the driver reads it as "this run says nothing" rather than as a moved
- *     row [tested: extensions/cmetta/bench.sh; commit=WORKTREE]
+ *     row [tested: extensions/cmetta/bench.sh; commit=11afdcdbad5bbbe37168b5d8528c23a21c42b4b6]
  *   - setup and teardown sit OUTSIDE the counted region, so a per-operation
  *     case measures the operation and not the engine boot in front of it.
  *     perf's own manual gives the reason for the mechanism: --delay=-1 starts
