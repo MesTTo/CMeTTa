@@ -1473,6 +1473,37 @@ static void test_variable_identity_survives_the_round_trip(void)
   mt_drop(different);
 }
 
+static void test_a_refusal_carries_the_engines_remedy_and_ground(metta *m)
+{ CASE("a refusal says what to do about it, in the engine's own words");
+  mt_clear();
+  CHECK(mt_run(m, "!(assertEqual 1 2)") == NULL);
+  CHECK(mt_error() == MT_ERROR);
+  /* The (refusal assertion ...) row's remedy, with <operation> filled from
+     this very ball. The same sentence reaches the Python and JavaScript
+     seats, because one row renders it once
+     [source: engine/spaces/catalog.pl, metta_refusal_declaration/4]. */
+  CHECK(mt_remedy() && strstr(mt_remedy(), "correct the claim") != NULL);
+  CHECK(mt_remedy() && strstr(mt_remedy(), "assert") != NULL);
+  CHECK(mt_ground() && strstr(mt_ground(), "metta-law: ") != NULL);
+  CHECK(mt_ground() && strstr(mt_ground(), "report_failed_assertion") != NULL);
+
+  CASE("clearing the error forgets its advice with it");
+  mt_clear();
+  CHECK(mt_remedy() == NULL);
+  CHECK(mt_ground() == NULL);
+
+  CASE("a broken contract of this library's own carries no engine remedy");
+  /* mt_bigint("nope") is MISUSE, not a MeTTa refusal: the engine never saw
+     it, so there is no row to read and inventing advice here would be this
+     seat writing prose the other two seats do not have. */
+  mt_drop(mt_bigint("nope"));
+  CHECK(mt_error() == MT_MISUSE);
+  CHECK(mt_errmsg() != NULL);
+  CHECK(mt_remedy() == NULL);
+  CHECK(mt_ground() == NULL);
+  mt_clear();
+}
+
 static void test_a_bound_stops_a_runaway_and_says_so(metta *m)
 { mt_limits bounded = {0}, none = {0};
   int pulled = 0;
@@ -1651,6 +1682,7 @@ int main(void)
   test_a_refused_stack_limit_clears_the_engine_exception(m);
   test_a_wide_integer_keeps_its_digits(m);
   test_variable_identity_survives_the_round_trip();
+  test_a_refusal_carries_the_engines_remedy_and_ground(m);
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_the_counters_measure_engine_work(m);
   test_verbosity_reaches_the_engines_own_door(m);

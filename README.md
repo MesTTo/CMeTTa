@@ -71,6 +71,25 @@ double y = mt_float(mt_arg(c, 1));
 if ( !mt_ok() ) return mt_fail(c, "wanted two numbers");
 ```
 
+A refusal the ENGINE raised also says what to do about it. `mt_remedy()` is
+one line with that refusal's own parts already in it, and `mt_ground()` is the
+authority behind it; both come from the engine's `(refusal ...)` catalog row
+for the kind that ball was, which is the same row the Python and JavaScript
+seats read, so all three say one sentence about one refusal:
+
+```c
+mt_clear();
+mt_run(m, "!(assertEqual 1 2)");
+if ( !mt_ok() ) {
+  fprintf(stderr, "%s\n", mt_errmsg());   /* MeTTa assertion failed: ... */
+  fprintf(stderr, "%s\n", mt_remedy());   /* correct the claim assert makes, ... */
+  fprintf(stderr, "%s\n", mt_ground());   /* metta-law: HostLaws: ... */
+}
+```
+
+Both are NULL for a failure of this library's own contract, which the engine
+never saw, and `mt_clear()` forgets them with the message.
+
 **3. One verb, either receiver.** `mt_eval`, `mt_match`, `mt_atoms`,
 `mt_add`, `mt_add_all`, `mt_del`, `mt_count` and `mt_wipe` each take a `metta *`,
 meaning its `&self`, or a `mt_space *`. `_Generic` picks, the way `tgmath.h`

@@ -198,6 +198,25 @@ MT_API mt_status mt_error(void);
    text is owned by the library and overwritten by the next failure here. */
 MT_API const char *mt_errmsg(void);
 
+/* What to do about the last failure, or NULL where the engine declared no
+   repair for it (which every failure of this library's own contract is).
+
+   One line, with the refusal's own parts already in it: a tripped bound reads
+   "raise the bound past 0.05 seconds, or narrow the query". It comes from the
+   engine's `(refusal ...)` catalog row for the kind the ball was, rendered by
+   the engine, which is where the Python and JavaScript seats read the same
+   sentence from; nothing here composes prose of its own. Owned by the library
+   and overwritten by the next failure on this thread. */
+MT_API const char *mt_remedy(void);
+
+/* The authority the last refusal stands on, or NULL where none was declared.
+
+   "metta-law: <the law and where this engine states it>", or "arbiter: <the
+   captured upstream answer that settles it>". This is for a developer reading
+   why the engine refuses at all, where mt_remedy() is for the program's next
+   move. Same lifetime as mt_errmsg(). */
+MT_API const char *mt_ground(void);
+
 /* Whether nothing has failed on this thread since the last mt_clear(). */
 MT_API bool mt_ok(void);
 
