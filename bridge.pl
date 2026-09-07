@@ -1,3 +1,8 @@
+% Guarantees: metta_c_error_advice/3 answers the engine's own remedy and
+%   ground for a raised ball, which is what mt_remedy() and mt_ground() carry,
+%   so the C seat says the same sentence about one refusal as the other two
+%   [tested: extensions/cmetta/tests/test_cmetta.c,
+%   test_a_refusal_carries_the_engines_remedy_and_ground; commit=WORKTREE].
 % Purpose: the Prolog half of the C binding. It runs a MeTTa program, holds a
 %   query open as a resumable answer stream, publishes C functions as MeTTa
 %   operations, and hands each answer back as an ENGINE TERM for the C half to
@@ -107,6 +112,20 @@ user:message_hook(_, _, Lines) :-
     nb_current('$metta_c_capture', true),
     print_message_lines(atom(Text), '', Lines),
     assertz(metta_c_captured(Text)).
+
+% What to DO about a ball, and what says so: the engine's own (refusal ...)
+% catalog row for the kind that ball is, with the remedy template's <field>
+% holes already filled from this very ball. This seat composes nothing; the
+% Python and JavaScript seats read the same two rows, so one refusal has one
+% remedy across all three.
+%
+% It FAILS for a ball whose kind carries no row, which the row lane forbids
+% and a program that removed the row can still produce; the C side then leaves
+% mt_remedy() and mt_ground() answering NULL.
+metta_c_error_advice(Ball, Remedy, Ground) :-
+    metta_host_refusal(Ball, _, _, _, [ground, Authority, Citation],
+                       [remedy, Remedy|_]),
+    format(string(Ground), "~w: ~w", [Authority, Citation]).
 
 %%%%%%%%%% Text, through the engine's own reader and writer %%%%%%%%%%
 %

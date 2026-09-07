@@ -127,9 +127,15 @@ a C macro.
 
 ## Errors, bounds and threads
 
-`mt_error()` is the last status, `mt_errmsg()` its words. `mt_limit()`
-bounds an evaluation and a bound reports `MT_LIMIT`, which is not a fault. A
-thread that did not open the engine calls `mt_thread_attach()`.
+`mt_error()` is the last status, `mt_errmsg()` its words. `mt_remedy()` is
+what to DO about it and `mt_ground()` what says so, both read off the engine's
+own `(refusal ...)` catalog row for the kind that ball was and both rendered
+with that refusal's own fields in them, so a tripped bound answers `raise the
+bound past 0.05 seconds, or narrow the query`. Both are NULL for a failure of
+this library's own contract, which the engine never saw, and both are cleared
+by `mt_clear()` with the message. `mt_limit()` bounds an evaluation and a bound
+reports `MT_LIMIT`, which is not a fault. A thread that did not open the engine
+calls `mt_thread_attach()`.
 
 ## Measuring
 

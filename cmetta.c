@@ -13,6 +13,11 @@
  *     [source: SWI-Prolog.h:432-435; C1 in ai-cmetta-c-constraints.md]
  *
  * Guarantees:
+ *   - mt_remedy() and mt_ground() answer the engine's own (refusal ...) row
+ *     for the last ball rendered, and NULL for every failure of this
+ *     library's own contract, because each error setter clears them
+ *     [tested: extensions/cmetta/tests/test_cmetta.c,
+ *     test_a_refusal_carries_the_engines_remedy_and_ground; commit=WORKTREE]
  *   - no Prolog exception crosses into a caller: every query runs under
  *     PL_Q_CATCH_EXCEPTION, and the ball is rendered by the bridge into the
  *     thread-local error text
@@ -143,17 +148,30 @@ static pl_function_t as_pl_function(mt_anyfn fn)
    thread-local, which is what errno itself became once threads existed. */
 #define MT_ERR_MAX 2048
 static MT_TLS char g_err[MT_ERR_MAX];
+/* What to do about it and what says so, from the engine's own (refusal ...)
+   row for the kind the ball was. Empty for every failure that is this
+   library's contract rather than a MeTTa refusal, and cleared by every setter
+   below so a later unrelated failure never reads an earlier refusal's advice.
+   Only err_advice() fills them, from render_ball(). */
+static MT_TLS char g_remedy[MT_ERR_MAX];
+static MT_TLS char g_ground[MT_ERR_MAX];
 static MT_TLS mt_status g_status = MT_OK;
 /* A callback needs to tell a failure raised DURING this application from the
    errno-shaped failure that was already present when it began. Comparing the
    status is not enough: two consecutive failures may have the same kind. */
 static MT_TLS uint64_t g_error_generation;
 
+static void err_forget_advice(void)
+{ g_remedy[0] = '\0';
+  g_ground[0] = '\0';
+}
+
 static mt_status err_set(mt_status status, const char *fmt, ...)
 { va_list ap;
   va_start(ap, fmt);
   vsnprintf(g_err, sizeof(g_err), fmt, ap);
   va_end(ap);
+  err_forget_advice();
   g_status = status;
   g_error_generation++;
   return status;
@@ -166,6 +184,7 @@ static void *err_null(mt_status status, const char *fmt, ...)
   va_start(ap, fmt);
   vsnprintf(g_err, sizeof(g_err), fmt, ap);
   va_end(ap);
+  err_forget_advice();
   g_status = status;
   g_error_generation++;
   return NULL;
@@ -173,9 +192,18 @@ static void *err_null(mt_status status, const char *fmt, ...)
 
 static mt_status err_copy(mt_status status, const char *text)
 { snprintf(g_err, sizeof(g_err), "%s", text);
+  err_forget_advice();
   g_status = status;
   g_error_generation++;
   return status;
+}
+
+/* The engine's own advice for the ball just rendered. Set AFTER err_copy(),
+   which cleared it, and never composed here: the strings are the (refusal
+   ...) row's, so all three seats say the same sentence about one refusal. */
+static void err_advice(const char *remedy, const char *ground)
+{ if ( remedy ) snprintf(g_remedy, sizeof(g_remedy), "%s", remedy);
+  if ( ground ) snprintf(g_ground, sizeof(g_ground), "%s", ground);
 }
 
 static void err_reclassify(mt_status status)
@@ -185,6 +213,7 @@ static void err_reclassify(mt_status status)
 
 void mt_clear(void)
 { g_err[0] = '\0';
+  err_forget_advice();
   g_status = MT_OK;
 }
 
@@ -198,6 +227,14 @@ bool mt_ok(void)
 
 const char *mt_errmsg(void)
 { return g_status == MT_OK ? NULL : g_err;
+}
+
+const char *mt_remedy(void)
+{ return ( g_status == MT_OK || g_remedy[0] == '\0' ) ? NULL : g_remedy;
+}
+
+const char *mt_ground(void)
+{ return ( g_status == MT_OK || g_ground[0] == '\0' ) ? NULL : g_ground;
 }
 
 const char *mt_status_str(mt_status status)
@@ -2371,6 +2408,41 @@ done:
  * Calling the bridge
  * ================================================================== */
 
+/* What to DO about a ball, and what says so, from the engine's own (refusal
+   ...) catalog row for the kind that ball is. Asked after the message is in
+   place, because err_copy() clears the advice; the strings are the row's own,
+   rendered by the engine with this ball's fields already in them, so the three
+   seats say one sentence about one refusal rather than three.
+
+   Silent when the bridge does not answer: a ball whose kind carries no row
+   leaves both empty and mt_remedy() answers NULL, which is what a caller had
+   before this existed. */
+static void advise_ball(term_t ball)
+{ fid_t f = PL_open_foreign_frame();
+  term_t av;
+  predicate_t p = PL_predicate("metta_c_error_advice", 3, "user");
+  qid_t q;
+
+  /* PL_open_foreign_frame() rather than frame_open(): this runs with the
+     engine's own message already recorded, and frame_open()'s own failure
+     report would replace it with one about a frame. */
+  if ( !f ) return;
+  av = PL_new_term_refs(3);
+
+  if ( av && PL_unify(av, ball) &&
+       (q = PL_open_query(NULL, PL_Q_CATCH_EXCEPTION, p, av)) )
+  { if ( PL_next_solution(q) == TRUE )
+    { char *remedy = term_text(av + 1, CVT_ATOM | CVT_STRING, NULL);
+      char *ground = term_text(av + 2, CVT_ATOM | CVT_STRING, NULL);
+      err_advice(remedy, ground);
+      free(remedy);
+      free(ground);
+    }
+    PL_cut_query(q);
+  }
+  PL_discard_foreign_frame(f);
+}
+
 /* Render a pending ball into the thread-local error text, through the bridge,
    which asks SWI to print the message exactly as the console would have. */
 static void render_ball(term_t ball)
@@ -2391,6 +2463,7 @@ static void render_ball(term_t ball)
         free(text);
         PL_cut_query(q);
         PL_discard_foreign_frame(f);
+        advise_ball(ball);
         return;
       }
     }
@@ -2402,6 +2475,7 @@ static void render_ball(term_t ball)
     free(text);
   }
   PL_discard_foreign_frame(f);
+  advise_ball(ball);
 }
 
 /* Whether a caught ball is one of this binding's own bounds rather than a
