@@ -279,8 +279,8 @@ static void frame_close(fid_t f)
    itself. A term is a tree and the obvious walk is recursive, but the depth
    is the DATA's, not the program's: a thread gets 8 MB by default and this
    file's five recursive walks died between 80,000 and 400,000 levels of
-   nesting, each one a SIGSEGV rather than a refusal [measured 2026-08-31,
-   ai-tmp/cseat-probe-d4.c on an 8 MB stack]. RapidJSON reached the same
+   nesting, each one a SIGSEGV rather than a refusal
+   [measured 2026-08-31 on an 8 MB stack]. RapidJSON reached the same
    conclusion and its kParseIterativeFlag is "constant complexity in terms of
    function call stack size"; its issue #2217 is the other half of the lesson,
    that an iterative parser is undone by a recursive destructor, which is why
@@ -1679,8 +1679,8 @@ void *mt_test_cached_space_predicate(void)
    mt_open(), or after mt_close(), does not fail: it SEGFAULTS inside
    PL_open_foreign_frame. Sixteen of cmetta.h's doors died that way, from
    mt_parse to mt_stats_now, and calling a door before the constructor is the
-   most ordinary mistake a new caller makes [measured 2026-08-31,
-   ai-tmp/cseat-probe-d3.c; C34 in ai-cmetta-c-constraints.md]. The header
+   most ordinary mistake a new caller makes
+   [measured 2026-08-31; C34 in ai-cmetta-c-constraints.md]. The header
    promises that every function that can fail says so, and a signal is not a
    way of saying so. */
 static bool engine_ready(const char *door)
@@ -3266,8 +3266,7 @@ static bool atom_given(const mt_atom *atom, const char *door)
    would leave av[1] an UNBOUND VARIABLE and the bridge reads that as a
    wildcard: mt_del(space, NULL) removed every atom in the space and
    mt_add(space, NULL) stored a fresh variable, both answering `ok`
-   [measured 2026-08-31, ai-tmp/cseat-probe-d1.c; C32 in
-   ai-cmetta-c-constraints.md].
+   [measured 2026-08-31; C32 in ai-cmetta-c-constraints.md].
 
    THE FRAME AND THE VECTOR GO BACK ON EVERY EXIT when the caller asked for
    them, so the caller's cleanup is unconditional and right however this

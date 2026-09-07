@@ -204,8 +204,8 @@ static void test_a_macro_evaluates_each_argument_exactly_once(metta *m)
 /* Called BEFORE mt_open(), which is the only moment this can be asked. Every
    door that reaches the engine used to die inside PL_open_foreign_frame with
    no thread environment to read: sixteen of them, from mt_parse to
-   mt_stats_now, each a SIGSEGV a host cannot catch [measured 2026-08-31,
-   ai-tmp/cseat-probe-d3.c; C34 in ai-cmetta-c-constraints.md]. The case
+   mt_stats_now, each a SIGSEGV a host cannot catch
+   [measured 2026-08-31; C34 in ai-cmetta-c-constraints.md]. The case
    failing takes the whole binary down with it, which is exactly what the
    defect did to a caller. */
 static void test_a_door_before_the_runtime_refuses(void)
@@ -826,8 +826,8 @@ static void test_engine_owned_base_spaces_refuse_wipe(metta *m)
    it. They did not: space_call() wrote nothing into av[1], the bridge read
    the unbound variable as a WILDCARD, and mt_del(space, NULL) removed every
    atom in the space while mt_add(space, NULL) stored a fresh variable -- both
-   answering true with the error state clean [measured 2026-08-31,
-   ai-tmp/cseat-probe-d1.c; C32 in ai-cmetta-c-constraints.md]. */
+   answering true with the error state clean
+   [measured 2026-08-31; C32 in ai-cmetta-c-constraints.md]. */
 static void test_a_door_that_takes_an_atom_refuses_null(metta *m)
 { mt_space *kb = mt_space_open(m, "&cmetta-null-atom");
   release_probe probe = {0};
@@ -887,7 +887,7 @@ static void test_a_door_that_takes_an_atom_refuses_null(metta *m)
 /* Every walk over a term used to recurse once per level of nesting, and all
    five died on data, each a SIGSEGV rather than a refusal: decode, encode and
    mt_bound at 80,000 levels, mt_eq at 200,000, mt_drop at 400,000 [measured
-   2026-08-31 on this box's 8 MB thread stack, ai-tmp/cseat-probe-d4.c; C35 in
+   2026-08-31 on this box's 8 MB thread stack; C35 in
    ai-cmetta-c-constraints.md].
 
    Two depths because the walks cost differently, and each is past the crash
