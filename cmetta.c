@@ -17,7 +17,7 @@
  *     for the last ball rendered, and NULL for every failure of this
  *     library's own contract, because each error setter clears them
  *     [tested: extensions/cmetta/tests/test_cmetta.c,
- *     test_a_refusal_carries_the_engines_remedy_and_ground; commit=WORKTREE]
+ *     test_a_refusal_carries_the_engines_remedy_and_ground; commit=f33b7ab0200e6dc74c88fb4c7f827bf545a447ed]
  *   - no Prolog exception crosses into a caller: every query runs under
  *     PL_Q_CATCH_EXCEPTION, and the ball is rendered by the bridge into the
  *     thread-local error text

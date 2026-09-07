@@ -2,7 +2,7 @@
 %   ground for a raised ball, which is what mt_remedy() and mt_ground() carry,
 %   so the C seat says the same sentence about one refusal as the other two
 %   [tested: extensions/cmetta/tests/test_cmetta.c,
-%   test_a_refusal_carries_the_engines_remedy_and_ground; commit=WORKTREE].
+%   test_a_refusal_carries_the_engines_remedy_and_ground; commit=f33b7ab0200e6dc74c88fb4c7f827bf545a447ed].
 % Purpose: the Prolog half of the C binding. It runs a MeTTa program, holds a
 %   query open as a resumable answer stream, publishes C functions as MeTTa
 %   operations, and hands each answer back as an ENGINE TERM for the C half to
