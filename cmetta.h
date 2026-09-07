@@ -971,6 +971,10 @@ MT_API const mt_point *mt_point_of(metta *runtime, const char *name);
 
 /* One registration against a declared point.
 
+   `mt_seam_row` and not `mt_row`, because `mt_row` is already an ANSWER row in
+   this header (mt_row_next, mt_bound) and one header has one meaning per name.
+   Its readers are mt_seam_count and mt_seam_at for the same reason.
+
    `value` is whatever that point's contract says and is not interpreted here;
    `release` runs when the row is withdrawn or the runtime closes. `claims` is
    for an MT_OWNERSHIP point only: it answers non-NULL to take the request and
@@ -1006,8 +1010,8 @@ MT_API const mt_seam_row *mt_claim(metta *runtime, const char *point,
 /* How a C object of one type PRINTS in MeTTa. Without one, an object renders
    as its type name, which is honest and useless for reading an answer; this is
    the door that makes it readable without pretending the value has a MeTTa
-   form it does not have. The text is COPIED, so a caller may free or reuse its
-   buffer as soon as the call returns. */
+   form it does not have. The text your function answers is read before the
+   call returns, so a static buffer is enough and a caller may reuse it. */
 typedef const char *(*mt_text_fn)(void *value, void *user);
 MT_API bool mt_repr(metta *runtime, const char *type_name, mt_text_fn text,
                     void *user);
