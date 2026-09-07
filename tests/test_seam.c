@@ -76,7 +76,7 @@ static void *claims_anything(void *value, void *subject)
   return subject;
 }
 
-static void check_points(metta *m)
+static void test_a_point_is_declared_once_and_read_back_as_data(metta *m)
 { const mt_seam_row *row;
   mt_seam_row registration = {0};
   int even = 4, odd = 3;
@@ -145,7 +145,7 @@ static void check_points(metta *m)
   expect(mt_seam_at(m, "orbit", 1) == NULL, "and nothing past the end");
 }
 
-static void check_published_ops(metta *m)
+static void test_publishing_writes_an_op_row_and_a_refusal_writes_none(metta *m)
 { size_t before = mt_seam_count(m, "op");
 
   expect(mt_def(m, (mt_op){ .name = "seam_probe", .arity = 0,
@@ -157,7 +157,7 @@ static void check_published_ops(metta *m)
          "and a refused publication writes no row");
 }
 
-static void check_provider(metta *m)
+static void test_a_c_provider_takes_a_space_name_and_gives_it_back(metta *m)
 { mt_answers *answers;
   const mt_row *answer;
   size_t seen = 0;
@@ -170,7 +170,10 @@ static void check_provider(metta *m)
   expect(mt_seam_count(m, "provider") == 1, "and writes one row");
   mt_clear();
   expect(!mt_provider_open(m, "&stars", provider),
-         "a space another provider owns is refused rather than clobbered");
+         "a space this seat already backs is refused rather than clobbered");
+  mt_clear();
+  expect(!mt_provider_open(m, "stars", provider),
+         "and a name that is not a space name is refused at the door");
   mt_clear();
 
   space = mt_space_open(m, "&stars");
@@ -195,9 +198,14 @@ static void check_provider(metta *m)
   mt_space_close(space);
   expect(mt_provider_close(m, "&stars"), "the provider closes");
   expect(mt_seam_count(m, "provider") == 0, "and its row goes with it");
+  /* Closing gives the engine's claim back as well as the seat's own rows, so
+     the name is free again. A claim left behind would refuse this. */
+  expect(mt_provider_open(m, "&stars", provider),
+         "and the name it held is free again");
+  expect(mt_provider_close(m, "&stars"), "which closes in turn");
 }
 
-static void check_repr(metta *m)
+static void test_a_registered_repr_renders_an_object(metta *m)
 { static probe_t probe = { 7 };
   MT_AUTO mt_atom *object = mt_object(&probe, "probe", NULL);
   MT_AUTO_ASK mt_answers *answers = NULL;
@@ -226,7 +234,7 @@ static void check_repr(metta *m)
   }
 }
 
-static void check_extension(metta *m)
+static void test_a_library_that_exports_no_entry_point_is_refused(metta *m)
 { mt_clear();
   expect(!mt_extension(m, "./no-such-library.so"),
          "a path that is not a library is refused");
@@ -247,11 +255,11 @@ int main(void)
             mt_errmsg() ? mt_errmsg() : "(none)");
     return 1;
   }
-  check_points(m);
-  check_published_ops(m);
-  check_provider(m);
-  check_repr(m);
-  check_extension(m);
+  test_a_point_is_declared_once_and_read_back_as_data(m);
+  test_publishing_writes_an_op_row_and_a_refusal_writes_none(m);
+  test_a_c_provider_takes_a_space_name_and_gives_it_back(m);
+  test_a_registered_repr_renders_an_object(m);
+  test_a_library_that_exports_no_entry_point_is_refused(m);
   mt_close(m);
   if ( failures ) return 1;
   printf("seam: points, rows, ownership, a C provider, a rendering and the "

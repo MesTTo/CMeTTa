@@ -938,7 +938,11 @@ MT_API MT_MUST_USE mt_atom *mt_function(mt_fn fn, void *user,
 
    Everything this seat lets a library do rides it: mt_def() writes a row
    against `op`, mt_object() one against `type`, and the three doors below
-   write against `repr`, `provider` and `library`. */
+   write against `repr`, `provider` and `library`.
+
+   The seam table follows the operation table's rule stated at the top of this
+   header: it is NOT guarded, so register everything before the threads that
+   evaluate start. Reading it back is a read and takes no lock. */
 typedef enum mt_seam_kind {
   MT_DECLARATION = 0,
   MT_OWNERSHIP   = 1,
@@ -1038,8 +1042,10 @@ typedef struct mt_provider {
 } mt_provider;
 
 /* Back a named space with a provider, and stop backing it. The name is a
-   space name, `&stars`; the engine refuses one another provider already owns.
-   Closing releases the provider's `user` through its own release callback. */
+   space name, `&stars`: one that is not is refused at the door, and so is one
+   another provider already owns, through the engine's own claim on the name.
+   Closing gives that claim back and releases the provider's `user` through its
+   own release callback, so the name can be backed again. */
 MT_API bool mt_provider_open(metta *runtime, const char *space,
                              mt_provider provider);
 MT_API bool mt_provider_close(metta *runtime, const char *space);

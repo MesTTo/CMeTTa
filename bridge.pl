@@ -64,6 +64,12 @@
 %     is written
 %     [tested: tests/test_cmetta.c,
 %     test_a_taken_name_is_refused_rather_than_clobbered; commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
+%   - a C provider takes its space NAME at the engine's claim door and gives it
+%     back when it closes, so a name another provider owns is refused here
+%     rather than served by two stores, and the ownership row the engine reads
+%     exists exactly while a provider is open
+%     [tested: extensions/cmetta/tests/test_seam.c,
+%     test_a_c_provider_takes_a_space_name_and_gives_it_back; commit=WORKTREE]
 % Owns: one SWI engine per open cursor, released by metta_c_close/1, which the
 %   C half calls from cmetta_answers_free().
 % Decides: verbosity is set explicitly at boot rather than inherited from argv,
@@ -479,19 +485,68 @@ metta_c_atom(In, Out) :- atom_string(Out, In).
 % operation, which is what the foreign-space protocol requires.
 :- dynamic metta_c_provider/1.
 
+% The engine's ownership seam is answered by a ROW asserted when a provider
+% opens, not by a resident clause reading the registry above. The engine asks
+% seam:foreign_space/1 once per space operation, so a resident clause is tried
+% on every operation in every process that loads this seat, whether or not a C
+% provider was ever opened. Measured on benchmarks/cases.c's space-pair case,
+% 20,000 add-and-match pairs: 1,140,032 inferences with the row asserted at the
+% door against 1,160,032 with a resident clause, one inference per pair
+% [measured 2026-09-07: 1140032 inferences against 1160032 over 20,000
+% pairs; command=CHECK_PY=$VENV/bin/python sh extensions/cmetta/bench.sh
+% space-pair; fixture=extensions/cmetta/benchmarks/cases.c, case
+% space-pair; commit=WORKTREE].
+% engine/spaces/foreign.pl states the same rule for the claim door beside its
+% own measurement: the ownership question is answered off the operation path or
+% not at all. The declaration is guarded because a seat that has already made
+% the predicate static leaves nothing to convert, which is the configuration
+% extensions/node/bridge.pl names in its own refusal.
+:- catch(dynamic(seam:foreign_space/1), _, true).
+
+% Taking a name. The engine's claim door goes first, so a space another
+% provider already owns is refused BY NAME here instead of resolving by clause
+% order later, which is what cmetta.h promises mt_provider_open() does. Then
+% this seat's two rows: its own registry, which every hook below guards on, and
+% the engine's ownership row. A space this seat already backs is refused rather
+% than re-pointed at a second store, because the atoms live in the FIRST
+% provider's memory and nothing would move them.
 metta_c_open_provider(Space) :-
     (   metta_c_provider(Space)
     ->  throw(error(permission_error(open, metta_space, Space),
                     context(metta_c_open_provider/1,
                             'a space already backed by a C provider')))
-    ;   assertz(metta_c_provider(Space))
+    ;   metta_c_require_space_name(Space),
+        metta_claim_space(Space, cmetta),
+        assertz(metta_c_provider(Space)),
+        assertz(seam:foreign_space(Space))
     ).
 
+% Giving it back, in the reverse order and quietly, because a teardown path may
+% run twice. retract/1 rather than retractall/1: the row this seat wrote is a
+% FACT, and retractall/1 unifies HEADS alone, so it would take another seat's
+% bridging clause for the same name with it.
 metta_c_close_provider(Space) :-
-    retractall(metta_c_provider(Space)).
+    retractall(metta_c_provider(Space)),
+    ( retract(seam:foreign_space(Space)) -> true ; true ),
+    metta_disclaim_space(Space, cmetta).
 
-:- multifile seam:foreign_space/1.
-seam:foreign_space(Space) :- metta_c_provider(Space).
+% The ampersand rule, at the door. tests/prolog/static_checks.pl reads
+% seam:foreign_space/1 clause HEADS in the source to enforce it and this seat
+% writes none, so the refusal lives where the Python and Node seats put theirs.
+% metta_space_name/1 is the engine's own test, so a parametric name is admitted
+% on the same terms as everywhere else rather than on this seat's guess.
+metta_c_require_space_name(Space) :-
+    (   metta_space_name(Space)
+    ->  true
+    ;   throw(error(cmetta_bad_space_name(Space),
+                    context(metta_c_open_provider/1,
+                            'a space name begins with an ampersand')))
+    ).
+
+:- multifile prolog:error_message//1.
+prolog:error_message(cmetta_bad_space_name(Name)) -->
+    [ 'a space a C library backs must be named with a leading ampersand, and \c
+       ~w is not'-[Name] ].
 
 % Everything, declared rather than inferred, so the engine refuses an
 % operation this provider does not answer instead of reading the failure as
