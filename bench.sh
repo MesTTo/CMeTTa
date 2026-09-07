@@ -5,7 +5,7 @@
 # Assumes:
 #   - a C compiler and SWI's development files, which the Makefile checks and
 #     refuses by name
-#   - perf and setarch, which metta.benchmarking checks and refuses by name;
+#   - perf and setarch, which metta_benchmarking checks and refuses by name;
 #     perf_event_paranoid must allow instructions:u, which needs no privilege
 #     at -1 and none at 2 for a process the caller owns
 #   - a Python that can import metta from extensions/python. $CHECK_PY picks
