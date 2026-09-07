@@ -165,6 +165,11 @@ declared ones, and `mt_claim` on a declaration point is refused naming
 `mt_seam_at()`. The seat declares `op`, `repr`, `provider` and `library` at
 boot.
 
+No `frame` point and no `array` point: C has no dataframe notion and no array
+universal the way Python has the Array API and DLPack or JavaScript has
+`TypedArray`, so a numeric library reaches this seat as an `mt_object` carrying
+its own buffer.
+
 An `mt_provider` speaks canonical MeTTa TEXT and enumerates by index:
 `add`, `remove`, `atom_at(user, i)` answering NULL past the end, `clear` and
 `release`. A callback left NULL is a capability the provider declines, which

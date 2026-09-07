@@ -491,6 +491,12 @@ at a position and NULL past the end, so a store with a stable order implements
 it directly. The engine walks it whole for a match and unifies in place, which
 is what the Redis provider does on the Prolog side.
 
+There is no `frame` point and no `array` point here, and inventing one would be
+inventing a room. C has no dataframe notion and no array universal the way
+Python has the Array API and DLPack or JavaScript has `TypedArray`; a numeric
+library reaches this seat as an `mt_object` carrying its own buffer, which is
+what `mt_object` is for.
+
 `tests/shell/test_a_stranger_extends_the_c_seat.sh` writes exactly such a
 library during the gate, compiles it against `cmetta.h` alone, and drives every
 door through it.
