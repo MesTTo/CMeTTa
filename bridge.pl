@@ -69,7 +69,7 @@
 %     rather than served by two stores, and the ownership row the engine reads
 %     exists exactly while a provider is open
 %     [tested: extensions/cmetta/tests/test_seam.c,
-%     test_a_c_provider_takes_a_space_name_and_gives_it_back; commit=WORKTREE]
+%     test_a_c_provider_takes_a_space_name_and_gives_it_back; commit=9ee28a945da58dfdef86119ea082609bd5975aed]
 % Owns: one SWI engine per open cursor, released by metta_c_close/1, which the
 %   C half calls from cmetta_answers_free().
 % Decides: verbosity is set explicitly at boot rather than inherited from argv,
@@ -495,7 +495,7 @@ metta_c_atom(In, Out) :- atom_string(Out, In).
 % [measured 2026-09-07: 1140032 inferences against 1160032 over 20,000
 % pairs; command=CHECK_PY=$VENV/bin/python sh extensions/cmetta/bench.sh
 % space-pair; fixture=extensions/cmetta/benchmarks/cases.c, case
-% space-pair; commit=WORKTREE].
+% space-pair; commit=9ee28a945da58dfdef86119ea082609bd5975aed].
 % engine/spaces/foreign.pl states the same rule for the claim door beside its
 % own measurement: the ownership question is answered off the operation path or
 % not at all. The declaration is guarded because a seat that has already made
