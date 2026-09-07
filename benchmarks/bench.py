@@ -19,6 +19,11 @@ per operation. A case comment says which counter decides it.
 Wall clock decides nothing here and is not recorded.
 
 Guarantees:
+  - a box that would not count is told apart from a tree that moved: this
+    lane exits 0 with a named skip on a developer's box and 1 where CI=true,
+    and never reports a refused measurement as a moved row
+    [tested: test_a_benchmark_lane_skips_a_refusal_locally_and_refuses_it_in_ci;
+    commit=11afdcdbad5bbbe37168b5d8528c23a21c42b4b6]
   - one process per case, so a case never measures a runtime another case
     warmed [source: extensions/cmetta/benchmarks/cases.c, one runtime per
     process]
@@ -62,8 +67,13 @@ sys.path.insert(0, str(ROOT / "extensions" / "python"))
 from metta.testing import (  # noqa: E402  -- the path above is what makes this import resolvable
     CPU_SECONDS,
     INSTRUCTIONS,
+    LOAD_PER_CORE_CEILING,
     BenchmarkBaseline,
+    load_per_core,
     measure_counters,
+    measured_main,
+    refusal_is_fatal,
+    time_is_measurable,
 )
 
 DRIVER = SEAT / "benchmarks" / "cases"
@@ -346,8 +356,8 @@ def sample(case: Case, rounds: int) -> tuple[tuple[int, ...], tuple[float, ...],
 
 def observe_all(
     baseline: BenchmarkBaseline, cases: Sequence[Case], rounds: int
-) -> list[str]:
-    """Observe every case on every counter, one message per failing counter.
+) -> tuple[list[str], list[str]]:
+    """Observe every case on every counter, returning failures and refusals.
 
     Each counter is compared SEPARATELY rather than in one try block. Stopping
     at the first would let an instruction regression hide a CPU regression on
@@ -355,35 +365,89 @@ def observe_all(
     because each sees what the other cannot. It is the masking
     benchmarks/check_instructions.py was fixed for one level up, where it was
     one case hiding another.
+
+    The CPU comparison is the one that can stop being a measurement. Its pins
+    were taken at loadavg 9 to 30 on a 32-core box and this file's own
+    measurement_conditions says so, along with what happens above that: a
+    task-clock triple spread 38% to 64% at loadavg 30 while instructions:u over
+    the same runs spread 0.00002% to 0.129%. So above one runnable process per
+    core a CPU row is not compared, it is REPORTED with the load beside it --
+    the same reading the parity lane gives a row it could not measure, and the
+    same one the C seat's own note asks for when it says all six CPU pins want
+    re-confirming on a quiet box. The instruction and inference comparisons are
+    untouched by the load and still decide.
     """
     failures: list[str] = []
+    refused: list[str] = []
+    cpu_decides = time_is_measurable()
+    #The boot row's instruction count is the one number here that is true of a
+    #checkout LENGTH rather than of a tree: it is the whole process, and the
+    #process resolves the engine path for every load, so this file's baseline
+    #prices it at about 0.045% per character and says the pin is true of the
+    #repository root and of nothing else. A worktree 23 characters longer reads
+    #it +1.16% against a 0.1% band, of which 1.04% is predicted before anything
+    #is measured. That is not a regression and the lane should not call it one.
+    #Every other row's window excludes the boot, and each moved 0.02% to 0.60%
+    #between the two paths, inside its own band, so only this one is held back.
+    pinned_length = baseline.pinned_checkout_path_length()
+    path_decides = pinned_length is None or pinned_length == len(str(ROOT))
     for case in cases:
         instructions, cpu, inferences = sample(case, rounds)
         outside: list[str] = []
-        for observe in (
-            partial(
-                baseline.observe_counter,
-                case.name,
-                unit=case.unit,
-                operations=case.operations,
-                samples=inferences,
+        for metric, observe in (
+            (
+                None,
+                partial(
+                    baseline.observe_counter,
+                    case.name,
+                    unit=case.unit,
+                    operations=case.operations,
+                    samples=inferences,
+                ),
             ),
-            partial(baseline.observe_measurement, case.name, INSTRUCTIONS, instructions),
-            partial(baseline.observe_measurement, case.name, CPU_SECONDS, cpu),
+            (
+                INSTRUCTIONS,
+                partial(
+                    baseline.observe_measurement,
+                    case.name,
+                    INSTRUCTIONS,
+                    instructions,
+                ),
+            ),
+            (
+                CPU_SECONDS,
+                partial(baseline.observe_measurement, case.name, CPU_SECONDS, cpu),
+            ),
         ):
             try:
                 observe()
             except (AssertionError, KeyError) as error:
-                outside.append(f"{case.name}: {error}")
+                boot_path = (
+                    metric is INSTRUCTIONS
+                    and case.whole_process
+                    and not path_decides
+                )
+                if (metric is CPU_SECONDS and not cpu_decides) or boot_path:
+                    refused.append(f"{case.name}: {error}")
+                else:
+                    outside.append(f"{case.name}: {error}")
         report = (
             f"{case.name}: instructions={list(instructions)} "
             f"cpu={list(cpu)} inferences={list(inferences)}"
         )
         #Both band directions land on the same tag, and so does a missing row,
-        #so it names the outcome rather than one side of it.
-        print(f"{report} OUTSIDE BAND" if outside else report)
+        #so it names the outcome rather than one side of it. A CPU row the box
+        #would not measure is NOT that: it says so in its own word, because a
+        #reader scanning for what moved has to be able to tell a row that read
+        #wrong from a row that was not read.
+        if outside:
+            print(f"{report} OUTSIDE BAND")
+        elif refused and refused[-1].startswith(f"{case.name}: "):
+            print(f"{report} NOT MEASURED IN THIS CONFIGURATION")
+        else:
+            print(report)
         failures += outside
-    return failures
+    return failures, refused
 
 
 def warm() -> None:
@@ -444,10 +508,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     anchor()
     warm()
-    failures = observe_all(
+    failures, refused = observe_all(
         baseline, [BY_NAME[name] for name in arguments.cases], arguments.rounds
     )
     baseline.finish()
+    #Printed either way, so "the CPU check stopped happening" is never silent;
+    #what refusal_is_fatal decides is whether it is also red. On a runner it is:
+    #a row nobody measured is a tripwire nobody read.
+    for message in refused:
+        print(f"NOT MEASURED IN THIS CONFIGURATION {message}", file=sys.stderr)
+    if refused:
+        pinned_length = baseline.pinned_checkout_path_length()
+        print(
+            f"{len(refused)} row(s) not compared: this box carries "
+            f"{load_per_core():.2f} runnable processes per core against the "
+            f"{LOAD_PER_CORE_CEILING:.2f} the CPU pins were taken under, and "
+            f"this checkout's path is {len(str(ROOT))} characters against the "
+            f"{pinned_length} the boot instruction pin was taken at. "
+            "Instructions elsewhere and every inference count still decided",
+            file=sys.stderr,
+        )
+        if refusal_is_fatal():
+            failures = failures + refused
     if failures:
         for message in failures:
             print(message, file=sys.stderr)
@@ -469,4 +551,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(measured_main(main))
