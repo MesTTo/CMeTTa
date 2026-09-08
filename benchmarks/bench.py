@@ -60,11 +60,17 @@ from pathlib import Path
 
 SEAT = Path(__file__).resolve().parents[1]
 ROOT = SEAT.parents[1]
-# metta is not installed; it resolves from the tree, the same way check.sh
+# The seat is not installed; it resolves from the tree, the same way check.sh
 # reaches it by running the Python seat's own runners from inside that seat.
+# The harness is a distribution of its own under that seat's ext/, so the
+# entry above only makes _workspace reachable and on_path() does the rest.
 sys.path.insert(0, str(ROOT / "extensions" / "python"))
 
-from metta.testing import (  # noqa: E402  -- the path above is what makes this import resolvable
+from _workspace import on_path  # noqa: E402  -- the path entry above
+
+on_path()
+
+from metta_benchmarking import (  # noqa: E402  -- on_path() above is what makes this import resolvable
     CPU_SECONDS,
     INSTRUCTIONS,
     LOAD_PER_CORE_CEILING,
