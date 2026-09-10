@@ -4,7 +4,7 @@
 % Guarded by: the bridge's $cmetta_cursors mutex claims each recorded owner;
 %   flag/3 counts completed cleanup callbacks atomically across workers.
 % Guarantees: competing closes, erase exceptions and queued interrupts destroy
-%   the engine exactly once [tested: sh check.sh c-binding; commit=WORKTREE].
+%   the engine exactly once [tested: sh check.sh c-binding; commit=8ca8a387fc61d0918484b19a1a3baf85b6523043].
 
 :- module(cmetta_cursor_tests,
           [ cursor_census/3,

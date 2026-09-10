@@ -6,7 +6,7 @@
  *   or 1,200 concurrent opens cost materially more engine inferences than
  *   opening and closing the same 1,200 cursors one at a time; repeated closes
  *   retain neither dynamic rows, recorded owners nor registered atoms.
- *   [tested: sh extensions/cmetta/test.sh; commit=WORKTREE]
+ *   [tested: sh extensions/cmetta/test.sh; commit=8ca8a387fc61d0918484b19a1a3baf85b6523043]
  * Owns resources: closes every cursor and the runtime before exit.
  */
 

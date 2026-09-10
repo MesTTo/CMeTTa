@@ -35,7 +35,7 @@
 %   - metta_c_close/1 erases the recorded owner before destroying its engine.
 %     Concurrent closes have one winner; an erased reference closes quietly.
 %     Engine destruction happens after unlocking, even if an erase listener
-%     raises [tested: sh extensions/cmetta/test.sh; commit=WORKTREE].
+%     raises [tested: sh extensions/cmetta/test.sh; commit=8ca8a387fc61d0918484b19a1a3baf85b6523043].
 %   - cursor identifiers are monotone for one runtime's lifetime and opening
 %     one takes one atomic flag update rather than a scan of the open-cursor
 %     table. The C half carries the runtime generation beside the identifier,
@@ -244,7 +244,7 @@ metta_c_answer_parts(Term, Term, [], Text) :-
 % retained erased clauses in SWI's first-argument index until clause collection.
 % One static key avoids retaining a RecordList and key atom for every cursor
 % [source: https://github.com/SWI-Prolog/swipl-devel/blob/V10.1.13/src/pl-rec.c,
-% lookupRecordList, recorded and remove_record; commit=WORKTREE].
+% lookupRecordList, recorded and remove_record; commit=8ca8a387fc61d0918484b19a1a3baf85b6523043].
 %
 % with_metta_module/2 runs INSIDE the engine. An engine has its own stack, so
 % the module in force outside it is not in force within.

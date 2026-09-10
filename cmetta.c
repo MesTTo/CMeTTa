@@ -48,7 +48,7 @@
  *   - lazy cursors retain their native owner and engine atoms across frames,
  *     unregister both after close even if Prolog raises, and never touch them
  *     after its runtime has ended [tested: tests/test_cursor_ids.c;
- *     commit=WORKTREE].
+ *     commit=8ca8a387fc61d0918484b19a1a3baf85b6523043].
  *
  * Owns resources: the process's Prolog runtime, released by mt_close(); the
  *   op table; one malloc'ed box per live mt_object, released when both the
@@ -3766,7 +3766,7 @@ static mt_status open_cursor(mt_space *space, const char *pred,
          without allocating another PL_record. The engine reference avoids
          looking up its recorded owner on every pull; that record is for the
          close winner alone [source: SWI-Prolog V10.1.13 src/pl-dbref.c,
-         record_blob; src/pl-thread.c, get_interactor; commit=WORKTREE]. */
+         record_blob; src/pl-thread.c, get_interactor; commit=8ca8a387fc61d0918484b19a1a3baf85b6523043]. */
       PL_register_atom(ref);
       PL_register_atom(engine);
       answers->lazy = true;

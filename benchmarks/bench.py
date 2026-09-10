@@ -20,17 +20,17 @@ Wall clock decides nothing here and is not recorded.
 
 Owns resources: subprocess.run reaps warmup children. prepare_boot removes
 the boot's governed QLF caches; ordinary boot and import recreate their artifacts.
-[tested: test_c_boot_normalises_the_governed_cache_set; commit=WORKTREE]
+[tested: test_c_boot_normalises_the_governed_cache_set; commit=8ca8a387fc61d0918484b19a1a3baf85b6523043]
 
 Guarantees:
   - boot purges its governed QLF caches, warms the ordinary engine artifact set,
     and fails if its governed count differs from the recorded fixture
     [tested: test_c_boot_normalises_the_governed_cache_set,
-    test_c_inventory_failure_is_fatal_and_runtime_still_compares; commit=WORKTREE]
+    test_c_inventory_failure_is_fatal_and_runtime_still_compares; commit=8ca8a387fc61d0918484b19a1a3baf85b6523043]
   - both boot counters decline a different declared checkout length or depth,
     including updates; runtime rows still compare [tested:
     test_boot_path_refuses_both_counters_and_preserves_pins,
-    test_comparable_counters_still_gate; commit=WORKTREE]
+    test_comparable_counters_still_gate; commit=8ca8a387fc61d0918484b19a1a3baf85b6523043]
   - a box that would not count is told apart from a tree that moved: this
     lane exits 0 with a named skip on a developer's box and 1 where CI=true,
     and never reports a refused measurement as a moved row
