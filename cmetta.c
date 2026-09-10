@@ -45,10 +45,15 @@
  *     and variable-pair handles are rebuilt after successful engine cleanup
  *     [tested: tests/test_cursor_ids.c and tests/test_reopen.c;
  *     commit=da8c4da9df83114ab1d32f3e4049008f37535886]
+ *   - lazy cursors retain their native owner and engine atoms across frames,
+ *     unregister both after close even if Prolog raises, and never touch them
+ *     after its runtime has ended [tested: tests/test_cursor_ids.c;
+ *     commit=WORKTREE].
  *
  * Owns resources: the process's Prolog runtime, released by mt_close(); the
  *   op table; one malloc'ed box per live mt_object, released when both the
- *   C atom and the engine blob have let go.
+ *   C atom and the engine blob have let go; each lazy cursor's two registered
+ *   reference atoms until mt_answers_free() or runtime cleanup.
  *
  * Guarded by: nothing, and cmetta.h's "Guarded by" says why: an atom is
  *   immutable after construction and its refcount is atomic, the error state
@@ -3555,6 +3560,8 @@ struct mt_answers
   bool          lazy;
   mt_atom      *pattern;        /* what mt_bound lines each answer against */
   int64_t       cursor_id;      /* lazy: the bridge's engine id     */
+  atom_t        cursor_ref;     /* lazy: registered record reference */
+  atom_t        cursor_engine;  /* lazy: registered engine for direct pulls */
   eager_answer *items;          /* eager: every answer, in order    */
   size_t        n, at;
   bool          started, done;
@@ -3731,6 +3738,7 @@ static mt_status open_cursor(mt_space *space, const char *pred,
   mt_answers *answers;
   mt_status status;
   int64_t id;
+  atom_t ref, engine;
 
   *out = NULL;   /* see run_or_load: zeroed before anything can fail. */
   if ( !(answers = answers_alloc(space->runtime)) ) return MT_NOMEM;
@@ -3748,11 +3756,28 @@ static mt_status open_cursor(mt_space *space, const char *pred,
                    : mt_error();   /* put_atom already said why */
   }
   status = call_bridge(pred, 4, av);
-  if ( status == MT_OK && PL_get_int64(av + 3, &id) )
-  { answers->lazy = true;
-    answers->cursor_id = id;
-  } else if ( status == MT_OK )
-  { status = err_set(MT_ERROR, "the bridge did not answer a cursor id");
+  if ( status == MT_OK )
+  { term_t parts = PL_new_term_refs(2);
+    if ( parts && PL_get_arg(1, av + 3, parts) &&
+         PL_get_int64(parts, &id) && PL_get_arg(2, av + 3, parts + 1) &&
+         PL_get_atom(parts + 1, &ref) && PL_get_arg(3, av + 3, parts) &&
+         PL_get_atom(parts, &engine) )
+    { /* Both references already are blob atoms. Keep them across frames
+         without allocating another PL_record. The engine reference avoids
+         looking up its recorded owner on every pull; that record is for the
+         close winner alone [source: SWI-Prolog V10.1.13 src/pl-dbref.c,
+         record_blob; src/pl-thread.c, get_interactor; commit=WORKTREE]. */
+      PL_register_atom(ref);
+      PL_register_atom(engine);
+      answers->lazy = true;
+      answers->cursor_id = id;
+      answers->cursor_ref = ref;
+      answers->cursor_engine = engine;
+    } else
+    { if ( parts && PL_get_arg(2, av + 3, parts) )
+        call_bridge("metta_c_close", 1, parts);
+      status = err_set(MT_ERROR, "the bridge did not answer a cursor reference");
+    }
   }
   PL_discard_foreign_frame(f);
 
@@ -3857,13 +3882,14 @@ static mt_status answers_step(mt_answers *answers, const char *door)
   clear_current(answers);
 
   if ( !(f = frame_open(door)) ) return MT_NOMEM;
-  av = PL_new_term_refs(3);
+  av = PL_new_term_refs(4);
   if ( !av || !PL_put_int64(av, answers->cursor_id) ||
-       !PL_put_float(av + 1, answers->runtime->limits.seconds) )
+       !PL_put_atom(av + 1, answers->cursor_engine) ||
+       !PL_put_float(av + 2, answers->runtime->limits.seconds) )
   { PL_discard_foreign_frame(f);
     return err_set(MT_NOMEM, "out of memory stepping a cursor");
   }
-  status = call_bridge("metta_c_next", 3, av);
+  status = call_bridge("metta_c_next", 4, av);
   if ( status != MT_OK )
   { PL_discard_foreign_frame(f);
     answers->done = true;
@@ -3871,7 +3897,7 @@ static mt_status answers_step(mt_answers *answers, const char *door)
   }
 
   head = PL_new_term_ref();
-  tail = PL_copy_term_ref(av + 2);
+  tail = PL_copy_term_ref(av + 3);
   if ( !head || !tail || !PL_get_list(tail, head, tail) )
   { PL_discard_foreign_frame(f);
     answers->done = true;
@@ -4105,9 +4131,14 @@ void mt_answers_free(mt_answers *answers)
     if ( g_open && answers->generation == g_runtime.generation )
     { fid_t f = frame_open("mt_answers_free");
       term_t av = f ? PL_new_term_refs(1) : 0;
-      if ( av && PL_put_int64(av, answers->cursor_id) )
+      if ( av && PL_put_atom(av, answers->cursor_ref) )
         call_bridge("metta_c_close", 1, av);
       frame_close(f);
+      /* A close error is reported through call_bridge, but must not strand
+         C's reference. The bridge has already erased its recorded owner and
+         run engine destruction in cleanup. A previous close is harmless. */
+      PL_unregister_atom(answers->cursor_ref);
+      PL_unregister_atom(answers->cursor_engine);
     }
     clear_current(answers);
   } else

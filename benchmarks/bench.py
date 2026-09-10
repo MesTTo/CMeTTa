@@ -18,7 +18,19 @@ per operation. A case comment says which counter decides it.
 
 Wall clock decides nothing here and is not recorded.
 
+Owns resources: subprocess.run reaps warmup children. prepare_boot removes
+the boot's governed QLF caches; ordinary boot and import recreate their artifacts.
+[tested: test_c_boot_normalises_the_governed_cache_set; commit=WORKTREE]
+
 Guarantees:
+  - boot purges its governed QLF caches, warms the ordinary engine artifact set,
+    and fails if its governed count differs from the recorded fixture
+    [tested: test_c_boot_normalises_the_governed_cache_set,
+    test_c_inventory_failure_is_fatal_and_runtime_still_compares; commit=WORKTREE]
+  - both boot counters decline a different declared checkout length or depth,
+    including updates; runtime rows still compare [tested:
+    test_boot_path_refuses_both_counters_and_preserves_pins,
+    test_comparable_counters_still_gate; commit=WORKTREE]
   - a box that would not count is told apart from a tree that moved: this
     lane exits 0 with a named skip on a developer's box and 1 where CI=true,
     and never reports a refused measurement as a moved row
@@ -386,18 +398,20 @@ def observe_all(
     failures: list[str] = []
     refused: list[str] = []
     cpu_decides = time_is_measurable()
-    #The boot row's instruction count is the one number here that is true of a
-    #checkout LENGTH rather than of a tree: it is the whole process, and the
-    #process resolves the engine path for every load, so this file's baseline
-    #prices it at about 0.045% per character and says the pin is true of the
-    #repository root and of nothing else. A worktree 23 characters longer reads
-    #it +1.16% against a 0.1% band, of which 1.04% is predicted before anything
-    #is measured. That is not a regression and the lane should not call it one.
-    #Every other row's window excludes the boot, and each moved 0.02% to 0.60%
-    #between the two paths, inside its own band, so only this one is held back.
-    pinned_length = baseline.pinned_checkout_path_length()
-    path_decides = pinned_length is None or pinned_length == len(str(ROOT))
+    # Both boot counters depend on the declared checkout shape. Equal-length
+    # depth controls and a fresh-atom control name inventory sensitivity, not
+    # a linear inference cost per component. The baseline owns that evidence.
+    path_refusal = baseline.checkout_path_refusal(ROOT)
     for case in cases:
+        if case.whole_process:
+            try:
+                prepare_boot(baseline.cases[case.name].get("boot_qlf_count"))
+            except (AssertionError, KeyError, OSError, subprocess.CalledProcessError) as error:
+                failures.append(f"{case.name}: REFUSED {error}")
+                if isinstance(error, subprocess.CalledProcessError) and error.stderr:
+                    failures[-1] += f"\n{error.stderr.strip()}"
+                print(failures[-1])
+                continue
         instructions, cpu, inferences = sample(case, rounds)
         outside: list[str] = []
         for metric, observe in (
@@ -425,15 +439,14 @@ def observe_all(
                 partial(baseline.observe_measurement, case.name, CPU_SECONDS, cpu),
             ),
         ):
+            if metric is not CPU_SECONDS and case.whole_process and path_refusal is not None:
+                counter = "inferences" if metric is None else "instructions"
+                refused.append(f"{case.name}: {counter} not compared; {path_refusal}")
+                continue
             try:
                 observe()
             except (AssertionError, KeyError) as error:
-                boot_path = (
-                    metric is INSTRUCTIONS
-                    and case.whole_process
-                    and not path_decides
-                )
-                if (metric is CPU_SECONDS and not cpu_decides) or boot_path:
+                if metric is CPU_SECONDS and not cpu_decides:
                     refused.append(f"{case.name}: {error}")
                 else:
                     outside.append(f"{case.name}: {error}")
@@ -454,6 +467,43 @@ def observe_all(
             print(report)
         failures += outside
     return failures, refused
+
+
+def prepare_boot(expected: object) -> None:
+    """Normalise the artifact set whose freshness walk is inside C boot.
+
+    Library imports and the optional source observer leave ignored caches.
+    purge_all_qlf/0 and the ordinary boot own the artifact descriptions; the
+    benchmark keeps no second glob or list. See the 2026-09-10 fixture control
+    in the runtime-units journal.
+    """
+    if type(expected) is not int or expected < 1:
+        msg = "boot has no valid boot_qlf_count fixture; record its governed inventory"
+        raise AssertionError(msg)
+    subprocess.run(
+        ["swipl", "-q", "-s", str(ROOT / "engine" / "qlf_boot.pl"),
+         "-g", "metta_qlf_boot:purge_all_qlf", "-t", "halt"],
+        check=True, capture_output=True, text=True,
+    )
+    warmed = subprocess.run(
+        [
+            "swipl", "-q", "--stack_limit=8g", "-g",
+            "metta_bench:bench_run(boot),"
+            "metta_bench:bench_engine_directory(Here),"
+            "metta_qlf_boot:qlf_files(Here,Files),length(Files,Count),"
+            "format('boot-qlf-count ~d~n',[Count])",
+            "-t", "halt", str(ROOT / "engine" / "bench.pl"),
+        ],
+        check=True, capture_output=True, text=True,
+    )
+    counts = [int(line.split()[1]) for line in warmed.stdout.splitlines()
+              if line.startswith("boot-qlf-count ")]
+    if counts != [expected]:
+        actual = counts[0] if len(counts) == 1 else repr(warmed.stdout)
+        msg = (f"governed QLF inventory {actual}; pinned {expected}; "
+               "attribute the engine artifact-set change before re-pinning")
+        raise AssertionError(msg)
+    print(f"boot fixture: {expected} governed QLF artifacts after the boot's purge and ordinary warmup")
 
 
 def warm() -> None:
@@ -524,14 +574,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     for message in refused:
         print(f"NOT MEASURED IN THIS CONFIGURATION {message}", file=sys.stderr)
     if refused:
-        pinned_length = baseline.pinned_checkout_path_length()
         print(
-            f"{len(refused)} row(s) not compared: this box carries "
+            f"{len(refused)} row(s) not compared for the reasons above; load is "
             f"{load_per_core():.2f} runnable processes per core against the "
-            f"{LOAD_PER_CORE_CEILING:.2f} the CPU pins were taken under, and "
-            f"this checkout's path is {len(str(ROOT))} characters against the "
-            f"{pinned_length} the boot instruction pin was taken at. "
-            "Instructions elsewhere and every inference count still decided",
+            f"{LOAD_PER_CORE_CEILING:.2f} the CPU pins were taken under. "
+            "Runtime counter comparisons remain active",
             file=sys.stderr,
         )
         if refusal_is_fatal():
@@ -552,7 +599,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         print(f"{len(failures)} case(s) outside the band", file=sys.stderr)
         return 1
-    print(f"{len(arguments.cases)} case(s) within band")
+    if refused:
+        print(f"{len(arguments.cases)} case(s) sampled; {len(refused)} comparison(s) declined")
+    else:
+        print(f"{len(arguments.cases)} case(s) within band")
     return 0
 
 

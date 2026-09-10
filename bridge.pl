@@ -21,7 +21,7 @@
 %   - the C half runs each call inside its own PL_open_foreign_frame, so a
 %     term handed out here stays valid exactly as long as that frame
 % Guarantees:
-%   - metta_c_next/3 computes at most one answer per call, so a host that
+%   - metta_c_next/4 computes at most one answer per call, so a host that
 %     stops pulling leaves the rest of an infinite stream uncomputed. The case
 %     cited walks an ENDLESS generator and breaks after three answers, which
 %     an eager door could not return from at all
@@ -32,17 +32,10 @@
 %     into the engine goal by metta_host_inference_budget/3 [tested:
 %     tests/test_cmetta.c, test_a_bound_stops_a_runaway_and_says_so;
 %     commit=23082258ab5a278998c967274c5b22e0ce391a47]
-%   - metta_c_close/1 leaves nothing behind and says nothing: it retracts the
-%     row before it destroys the engine, so a cursor that reached the end of
-%     its answers closes without arming the host's error state
-%     [tested: tests/test_cmetta.c, test_closing_an_exhausted_cursor_is_quiet;
-%     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
-%   - metta_c_close/1 on an Id that is no longer in the table succeeds
-%     quietly, so a host may close before it frees
-%     [assumed 2026-08-31: nothing in the tree closes one twice. cmetta.h has
-%     no door that closes a cursor without also freeing it, so the C suite
-%     cannot reach the second close; the branch is here so a host that grows
-%     one is not punished for it]
+%   - metta_c_close/1 erases the recorded owner before destroying its engine.
+%     Concurrent closes have one winner; an erased reference closes quietly.
+%     Engine destruction happens after unlocking, even if an erase listener
+%     raises [tested: sh extensions/cmetta/test.sh; commit=WORKTREE].
 %   - cursor identifiers are monotone for one runtime's lifetime and opening
 %     one takes one atomic flag update rather than a scan of the open-cursor
 %     table. The C half carries the runtime generation beside the identifier,
@@ -70,8 +63,11 @@
 %     exists exactly while a provider is open
 %     [tested: extensions/cmetta/tests/test_seam.c,
 %     test_a_c_provider_takes_a_space_name_and_gives_it_back; commit=9ee28a945da58dfdef86119ea082609bd5975aed]
-% Owns: one SWI engine per open cursor, released by metta_c_close/1, which the
-%   C half calls from cmetta_answers_free().
+% Owns resources: one SWI engine and one recorded owner per open cursor,
+%   released by metta_c_close/1 from mt_answers_free().
+% Guarded by: $cmetta_cursors serialises the close winner's reference lookup
+%   and erase. The C half registers the owner and engine reference atoms
+%   across frames and checks their runtime generation before using them.
 % Decides: verbosity is set explicitly at boot rather than inherited from argv,
 %   because filereader.pl reads the CLI at load time and an embedded host has
 %   none. The setting itself is the engine's metta_host_set_silent/1, not a
@@ -83,7 +79,6 @@
 
 :- use_module(library(time), [call_with_time_limit/2]).
 
-:- dynamic metta_c_cursor/2.
 :- dynamic metta_c_op_spec/3.
 % Exception rendering is scratch for ONE caller. A normal dynamic predicate is
 % shared, so two attached C threads could retract or read one another's reason.
@@ -243,9 +238,13 @@ metta_c_answer_parts(Term, Term, [], Text) :-
 % 2017, sections 4.5 and 5). The C half wraps this pair in a step cursor for
 % the same reason, the shape sqlite3_step() already gave C.
 %
-% The engine handle stays HERE and the C half holds an integer. A blob would
-% work, but an integer is what survives being stored in a C struct across
-% frames without a record, and the cursor table is this file's to own anyway.
+% The C half holds the monotone identifier and registered record and engine
+% references. Pulls use the engine directly; close claims the recorded owner.
+% A bound reference reaches its record directly; a dynamic cursor table
+% retained erased clauses in SWI's first-argument index until clause collection.
+% One static key avoids retaining a RecordList and key atom for every cursor
+% [source: https://github.com/SWI-Prolog/swipl-devel/blob/V10.1.13/src/pl-rec.c,
+% lookupRecordList, recorded and remove_record; commit=WORKTREE].
 %
 % with_metta_module/2 runs INSIDE the engine. An engine has its own stack, so
 % the module in force outside it is not in force within.
@@ -300,21 +299,26 @@ metta_c_open_match(Pattern, Space, Inferences, Id) :-
     engine_create(Pattern, Bounded, Engine),
     metta_c_new_cursor(Engine, Id).
 
-metta_c_new_cursor(Engine, Id) :-
-    flag(metta_c_cursor_id, Previous, Previous + 1),
-    Id is Previous + 1,
-    assertz(metta_c_cursor(Id, Engine)).
+% Workaround: swi-first-arg-index-dead-keys - address cursor owners by bound record references instead of dynamic rows.
+metta_c_new_cursor(Engine, cursor(Id, Ref, Engine)) :-
+    setup_call_catcher_cleanup(
+        true,
+        ( flag(metta_c_cursor_id, Previous, Previous + 1),
+          Id is Previous + 1,
+          recorda('$cmetta_cursors', Engine, Ref) ),
+        Catcher,
+        ( Catcher == exit -> true ; engine_destroy(Engine) )).
 
 % [] is exhaustion and [Answer] is one answer, so the C half needs no
 % sentinel. A closed cursor is a caller bug rather than an empty stream, so it
 % raises. The budget needs nothing here: it rides in the engine goal, so a
 % spent cursor raises out of engine_next/2 on the pull that spends it, and an
 % unbounded cursor carries no wrapper and pays nothing.
-metta_c_next(Id, Seconds, Answer) :-
-    (   metta_c_cursor(Id, Engine)
+metta_c_next(Id, Engine, Seconds, Answer) :-
+    (   is_engine(Engine)
     ->  true
     ;   throw(error(existence_error(cmetta_cursor, Id),
-                    context(metta_c_next/3, 'this cursor is closed')))
+                    context(metta_c_next/4, 'this cursor is closed')))
     ),
     metta_c_pull(Engine, Seconds, Answer).
 
@@ -325,13 +329,20 @@ metta_c_pull(Engine, Seconds, Answer) :-
     ;   Answer = []
     ).
 
-% Idempotent: a host that closes after exhaustion, and again from
-% cmetta_answers_free(), finds nothing the second time and is at peace.
-metta_c_close(Id) :-
-    (   retract(metta_c_cursor(Id, Engine))
-    ->  catch(engine_destroy(Engine), error(existence_error(_, _), _), true)
-    ;   true
-    ).
+% erase/1 removes the record even when its erase listener raises. Preserve the
+% outcome under the mutex, then destroy the claimed engine outside it. Setup
+% protects the ownership transfer from asynchronous interrupts until cleanup
+% is installed. Cleanup callbacks may themselves open or close cursors.
+metta_c_close(Ref) :-
+    setup_call_cleanup(
+        with_mutex('$cmetta_cursors',
+                   ( recorded('$cmetta_cursors', Engine, Ref)
+                   -> catch((erase(Ref) -> Outcome = true ; Outcome = fail),
+                            Error, Outcome = throw(Error))
+                   ;  Engine = none, Outcome = true )),
+        Outcome,
+        ( Engine == none -> true
+        ; catch(engine_destroy(Engine), error(existence_error(_, _), _), true) )).
 
 %%%%%%%%%% Spaces %%%%%%%%%%
 %
