@@ -90,6 +90,7 @@ from metta_benchmarking import (  # noqa: E402  -- on_path() above is what makes
     load_per_core,
     measure_counters,
     measured_main,
+    prepare_governed_artifacts,
     refusal_is_fatal,
     time_is_measurable,
 )
@@ -473,34 +474,18 @@ def prepare_boot(expected: object) -> None:
     """Normalise the artifact set whose freshness walk is inside C boot.
 
     Library imports and the optional source observer leave ignored caches.
-    purge_all_qlf/0 and the ordinary boot own the artifact descriptions; the
-    benchmark keeps no second glob or list. See the 2026-09-10 fixture control
-    in the runtime-units journal.
+    The purge and the ordinary warm boot are the shared harness's
+    prepare_governed_artifacts, the same preparation the engine's own boot
+    row takes, so the two boot rows read one artifact state; the benchmark
+    keeps no second glob or list. See the 2026-09-10 fixture control in the
+    runtime-units journal.
     """
     if type(expected) is not int or expected < 1:
         msg = "boot has no valid boot_qlf_count fixture; record its governed inventory"
         raise AssertionError(msg)
-    subprocess.run(
-        ["swipl", "-q", "-s", str(ROOT / "engine" / "qlf_boot.pl"),
-         "-g", "metta_qlf_boot:purge_all_qlf", "-t", "halt"],
-        check=True, capture_output=True, text=True,
-    )
-    warmed = subprocess.run(
-        [
-            "swipl", "-q", "--stack_limit=8g", "-g",
-            "metta_bench:bench_run(boot),"
-            "metta_bench:bench_engine_directory(Here),"
-            "metta_qlf_boot:qlf_files(Here,Files),length(Files,Count),"
-            "format('boot-qlf-count ~d~n',[Count])",
-            "-t", "halt", str(ROOT / "engine" / "bench.pl"),
-        ],
-        check=True, capture_output=True, text=True,
-    )
-    counts = [int(line.split()[1]) for line in warmed.stdout.splitlines()
-              if line.startswith("boot-qlf-count ")]
-    if counts != [expected]:
-        actual = counts[0] if len(counts) == 1 else repr(warmed.stdout)
-        msg = (f"governed QLF inventory {actual}; pinned {expected}; "
+    inventory = prepare_governed_artifacts(ROOT)
+    if len(inventory) != expected:
+        msg = (f"governed QLF inventory {len(inventory)}; pinned {expected}; "
                "attribute the engine artifact-set change before re-pinning")
         raise AssertionError(msg)
     print(f"boot fixture: {expected} governed QLF artifacts after the boot's purge and ordinary warmup")
