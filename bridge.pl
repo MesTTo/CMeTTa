@@ -5,7 +5,7 @@
 %   test_a_refusal_carries_the_engines_remedy_and_ground; commit=f33b7ab0200e6dc74c88fb4c7f827bf545a447ed].
 % Guarantees: metta_c_error_text/2 scopes message capture through
 %   metta_engine:metta_with_trailed/3
-%   [source: extensions/cmetta/bridge.pl:metta_c_error_text/2; commit=WORKTREE].
+%   [source: extensions/cmetta/bridge.pl:metta_c_error_text/2; commit=40b71fc99571872ca5fc85cdaf7902b467166539].
 %
 % Purpose: the Prolog half of the C binding. It runs a MeTTa program, holds a
 %   query open as a resumable answer stream, publishes C functions as MeTTa
