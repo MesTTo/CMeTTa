@@ -299,7 +299,9 @@ metta_c_open_match(Pattern, Space, Inferences, Id) :-
     engine_create(Pattern, Bounded, Engine),
     metta_c_new_cursor(Engine, Id).
 
-% Workaround: swi-first-arg-index-dead-keys - address cursor owners by bound record references instead of dynamic rows.
+% Cursor owners are records rather than dynamic rows: close erases the owner
+% at once, where a retracted row stays in the clause index until clause
+% collection under SWI's logical update view.
 metta_c_new_cursor(Engine, cursor(Id, Ref, Engine)) :-
     setup_call_catcher_cleanup(
         true,
