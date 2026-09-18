@@ -475,8 +475,11 @@ seam:grounded_applicable(Obj) :-
     blob(Obj, cmetta_object),
     '$cmetta_object_callable'(Obj).
 
-:- multifile seam:grounded_apply/3.
-seam:grounded_apply(Obj, Args, Result) :-
+% A C function takes positional arguments only, so a `(Kwargs ...)` written
+% after one names keywords it cannot receive and the application stays
+% unreduced, the way any value that is not an operation stays.
+:- multifile seam:grounded_apply/4.
+seam:grounded_apply(Obj, Args, [], Result) :-
     blob(Obj, cmetta_object),
     '$cmetta_apply'(Obj, Args, Result).
 
