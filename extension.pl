@@ -1,4 +1,4 @@
-% This seat's control file; see extensions/python/extension.pl for the model.
+% This seat's control file; see extension.pl for the model.
 %
 % A C host registers '$cmetta_present'/0 as a foreign predicate BEFORE it
 % consults engine/metta.pl, so the loader can see it. That is the C seat's
