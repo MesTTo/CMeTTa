@@ -3,6 +3,10 @@
 %   so the C seat says the same sentence about one refusal as the other two
 %   [tested: extensions/cmetta/tests/test_cmetta.c,
 %   test_a_refusal_carries_the_engines_remedy_and_ground; commit=f33b7ab0200e6dc74c88fb4c7f827bf545a447ed].
+% Guarantees: metta_c_error_text/2 scopes message capture through
+%   metta_engine:metta_with_trailed/3
+%   [source: extensions/cmetta/bridge.pl:metta_c_error_text/2; commit=40b71fc99571872ca5fc85cdaf7902b467166539].
+%
 % Purpose: the Prolog half of the C binding. It runs a MeTTa program, holds a
 %   query open as a resumable answer stream, publishes C functions as MeTTa
 %   operations, and hands each answer back as an ENGINE TERM for the C half to
@@ -96,9 +100,9 @@
 % have used, and the hook below takes the lines instead of letting them out.
 metta_c_error_text(Ball, Text) :-
     retractall(metta_c_captured(_)),
-    setup_call_cleanup(nb_setval('$metta_c_capture', true),
-                       catch(print_message(error, Ball), _, true),
-                       nb_setval('$metta_c_capture', false)),
+    % Workaround: swi-cleanup-window - message capture restores its trailed flag.
+    metta_engine:metta_with_trailed('$metta_c_capture', true,
+                                   catch(print_message(error, Ball), _, true)),
     (   metta_c_captured(Rendered)
     ->  Text = Rendered
     ;   term_string(Ball, Text)
