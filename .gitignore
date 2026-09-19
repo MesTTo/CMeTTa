@@ -26,3 +26,11 @@ build/
 tests/test_*
 !tests/test_*.*
 tests/*.so
+
+# Python bytecode, written wherever this component's modules are imported from.
+# These rules lived in the repository root's .gitignore and covered every
+# component through one file; each component is its own repository now, so the
+# rule travels with the thing it describes, which is what that file already says
+# for every other build product.
+*.py[cod]
+__pycache__/
