@@ -13,22 +13,24 @@
 
 set -eu
 
-# Every sanitizer diagnostic is symbolized by llvm-symbolizer, which this box
-# configures to consult a debuginfod server: /etc/debuginfod/elfutils.urls sets
-# DEBUGINFOD_URLS=https://debuginfod.ubuntu.com, and the symbolizer makes a
-# network request per module it cannot resolve locally. That request does not
-# return here, so the symbolizer sits at 0% CPU and the sanitized process blocks
-# forever on its pipe. Measured 2026-09-03: `LSAN_OPTIONS=exitcode=0
-# tests/test_cmetta` never finishes and `timeout 100 make sanitize` exits 124,
-# while the same run with DEBUGINFOD_URLS empty finishes in seconds and reports
-# `SUMMARY: LeakSanitizer: 44104 byte(s) leaked in 27 allocation(s)` and
-# `472 checks, 0 failures`. A bare `llvm-symbolizer` with one query hangs the
-# same way and answers instantly with the variable cleared.
+# Nothing in this tree may reach a debuginfod server. bounded.sh carries that
+# rule and the measurement behind it in its Guarantees, and clears the variable
+# for everything started through it; this script needs its own clearing because
+# it runs each sanitized binary DIRECTLY, below, rather than through the
+# wrapper -- the subject here is an exit status under a particular
+# LSAN_OPTIONS, which a wrapper would sit between. So this is the same rule at
+# the one spawn path bounded.sh is not on, rather than a second rule.
 #
-# Nothing is lost. The only symbols debuginfod would add are SWI-Prolog's, and
-# the rule below reads frame #1 for a C-SEAT source file, whose debug info is
-# local and built here. What was lost was the whole lane: it never reached that
-# rule at all.
+# What it costs here, measured 2026-09-03: `LSAN_OPTIONS=exitcode=0
+# tests/test_cmetta` never finishes and `timeout 100 make sanitize` exits 124,
+# because LeakSanitizer symbolizes through llvm-symbolizer, which makes a
+# request per module it cannot resolve locally and blocks at 0% CPU when that
+# request does not return, leaving the sanitized process waiting on its pipe.
+# Cleared, the same run finishes in seconds and reports `SUMMARY:
+# LeakSanitizer: 44104 byte(s) leaked in 27 allocation(s)` and `472 checks, 0
+# failures`. Nothing is lost: the only symbols a server would add are
+# SWI-Prolog's, and the rule below reads frame #1 for a C-SEAT source file,
+# whose debug info is built here.
 DEBUGINFOD_URLS=
 export DEBUGINFOD_URLS
 
