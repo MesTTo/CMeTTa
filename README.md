@@ -458,6 +458,8 @@ C has neither a dataframe notion nor an array interface like Python's Array API/
 | `kit/` | corpus and driver for cross-extension parity |
 | `benchmarks/` | C host costs pinned to `baseline.json` |
 
-Python's `test_c_binding.py` requires matching C and Python answers over `kit/corpus.json`.
-
-The repository root's `ai-cmetta-c-constraints.md` records constraints and issues found during implementation.
+This seat runs INSIDE the engine's process, so it reads engine terms directly
+and has no wire codec. The codec kit that gates the other seats therefore
+cannot gate this one, and two things do instead: the C suite in `tests/`, and a
+cross-seat parity case that runs `kit/driver` over `kit/corpus.json` and
+requires this binding and another seat to answer the same programs identically.
