@@ -26,18 +26,29 @@
 # gate that reaches the network is a gate that fails for a reason that is not
 # the tree, so a missing step is named and skipped, the same shape the C
 # extension example and the Node lane take.
+#
+# Skipped means `return 125`, and every guard in this file uses it. 125 is the
+# gate's one word for a run that says nothing about the tree: check.sh's run()
+# turns it into `skipped` and names the lane under MEASURED NOTHING, where a
+# `return 0` reports `ok` for a lane that compiled nothing and ran no test.
+# These guards all returned 0 until 2026-09-20, when node-bench was measured
+# answering `ok` in a battery whose node_modules had never been installed while
+# the same lane, on a battery carrying the install, found six cases outside its
+# band. A lane that cannot see is indistinguishable from a passing one until
+# this word is used, which is the failure this repository has already been
+# bitten by three times.
 check_c_binding() {
     binding="$HERE/extensions/cmetta"
-    [ -d "$binding" ] || return 0
+    [ -d "$binding" ] || return 125
     if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
         echo "note: no C compiler found, the C binding suite will not run" >&2
-        return 0
+        return 125
     fi
     if [ ! -f "$(bounded swipl --dump-runtime-variables 2>/dev/null \
                   | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
         echo "note: SWI-Prolog development headers not found, the C binding \
 suite will not run" >&2
-        return 0
+        return 125
     fi
     bounded sh "$HERE/extensions/cmetta/test.sh"
 }
@@ -50,16 +61,16 @@ run GATE c-binding check_c_binding
 # protocol as the suite above, since it reaches the same toolchain.
 check_stranger_c() {
     binding="$HERE/extensions/cmetta"
-    [ -d "$binding" ] || return 0
+    [ -d "$binding" ] || return 125
     if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
         echo "note: no C compiler found, the C extension proof will not run" >&2
-        return 0
+        return 125
     fi
     if [ ! -f "$(bounded swipl --dump-runtime-variables 2>/dev/null \
                   | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
         echo "note: SWI-Prolog development headers not found, the C extension \
 proof will not run" >&2
-        return 0
+        return 125
     fi
     bounded sh "$HERE/tests/shell/test_a_stranger_extends_the_c_seat.sh"
 }
@@ -70,16 +81,16 @@ run GATE stranger-c check_stranger_c
 # suite's own tally because LSan's exitcode=0 is required to let stdio flush.
 check_c_sanitize() {
     binding="$HERE/extensions/cmetta"
-    [ -d "$binding" ] || return 0
+    [ -d "$binding" ] || return 125
     if ! command -v clang >/dev/null 2>&1; then
         echo "note: clang not found, the C sanitizer matrix will not run" >&2
-        return 0
+        return 125
     fi
     if [ ! -f "$(bounded swipl --dump-runtime-variables 2>/dev/null \
                   | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
         echo "note: SWI-Prolog development headers not found, the C sanitizer \
 matrix will not run" >&2
-        return 0
+        return 125
     fi
     bounded make --quiet -C "$binding" sanitize
 }
@@ -100,27 +111,27 @@ run GATE c-sanitize check_c_sanitize
 # each case which counter decides it.
 check_c_bench() {
     binding="$HERE/extensions/cmetta"
-    [ -d "$binding" ] || return 0
+    [ -d "$binding" ] || return 125
     if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
         echo "note: no C compiler found, the C benchmark suite will not run" >&2
-        return 0
+        return 125
     fi
     if [ ! -f "$(bounded swipl --dump-runtime-variables 2>/dev/null \
                   | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
         echo "note: SWI-Prolog development headers not found, the C benchmark \
 suite will not run" >&2
-        return 0
+        return 125
     fi
     if ! command -v perf >/dev/null 2>&1 || [ ! -x /usr/bin/setarch ]; then
         echo "note: perf or setarch not found, the C benchmark suite will not \
 run; instructions:u is what decides these cases" >&2
-        return 0
+        return 125
     fi
     if ! bounded "$PY" -c 'import metta' >/dev/null 2>&1 &&
        ! ( cd "$HERE/extensions/python" && bounded "$PY" -c 'import metta' ) >/dev/null 2>&1; then
         echo "note: this python cannot import metta, the C benchmark suite \
 will not run; it compares through metta's BenchmarkBaseline" >&2
-        return 0
+        return 125
     fi
     bounded env CHECK_PY="$PY" sh "$HERE/extensions/cmetta/bench.sh"
 }
@@ -138,21 +149,21 @@ run GATE c-bench check_c_bench
 # skips by name without it for the same reason they do.
 check_c_install() {
     binding="$HERE/extensions/cmetta"
-    [ -d "$binding" ] || return 0
+    [ -d "$binding" ] || return 125
     if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
         echo "note: no C compiler found, the C install check will not run" >&2
-        return 0
+        return 125
     fi
     if ! command -v pkg-config >/dev/null 2>&1; then
         echo "note: pkg-config not found, the C install check will not run; it \
 is how a consumer finds an installed library" >&2
-        return 0
+        return 125
     fi
     if [ ! -f "$(bounded swipl --dump-runtime-variables 2>/dev/null \
                   | sed -n 's/^PLBASE="\(.*\)";$/\1/p')/include/SWI-Prolog.h" ]; then
         echo "note: SWI-Prolog development headers not found, the C install \
 check will not run" >&2
-        return 0
+        return 125
     fi
     bounded make --quiet -C "$HERE/extensions/cmetta" install-check
 }
