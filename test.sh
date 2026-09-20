@@ -24,7 +24,7 @@ HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 # `make` is here for a measured reason: a gate run HUNG for 360 seconds in
 # `make sanitize` when LeakSanitizer spawned an llvm-symbolizer that went to
 # 0% CPU and never returned.
-bounded() { sh "$HERE/../../bounded.sh" "$@"; }
+bounded() { sh "$HERE/../../tools/bounded.sh" "$@"; }
 
 bounded make --quiet -C "$HERE" clean >/dev/null 2>&1 || true
-exec sh "$HERE/../../bounded.sh" make --quiet -C "$HERE" test
+exec sh "$HERE/../../tools/bounded.sh" make --quiet -C "$HERE" test

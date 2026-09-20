@@ -15,4 +15,4 @@ HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 # this tree and a command typed by hand all reach. Spelled as the path here
 # rather than through a `bounded` function, because `exec` cannot exec a
 # function and this file's exit status must stay its delegate's.
-exec sh "$HERE/../../bounded.sh" make --quiet -C "$HERE" all
+exec sh "$HERE/../../tools/bounded.sh" make --quiet -C "$HERE" all

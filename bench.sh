@@ -31,7 +31,7 @@ set -eu
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 
 METTA_ROOT="$HERE/../.."
-. "$HERE/../../select-python.sh"
+. "$HERE/../../tools/select-python.sh"
 [ -n "$PY" ] || {
     echo "bench.sh: no python found (set CHECK_PY)" >&2
     exit 2
@@ -39,7 +39,7 @@ METTA_ROOT="$HERE/../.."
 
 # One spelling of the bound, implemented in bounded.sh, which every runner in
 # this tree and a command typed by hand all reach.
-bounded() { sh "$HERE/../../bounded.sh" "$@"; }
+bounded() { sh "$HERE/../../tools/bounded.sh" "$@"; }
 
 bounded make --quiet -C "$HERE" bench
-exec sh "$HERE/../../bounded.sh" "$PY" "$HERE/benchmarks/bench.py" "$@"
+exec sh "$HERE/../../tools/bounded.sh" "$PY" "$HERE/benchmarks/bench.py" "$@"

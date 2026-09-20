@@ -271,7 +271,7 @@ cmetta.pc: Makefile
 	    '' \
 	    'Name: cmetta' \
 	    'Description: MeTTa from C: an embedded MeTTa engine and its term API' \
-	    'URL: https://github.com/MesTTo/MeTTa-Kernel' \
+	    'URL: https://github.com/MesTTo/MeTTa' \
 	    'Version: $(VERSION)' \
 	    'Libs: -L$${libdir} -lcmetta' \
 	    'Cflags: -I$${includedir} -std=c11' > $@
