@@ -35,7 +35,7 @@ Build with `sh build.sh` and test with `sh test.sh`, using a C11 compiler and SW
 
 ## The surface
 
-[cmetta.h](cmetta.h) defines every name and signature; [llms.txt](llms.txt) is the compact usage reference.
+[cmetta.h](https://github.com/MesTTo/CMeTTa/blob/main/cmetta.h) defines every name and signature; [llms.txt](llms.txt) is the compact usage reference.
 
 | Feature | Doors |
 |---|---|
@@ -324,7 +324,7 @@ mt_each (a, mt_match(mt_self(m), E("=", E("poly", V("x")), V("body"))))
 
 The same query finds no equation for an `mt_def` callback, whose opaque body requires its declared effect class.
 
-Parameterising a body by its operators gives one definition callable from both C and MeTTa, as [lower.c](examples/lower.c) demonstrates.
+Parameterising a body by its operators gives one definition callable from both C and MeTTa, as [lower.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/lower.c) demonstrates.
 
 ```c
 #define POLY(ADD, MUL, x)  ADD(MUL(3, x), 1)
@@ -453,7 +453,7 @@ C has neither a dataframe notion nor an array interface like Python's Array API/
 | `cmetta.c` | boot, term conversion, cursors, operations |
 | `bridge.pl` | Prolog calls to the published engine surface |
 | `extension.pl` | declaration read at engine boot |
-| `examples/` | [hello.c](examples/hello.c), [ops.c](examples/ops.c), [stream.c](examples/stream.c), [lower.c](examples/lower.c); built and run by the Makefile's test target |
+| `examples/` | [hello.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/hello.c), [ops.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/ops.c), [stream.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/stream.c), [lower.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/lower.c); built and run by the Makefile's test target |
 | `tests/` | C suite run by `sh test.sh` and the gate |
 | `kit/` | corpus and driver for cross-extension parity |
 | `benchmarks/` | C host costs pinned to `baseline.json` |
