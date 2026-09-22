@@ -349,7 +349,7 @@ to `mt_query` opens a fresh engine query against current facts. There is no
 separate prepared-object cache to invalidate. For a temporary assumption, add
 facts and collect the query inside `mt_speculate`; all engine writes made in
 that callback are discarded. Collect inside the callback when the answers
-must survive its end, as [language.c](examples/language.c) demonstrates.
+must survive its end, as [language.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/language.c) demonstrates.
 
 ## Transactions and speculation
 
@@ -688,7 +688,7 @@ its watched space's name. See `tests/test_subscriptions.c`.
 
 Both registration arguments transfer their owned pattern and callback resource
 on every path. `mt_seam_at(m, "subscription", index)` inspects the active machinery
-as data. [language.c](examples/language.c) checks that speculation emits no event
+as data. [language.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/language.c) checks that speculation emits no event
 and one committed addition emits one event.
 
 ## Integrations, async and network entry points
@@ -713,7 +713,7 @@ successful calls. Initialization cannot roll back arbitrary external I/O.
 | `cmetta.c` | boot, term conversion, cursors, operations |
 | `bridge.pl` | Prolog calls to the published engine surface |
 | `extension.pl` | declaration read at engine boot |
-| `examples/` | [hello.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/hello.c), [ops.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/ops.c), [stream.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/stream.c), [lower.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/lower.c), [language.c](examples/language.c); built and run by the Makefile's test target |
+| `examples/` | [hello.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/hello.c), [ops.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/ops.c), [stream.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/stream.c), [lower.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/lower.c), [language.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/language.c); built and run by the Makefile's test target |
 | `tests/` | C suite run by `sh test.sh` and the gate |
 | `kit/` | corpus and driver for cross-extension parity |
 | `benchmarks/` | C host costs pinned to `baseline.json` |
