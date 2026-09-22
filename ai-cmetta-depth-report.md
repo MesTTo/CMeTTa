@@ -104,10 +104,25 @@ were isolated under the same battery. The oracle itself was read from
 `extensions/python/tests/ch21_another_language_at_the_seam/test_c_binding.py`;
 no Python source was edited.
 
-The C citations pass the evidence lane after replacing compact runner braces
-and a JSON citation with executed case names. The root checker originally
-resolved every commit only in the superproject, so component provenance pins
-require its owning-repository resolution fix. This is outside C's write scope.
+The C citations name executed cases after correcting compact runner braces
+and a JSON citation. The final root evidence lane still exits 1 with **51 C
+provenance findings** and 15 findings for the concurrent Node component:
+
+```text
+commit=1a60e2a3cce69d5d6bda67100186939d707f4397 does not resolve to a commit
+GATE FAILED: evidence
+```
+
+The commit exists in CMeTTa's repository. The root checker's
+`commit_problems` runs every `git cat-file` query in the superproject instead
+of the claim's owning repository. That resolver needs an orchestrator fix
+outside C's write scope; it was requested explicitly. The required zero-finding
+evidence result is therefore still blocked. The tags are pinned to the actual
+implementation rather than left as `WORKTREE` to hide the problem.
+
+The C implementation is commit `1a60e2a3cce69d5d6bda67100186939d707f4397`;
+commit `80ead0af42ad724328e7bd74ec1ba2ada78ea398` pins 54 evidence tags to it
+and changes no executable code.
 
 ## Memory results and failures
 
