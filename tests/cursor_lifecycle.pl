@@ -56,7 +56,7 @@ open_counted(Ref) :-
                                        (engine_yield(first), engine_yield(last)),
                                        count_destroy), Engine),
     user:metta_c_new_cursor(Engine, cursor(Id, Ref, Engine)),
-    user:metta_c_next(Id, Engine, 0, [first]).
+    user:metta_c_next(Id, Ref, 0, [first]).
 
 :- begin_tests(cmetta_cursor_lifecycle).
 

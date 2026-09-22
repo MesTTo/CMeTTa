@@ -28,6 +28,17 @@
     { "source": "!(if True 1 2)", "why": "a conditional" },
     { "source": "!(collapse (superpose (1 2)))", "why": "a collected group as one answer" },
     { "source": "!(get-type 1)", "why": "a type answer" },
-    { "source": "!(let $x 5 (+ $x 1))", "why": "a binding form" }
+    { "source": "!(let $x 5 (+ $x 1))", "why": "a binding form" },
+    { "source": "!(+ 18446744073709551615 1)", "why": "past uint64 without unsigned narrowing" },
+    { "source": "!(quote \"λ 😀\")", "why": "UTF-8 text across both live hosts" },
+    { "source": "!(unify (f $x $x) (f 7 7) $x Empty)", "why": "repeated-variable unification succeeds" },
+    { "source": "!(unify (f $x $x) (f 7 8) $x Empty)", "why": "repeated-variable mismatch produces no answer" },
+    { "source": "!(if-error (throw oops) caught fine)", "why": "the engine error algebra handles a produced error" },
+    { "source": "!(return-on-error (throw oops) carried-on)", "why": "error propagation preserves its original shape" },
+    { "source": "!(transaction (progn (add-atom &self (available 3)) (add-atom &self (available 3)) (subtract-atom &self (available 3))))\n!(collapse (match &self (available $n) $n))", "why": "one-occurrence subtraction commits one remaining copy, from examples/ch15-writing-transactions-and-worlds/06-single_occurrence_subtraction.metta" },
+    { "source": "!(collapse (transaction (progn (subtract-atom &self (available 3)) (empty))))\n!(collapse (match &self (available $n) $n))", "why": "a failed engine transaction restores the consumed occurrence" },
+    { "source": "(: typed-corpus (-> Number Number))\n(= (typed-corpus $n) (+ $n 1))\n!(get-type typed-corpus)\n!(typed-corpus 4)", "why": "type declarations and equations use the same program surface" },
+    { "source": "!(match &metta (kind events $ctx $delivery $order) $delivery)", "why": "the event capability vocabulary is visible as catalog data" },
+    { "source": "!(import! &self (library lib_observe))\n(= (corpus-traced $x) (+ $x 1))\n!(bind! &corpus-trace (trace-source &self \"!(corpus-traced 4)\" (corpus-traced) 10))\n!(match &corpus-trace (trace-event $seq $time $depth exit (corpus-traced 4) $answer) $answer)\n!(match &corpus-trace (trace-stopped $reason) $reason)", "why": "filtered trace collection and stable projections through lib_observe, without comparing its allocated times" }
   ]
 }

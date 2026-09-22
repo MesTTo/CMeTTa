@@ -4,9 +4,9 @@
  *
  * Assumes:
  *   - SWI-Prolog 10 with its development headers, threads enabled
- *     [source: /usr/lib/swi-prolog/include/SWI-Prolog.h, PLVERSION 100113]
- *   - C11. _Generic carries the overloads and the argument coercions. Without
- *     it every long-named function still works and the macros do not.
+ *     [source: /usr/lib/swi-prolog/include/SWI-Prolog.h, PLVERSION 100114;
+ *     commit=WORKTREE]
+ *   - C11. _Generic carries receiver dispatch and argument coercions.
  *   - the engine tree is reachable, either at the path given to mt_open()
  *     or at $METTA_PATH
  *
@@ -23,25 +23,26 @@
  *     back, so every door refuses one rather than reading through it
  *     [tested: tests/test_cmetta.c, test_a_door_that_takes_an_atom_refuses_null;
  *     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
- *   - NESTING IS NOT A LIMIT. Building, reading, comparing, writing and
- *     releasing a term all walk with their own stack, so a term nested a
- *     million deep costs heap rather than the thread's 8 MB
- *     [tested: tests/test_cmetta.c, test_a_deep_term_does_not_overrun_the_stack;
- *     commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]
+ *   - term walks are iterative. Building, reading, comparing and writing
+ *     use explicit stacks; release links dead nodes with O(1) auxiliary space
+ *     [tested: tests/test_cmetta.c, test_a_deep_term_does_not_overrun_the_stack,
+ *     tests/test_ownership.c; commit=WORKTREE]
  *   - an atom is immutable and refcounted, so a term built once may be run
  *     many times and shared between threads without copying
  *   - building and reading atoms starts no engine
  *     [tested: tests/test_cmetta.c, test_atoms_need_no_engine; commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
- *   - mt_eval() computes one answer per step, so a caller that stops
+ *   - outside a closed transaction, mt_eval() computes one answer per step, so a caller that stops
  *     pulling leaves the rest of an infinite stream uncomputed, and
- *     mt_each() closes the cursor on `break` as well as on exhaustion
- *     [tested: tests/test_cmetta.c, test_the_walk_closes_its_cursor_on_break;
- *     commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
+ *     mt_each() closes the cursor on `break` as well as on exhaustion.
+ *     Inside a transaction, the engine collects into its held-cursor service:
+ *     commit retains answers and rollback discards them. SWI cannot yield
+ *     across that closed goal [tested: tests/test_transactions.c;
+ *     commit=WORKTREE].
  *
- * Owns resources: one Prolog runtime per process, released by mt_close();
- *   one engine per open cursor, released by mt_answers_free(), which
- *   mt_each() calls for you; one malloc'ed block per atom, released when
- *   its last reference goes.
+ * Owns resources: one Prolog runtime per process, shut down through mt_close();
+ *   one engine, held result, or native iterator per cursor, released by
+ *   mt_answers_free(); C atoms and buffers carry their allocating callback
+ *   until released. mt_each() closes on break and exhaustion.
  *
  * Decides, and these six are the whole contract:
  *
@@ -88,7 +89,7 @@
  *      commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8].
  *
  *   3. ONE VERB, EITHER RECEIVER. mt_eval, mt_match, mt_atoms,
- *      mt_add, mt_del, mt_count and mt_wipe each take a `metta *`,
+ *      mt_run, mt_load, mt_do, mt_add, mt_del, mt_count and mt_wipe each take a `metta *`,
  *      meaning its &self, or a `mt_space *`. _Generic picks; the pair it
  *      picks between is declared above each macro for anyone who wants it.
  *      [tested: tests/test_cmetta.c, test_one_verb_takes_either_receiver;
@@ -116,18 +117,18 @@
  *      quoted; in C everything is quoted, so the default is the one MeTTa
  *      writes bare. Text is mt_text("..."), which is never ambiguous.
  *
- * Fails when: the caller wants two independent runtimes in one process
- *   (PL_initialise is process-wide), or wants to hold an engine term rather
- *   than a materialised copy. Both are in ai-cmetta-c-constraints.md.
+ * Fails when: the caller needs separate context state in one process. This
+ *   API exposes one context; named spaces isolate source and storage but share
+ *   registrations. It also refuses to expose frame-scoped SWI term handles.
  *   Nesting is bounded by memory rather than by the C stack, so a term deep
  *   enough to exhaust the heap, or SWI's own stack_limit on the way in and
  *   out, is refused by name rather than crossing.
  *
  * Guarded by: nothing, deliberately. An atom is immutable and its refcount is
  *   atomic, so building, sharing and dropping atoms is safe from any thread,
- *   and the error state is thread-local. The operation table is NOT guarded:
- *   publish every operation before the threads that evaluate start, the same
- *   restriction sqlite3_create_function() carries.
+ *   and the error state is thread-local. Registration tables are not guarded:
+ *   register and withdraw while evaluation workers are quiescent. A custom
+ *   allocator must support the threads that allocate and release its blocks.
  *
  * Open Obligations:
  *   To Do: None
@@ -137,6 +138,8 @@
 
 #ifndef MT_H
 #define MT_H
+
+#define MT_VERSION "1.0.0"
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -222,11 +225,32 @@ MT_API bool mt_ok(void);
 
 /* Forget the last failure. Call this before a run you intend to check. */
 MT_API void mt_clear(void);
+/* Record a callback failure on this thread. Only error statuses are accepted. */
+MT_API mt_status mt_error_set(mt_status status, const char *message);
 
 /* A stable English name for a status, for your own diagnostics. */
 MT_API const char *mt_status_str(mt_status status);
 
 MT_API const char *mt_version(void);
+
+/* Allocation belongs to the caller. The callback follows realloc: NULL
+   allocates, new_size zero frees, and a failed resize preserves the old block.
+   Sizes include the private ownership header. Storage must have max_align_t
+   alignment. The callback and user must outlive their blocks and support any
+   thread that releases them. SWI's own heap remains SWI's responsibility.
+   [source: https://github.com/lua/lua/blob/6e22fedb74cf0c9b6656e9fce8b7331db847c605/lmem.c]
+   Setting a NULL callback restores libc. Returns this thread's previous
+   allocator; existing blocks retain theirs. Callbacks must not call mt_alloc. */
+typedef void *(*mt_realloc_fn)(void *user, void *pointer,
+                             size_t old_size, size_t new_size);
+typedef struct mt_allocator {
+  mt_realloc_fn resize;
+  void *user;
+} mt_allocator;
+MT_API mt_allocator mt_allocator_set(mt_allocator allocator);
+MT_API MT_MUST_USE void *mt_alloc(size_t size);
+MT_API MT_MUST_USE void *mt_calloc(size_t count, size_t size);
+MT_API MT_MUST_USE void *mt_resize(void *pointer, size_t size);
 
 /* ================================================================== *
  * Atoms
@@ -253,19 +277,32 @@ typedef enum mt_kind {
 
 MT_API const char *mt_kind_str(mt_kind kind);
 
+/* Logical text, names and source use UTF-8. Constructors retain bytes without
+   starting SWI; transport to the engine refuses malformed encoding. Filenames
+   use SWI's platform representation. Lengths always count bytes.
+   [tested: tests/test_native_parity.c; commit=WORKTREE] */
+
 /* --- building. None of these start the engine. --- */
 
 MT_API MT_MUST_USE mt_atom *mt_sym(const char *name);
 MT_API MT_MUST_USE mt_atom *mt_var(const char *name);
 MT_API MT_MUST_USE mt_atom *mt_text(const char *text);
 MT_API MT_MUST_USE mt_atom *mt_textn(const char *text, size_t length);
+/* Borrow immutable, NUL-terminated storage without copying its length bytes.
+   On success the atom owns one release(owner) call; on failure ownership stays
+   with the caller. NULL release means static or otherwise externally held
+   storage. The terminator is required even when the text contains NUL bytes. */
+MT_API MT_MUST_USE mt_atom *mt_text_ref(const char *text, size_t length,
+                                      void *owner, void (*release)(void *));
 MT_API MT_MUST_USE mt_atom *mt_num(int64_t value);
+MT_API MT_MUST_USE mt_atom *mt_unum(uint64_t value);
 MT_API MT_MUST_USE mt_atom *mt_real(double value);
 MT_API MT_MUST_USE mt_atom *mt_bool(bool value);
 MT_API MT_MUST_USE mt_atom *mt_unit(void);
 
-/* An exact integer wider than int64_t, as decimal digits with an optional
-   leading minus. NULL on any other spelling. */
+/* An exact integer as decimal digits with an optional leading minus.
+   Canonicalizes leading zeroes and returns MT_INT when the value fits int64_t,
+   otherwise MT_BIGINT. NULL on any other spelling. */
 MT_API MT_MUST_USE mt_atom *mt_bigint(const char *decimal);
 
 /* An exact ratio, stored in CANONICAL form: lowest terms, sign on the
@@ -291,9 +328,17 @@ MT_API MT_MUST_USE mt_atom *mt_spaceref(const char *name);
 /* An expression from an array. The children are TAKEN; the array is not. */
 MT_API MT_MUST_USE mt_atom *mt_exprv(size_t count, mt_atom **children);
 
+/* Borrow an immutable child vector and retain each child. Only the descriptor
+   allocates. The vector must live until release(owner), called exactly once on
+   successful construction after the last parent reference is dropped. */
+MT_API MT_MUST_USE mt_atom *mt_expr_ref(size_t count,
+                                      const mt_atom *const *children,
+                                      void *owner, void (*release)(void *));
+
 /* The widened forms mt_atom_of dispatches to. Call mt_num or mt_real
    directly rather than these. */
 MT_API mt_atom *mt_num_(long long value);
+MT_API mt_atom *mt_unum_(unsigned long long value);
 MT_API mt_atom *mt_real_(long double value);
 MT_API mt_atom *mt_same(mt_atom *atom);
 MT_API mt_atom *mt_same_c(const mt_atom *atom);
@@ -316,9 +361,9 @@ MT_API mt_atom *mt_same_c(const mt_atom *atom);
     char *:              mt_sym,       const char *:       mt_sym,     \
     signed char:         mt_num_,      unsigned char:      mt_num_,    \
     short:               mt_num_,      unsigned short:     mt_num_,    \
-    int:                 mt_num_,      unsigned:           mt_num_,    \
-    long:                mt_num_,      unsigned long:      mt_num_,    \
-    long long:           mt_num_,      unsigned long long: mt_num_,    \
+    int:                 mt_num_,      unsigned:           mt_unum_,   \
+    long:                mt_num_,      unsigned long:      mt_unum_,   \
+    long long:           mt_num_,      unsigned long long: mt_unum_,   \
     float:               mt_real_,     double:             mt_real_,   \
     long double:         mt_real_,                                        \
     mt_atom *:        mt_same,      const mt_atom *: mt_same_c)(x)
@@ -343,12 +388,10 @@ MT_API mt_atom *mt_same_c(const mt_atom *atom);
 /* Take a reference. Returns its argument, so it composes inline. NULL-safe. */
 MT_API mt_atom *mt_keep(const mt_atom *atom);
 
-/* Drop a reference. NULL-safe, and nesting-safe: an expression is dismantled
-   with a worklist rather than by recursion, so releasing a term the engine
-   handed you cannot overrun the stack. If the machine cannot spare the
-   worklist -- which means it is out of memory while freeing -- the children
-   below that point are KEPT rather than walked, and MT_NOMEM is recorded. A
-   leak is recoverable and the signal recursion would send is not. */
+/* Drop a reference. NULL-safe. Teardown allocates nothing and uses no recursive
+   calls, including for shared and deeply nested expressions. Release callbacks
+   run synchronously when their final owner goes away.
+   [tested: tests/test_ownership.c; commit=WORKTREE] */
 MT_API void mt_drop(const mt_atom *atom);
 
 /* --- reading. Each returns the value the way atoi() and strlen() do, and
@@ -391,6 +434,8 @@ MT_API size_t mt_len(const mt_atom *atom);
 /* Child `index`, BORROWED and valid while its parent lives. NULL past the end
    or on a non-expression. mt_keep() it to hold it longer. */
 MT_API const mt_atom *mt_at(const mt_atom *atom, size_t index);
+/* Borrow the contiguous child vector. Its length is mt_len(atom). */
+MT_API const mt_atom *const *mt_children(const mt_atom *atom);
 
 /* Structural equality, matching the engine's term identity. Two variables are
    equal when their names are; signed float zeros differ and every NaN agrees,
@@ -481,7 +526,9 @@ MT_API MT_MUST_USE char *mt_show_dup(const mt_atom *atom);
    commit=2e13376bb6e1662655525533a1ab02800940aec5]. */
 MT_API MT_MUST_USE mt_string mt_write_dup(const mt_atom *atom);
 
-/* Free anything this library handed back by pointer that is not an atom. */
+/* Release raw storage obtained from mt_alloc, mt_calloc, mt_resize or the
+   library's owned string/list results. Handles have their own release doors.
+   Never pass a libc allocation. NULL-safe. */
 MT_API void mt_free(void *pointer);
 
 /* ================================================================== *
@@ -489,15 +536,55 @@ MT_API void mt_free(void *pointer);
  * ================================================================== */
 
 typedef struct metta metta;
+/* A closed callback scope: MT_OK commits, MT_FAIL rolls back without an
+   exception, and an error status rolls back with its thread-local reason.
+   Nested C transactions are savepoints. Engine state and this library's
+   registrations roll back; arbitrary host memory and I/O belong to the caller.
+   Transactions must be entered and completed on one attached thread. Enter
+   every enclosing transaction through these doors when changing C registrations;
+   raw nested engine scopes cannot own the corresponding C rollback snapshot. */
+typedef mt_status (*mt_scope_fn)(metta *runtime, void *user);
+MT_API mt_status mt_transaction(metta *runtime, mt_scope_fn body, void *user);
+/* Run the same callback and always discard engine and registration changes. */
+MT_API mt_status mt_speculate(metta *runtime, mt_scope_fn body, void *user);
 typedef struct mt_space mt_space;
 typedef struct mt_answers mt_answers;
 
-/* An owned array and its length. Doors that take an mt_list take both the
-   atoms and the array, so an mt_all() result composes directly with them. */
+/* An owned array allocated with mt_alloc/mt_calloc/mt_resize and its length.
+   Doors taking an mt_list take both the atoms and the array. */
 typedef struct mt_list {
   mt_atom **items;
   size_t    len;
 } mt_list;
+
+/* Read every top-level form, including directives, without executing it.
+   Empty source returns {NULL, 0}; a syntax failure returns the same empty list
+   with mt_error set. Variable names remain as written in each form. */
+MT_API MT_MUST_USE mt_list mt_forms(const char *source);
+
+/* Pull one owned atom with MT_ROW, end with MT_DONE and NULL, or return an
+   error after mt_error_set. close(state) runs once on exhaustion, refusal or
+   abandonment. The state may contain retained arguments or any C resource. */
+typedef struct mt_iterator {
+  void *state;
+  mt_status (*next)(void *state, mt_atom **answer);
+  void (*close)(void *state);
+} mt_iterator;
+
+/* Takes the iterator, including on failure. Works without an engine. Row text
+   is NULL for native iterators; use the atom accessors or mt_show after boot. */
+MT_API MT_MUST_USE mt_answers *mt_answers_from(mt_iterator iterator);
+/* A consumptive iterator as a grounded value. Takes the iterator on every
+   path. mt_stream_of borrows its cursor while the atom lives. In MeTTa,
+   (c-iter value) consumes its remaining answers. Applying an mt_function
+   that uses mt_answer_iter returns such a value, because the engine's
+   grounded_apply protocol returns one value. */
+MT_API MT_MUST_USE mt_atom *mt_stream(mt_iterator iterator);
+MT_API mt_answers *mt_stream_of(const mt_atom *atom);
+/* The last step's status, initially MT_OK. This does not advance the cursor. */
+MT_API mt_status mt_answers_status(const mt_answers *answers);
+/* Advance with an explicit status; *answer is borrowed or NULL. */
+MT_API mt_status mt_step(mt_answers *answers, const mt_atom **answer);
 
 typedef struct mt_config {
   const char *path;      /* engine tree; NULL takes $METTA_PATH then the
@@ -542,6 +629,9 @@ MT_API mt_space *mt_catalog(metta *runtime);
 /* Create or open a space by name; names begin with '&'. NULL on failure. */
 MT_API MT_MUST_USE mt_space *mt_space_open(metta *runtime, const char *name);
 MT_API void mt_space_close(mt_space *space);
+/* Release the engine space and its compiled definitions. The C handle remains
+   owned and must be closed. The engine decides which spaces are releasable. */
+MT_API bool mt_space_drop(mt_space *space);
 /* The name is C memory, so this answers whether or not the engine is running,
    and NULL for a NULL space rather than refusing: it is a classifier. */
 MT_API const char *mt_space_name(const mt_space *space);
@@ -550,17 +640,19 @@ MT_API const char *mt_space_name(const mt_space *space);
  * Asking
  * ================================================================== */
 
-/* Run MeTTa source in &self. Every `!` form contributes a group of answers in
+/* Run MeTTa source in the receiver's space. Every `!` form contributes a group of answers in
    source order, and a row's `group` field says which one it came from.
 
    Eager: the engine's run door computes the whole program before the first
    answer, because that is what running a program means. mt_eval() is the
    lazy door. NULL on failure. */
-MT_API MT_MUST_USE mt_answers *mt_run(metta *runtime, const char *source);
+MT_API MT_MUST_USE mt_answers *mt_self_run(metta *runtime, const char *source);
+MT_API MT_MUST_USE mt_answers *mt_space_run(mt_space *space, const char *source);
 
 /* Load a file through the same door `import!` uses, so a reload replaces the
    first load's definitions rather than doubling them. */
-MT_API MT_MUST_USE mt_answers *mt_load(metta *runtime, const char *path);
+MT_API MT_MUST_USE mt_answers *mt_self_load(metta *runtime, const char *path);
+MT_API MT_MUST_USE mt_answers *mt_space_load(mt_space *space, const char *path);
 
 /* ------------------------------------------------------------------ *
  * Lowering: C source becoming MeTTa
@@ -634,7 +726,8 @@ MT_API MT_MUST_USE mt_answers *mt_load(metta *runtime, const char *path);
 
    The alternative is mt_answers_free(mt_run(...)), which says the same thing
    with the reader's attention on the free rather than on the program. */
-MT_API bool mt_do(metta *runtime, const char *source);
+MT_API bool mt_self_do(metta *runtime, const char *source);
+MT_API bool mt_space_do(mt_space *space, const char *source);
 
 /* The pairs the verbs below dispatch between. Call these directly if you
    would rather not go through _Generic. Each TAKES its atom argument. */
@@ -642,6 +735,23 @@ MT_API MT_MUST_USE mt_answers *mt_self_eval(metta *runtime, mt_atom *goal);
 MT_API MT_MUST_USE mt_answers *mt_space_eval(mt_space *space, mt_atom *goal);
 MT_API MT_MUST_USE mt_answers *mt_self_match(metta *runtime, mt_atom *pattern);
 MT_API MT_MUST_USE mt_answers *mt_space_match(mt_space *space, mt_atom *pattern);
+/* Engine match followed by a True-valued guard. A conjunction is the ordinary
+   expression ( , pattern ... ). NULL guard means True. TAKES both atoms;
+   mt_bound reads named variables from each instantiated pattern. Retain the
+   pattern with mt_keep to prepare it once and read current facts repeatedly.
+   Longhand: (match space pattern (if guard pattern Empty)). */
+MT_API MT_MUST_USE mt_answers *mt_self_query(metta *runtime, mt_atom *pattern,
+                                            mt_atom *guard);
+MT_API MT_MUST_USE mt_answers *mt_space_query(mt_space *space, mt_atom *pattern,
+                                             mt_atom *guard);
+/* Evaluate under the engine's per-ask algebra. Each answer is (value coefficient),
+   both ordinary atoms; the cursor owns it until the next step. TAKES algebra
+   and goal. The declaration remains unchanged after close, failure or exhaustion.
+   [tested: test_algebras_are_scoped_engine_data; commit=WORKTREE] */
+MT_API MT_MUST_USE mt_answers *mt_self_eval_under(metta *runtime, mt_atom *algebra,
+                                                 mt_atom *goal);
+MT_API MT_MUST_USE mt_answers *mt_space_eval_under(mt_space *space, mt_atom *algebra,
+                                                  mt_atom *goal);
 MT_API MT_MUST_USE mt_answers *mt_self_atoms(metta *runtime);
 MT_API MT_MUST_USE mt_answers *mt_space_atoms(mt_space *space);
 MT_API bool mt_self_add(metta *runtime, mt_atom *atom);
@@ -664,9 +774,15 @@ MT_API bool mt_space_wipe(mt_space *space);
 /* Evaluate one atom LAZILY: each step computes at most one answer, and
    abandoning the cursor leaves the rest uncomputed. TAKES `goal`. */
 #define mt_eval(target, goal)   MT_ON((target), eval)((target), (goal))
+#define mt_run(target, source)  MT_ON((target), run)((target), (source))
+#define mt_load(target, path)   MT_ON((target), load)((target), (path))
+#define mt_do(target, source)   MT_ON((target), do)((target), (source))
 
 /* Stored atoms unifying a pattern, lazily. TAKES `pattern`. */
 #define mt_match(target, pat)   MT_ON((target), match)((target), (pat))
+#define mt_query(target, pat, guard) MT_ON((target), query)((target), (pat), (guard))
+#define mt_eval_under(target, algebra, goal) \
+    MT_ON((target), eval_under)((target), (algebra), (goal))
 
 /* Every stored atom, lazily. */
 #define mt_atoms(target)        MT_ON((target), atoms)((target))
@@ -685,7 +801,8 @@ MT_API bool mt_space_wipe(mt_space *space);
    commit=c591b4e77d4ca20fcedcf4c87a942d5afc2bf625]. */
 #define mt_add_all(target, atoms) MT_ON((target), add_all)((target), (atoms))
 
-/* Remove one exact atom; true when it was there. TAKES it. */
+/* Remove one unifying occurrence; true when it was there. A bare variable is
+   refused, as it names no single occurrence. TAKES the atom. */
 #define mt_del(target, atom)    MT_ON((target), del)((target), (atom))
 
 /* How many atoms are stored. */
@@ -859,7 +976,7 @@ typedef mt_status (*mt_fn)(mt_call *call, void *user);
        mt_def(m, (mt_op){ .name = "hypot", .arity = 2,
                                 .effect = MT_PURE, .fn = op_hypot }); */
 typedef struct mt_op {
-  const char  *name;    /* as written; underscores reach MeTTa as hyphens */
+  const char  *name;    /* exact engine name; no identifier conversion */
   size_t       arity;
   mt_effect effect;
   mt_fn     fn;
@@ -880,10 +997,12 @@ MT_API size_t mt_arity(const mt_call *call);
 MT_API const mt_atom *mt_arg(const mt_call *call, size_t index);
 MT_API metta *mt_of(const mt_call *call);
 
-/* Answer with an atom, which is TAKEN. Answering twice is MT_MISUSE; a
-   function with many answers answers one expression and lets MeTTa's own
-   superpose spread it. Returns MT_OK so it can be the return statement. */
+/* Answer with an atom, which is TAKEN. Answering twice is MT_MISUSE. */
 MT_API mt_status mt_answer(mt_call *call, mt_atom *atom);
+/* Answer incrementally. Takes the iterator on every path. Its close callback
+   and this call's argument release run on exhaustion, error, cut or cursor
+   abandonment. Arguments remain valid until close returns. */
+MT_API mt_status mt_answer_iter(mt_call *call, mt_iterator iterator);
 
 /* Refuse this application with words the engine reports. Returns MT_ERROR
    so it too can be the return statement. */
@@ -896,7 +1015,11 @@ typedef void (*mt_free_fn)(void *value);
 /* Wrap a C pointer as a grounded atom. MeTTa carries it by reference, never
    serialises it, and hands it back unchanged. The release callback runs when
    the last C and engine owner lets go; engine blob garbage collection decides
-   the ordinary timing after a value has crossed. */
+   the ordinary timing after a value has crossed. Takes value on every path,
+   including constructor failure, which calls release immediately. A non-NULL
+   type_name is its exact engine type symbol as well as the borrowed mt_type
+   result; NULL contributes no type candidate. Invalid UTF-8 refuses when
+   the type crosses into the engine. */
 MT_API MT_MUST_USE mt_atom *mt_object(void *value, const char *type_name,
                                    mt_free_fn release);
 MT_API void *mt_value(const mt_atom *atom);
@@ -912,7 +1035,8 @@ MT_API bool mt_object_free(mt_atom *atom);
 
 /* A C function as a VALUE rather than a name, so `($f 2)` calls it wherever
    the atom lands. This is what C answers to a Python callable being an atom;
-   mt_def() is the other half, a function reached by its published name. */
+   mt_def() is the other half, a function reached by its published name.
+   Takes user on every path, including a NULL function or allocation failure. */
 MT_API MT_MUST_USE mt_atom *mt_function(mt_fn fn, void *user,
                                      mt_free_fn release);
 
@@ -936,9 +1060,9 @@ MT_API MT_MUST_USE mt_atom *mt_function(mt_fn fn, void *user,
      MT_EVENT        every row runs and its answer is discarded
      MT_SERVICE      the SEAT writes it and a registrant CALLS it
 
-   Everything this seat lets a library do rides it: mt_def() writes a row
-   against `op`, mt_object() one against `type`, and the three doors below
-   write against `repr`, `provider` and `library`.
+   mt_def, mt_repr, mt_provider_open, mt_library and mt_subscribe write
+   registrations against their respective points. mt_object owns a box;
+   constructing one does not create a registry row.
 
    The seam table follows the operation table's rule stated at the top of this
    header: it is NOT guarded, so register everything before the threads that
@@ -1020,35 +1144,70 @@ typedef const char *(*mt_text_fn)(void *value, void *user);
 MT_API bool mt_repr(metta *runtime, const char *type_name, mt_text_fn text,
                     void *user);
 
-/* Atoms held somewhere that is not the engine: a space this library backs.
+/* Atoms held by a C backend. Callback arguments BORROW immutable atoms; retain
+   with mt_keep when storing one. match opens a candidate iterator whose close
+   runs on exhaustion, failure or abandonment. The pattern stays alive until
+   close, and the engine unifies every candidate. limit is advisory, zero when
+   absent: apply it only when candidates are exact answers. A variable pattern
+   asks for all atoms, so enumeration needs no second callback.
 
-   Every callback takes the library's own `user` and speaks CANONICAL METTA
-   TEXT, which is what this seat already speaks over its bridge; the engine
-   reads and writes the atoms. `atom_at` answers the atom at an index and NULL
-   past the end, so a store with a stable order implements it directly and one
-   without builds an array first; the engine walks it whole for a match and
-   unifies in place, exactly as it does for the Redis provider.
-
-   This is the engine's foreign-space seam, whose ownership-guard protocol the
-   bridge holds up on this seat's behalf: a space this library did not open is
-   another provider's and these are never called for it. */
+   Callbacks return MT_OK or an error set with mt_error_set. remove additionally
+   writes whether one occurrence was removed. NULL declines a capability.
+   begin/commit/rollback must be supplied together or all absent. begin owns
+   recovery on failure; a successful begin owes one commit or rollback, including
+   nested speculation. A failing completion still releases its local resources.
+   The selected registration is retained through completion even if its name is
+   closed and reused. External concurrency is the provider's responsibility.
+   [tested: tests/test_providers.c; commit=WORKTREE] */
 typedef struct mt_provider {
   void       *user;
-  bool        (*add)(void *user, const char *atom);
-  bool        (*remove)(void *user, const char *atom);
-  const char *(*atom_at)(void *user, size_t index);
-  bool        (*clear)(void *user);
+  mt_status   (*add)(void *user, const mt_atom *atom);
+  mt_status   (*remove)(void *user, const mt_atom *atom, bool *removed);
+  mt_status   (*match)(void *user, const mt_atom *pattern, size_t limit,
+                       mt_iterator *answers);
+  mt_status   (*clear)(void *user);
+  mt_status   (*begin)(void *user);
+  mt_status   (*commit)(void *user);
+  mt_status   (*rollback)(void *user);
   mt_free_fn  release;
 } mt_provider;
 
 /* Back a named space with a provider, and stop backing it. The name is a
    space name, `&stars`: one that is not is refused at the door, and so is one
    another provider already owns, through the engine's own claim on the name.
-   Closing gives that claim back and releases the provider's `user` through its
-   own release callback, so the name can be backed again. */
+   Open TAKES user through release on every path. Closing releases the name;
+   suspended queries and transaction completion retain the old provider until
+   their last owner releases it. */
 MT_API bool mt_provider_open(metta *runtime, const char *space,
                              mt_provider provider);
 MT_API bool mt_provider_close(metta *runtime, const char *space);
+
+/* A standing query over committed additions and removals. notify borrows the
+   matching atom and runs synchronously on the writer's attached thread;
+   true means added and false removed. Return MT_OK or an error status.
+   A notification failure reports an error after commit, without undoing the
+   committed write. The caller owns any queue, scheduler and external locking.
+
+   Names identify registrations exactly, without identifier conversion. A
+   subscription watches its named space until explicitly unsubscribed or the
+   runtime closes; close it before reusing that space's name. Register and
+   withdraw under the same serialization rule as operations. Self-cancellation
+   is supported and keeps callback data alive until notify returns. */
+typedef struct mt_subscription {
+  const char *space;
+  mt_atom *pattern;
+  mt_status (*notify)(void *user, bool added, const mt_atom *atom);
+  void *user;
+  mt_free_fn release;
+} mt_subscription;
+
+/* Subscribe TAKES pattern and user on every path; space and name are copied.
+   Refuses a duplicate name or a space without the engine's events capability.
+   Registration and cancellation participate in mt_transaction/mt_speculate.
+   A missing registration makes unsubscribe false without setting an error. */
+MT_API bool mt_subscribe(metta *runtime, const char *name,
+                         mt_subscription subscription);
+MT_API bool mt_unsubscribe(metta *runtime, const char *name);
 
 /* A directory of MeTTa or Prolog sources this library ships, under an alias,
    so `(library <alias> <file>)` resolves from MeTTa and from C. This is SWI's
@@ -1063,10 +1222,15 @@ MT_API bool mt_library(metta *runtime, const char *alias, const char *directory)
    name. This is sqlite3's loadable-extension shape, entry point and all
    [source: https://www.sqlite.org/loadext.html], and it is what makes a
    library a SATELLITE of this seat rather than a fork of it. The handle stays
-   open for the life of the runtime, because a row may hold a pointer into it.
+   open until process exit, because an escaped value may hold a pointer into it.
 
+   Initialization runs in a closed transaction. A refusal rolls back engine
+   state and C registrations; external host effects remain the initializer's
+   responsibility. Even a refused initializer's handle stays loaded until
+   process exit because it may have handed C function values to its caller.
    Refuses when the file cannot be opened, when it exports no
-   mt_extension_init, or when that function answers false, each naming which. */
+   mt_extension_init, or when that function answers false, each naming which.
+   [tested: tests/test_extensions.c; commit=WORKTREE] */
 typedef bool (*mt_extension_fn)(metta *runtime);
 MT_API bool mt_extension(metta *runtime, const char *path);
 

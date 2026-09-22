@@ -13,7 +13,8 @@
  *   through its registered rendering, and mt_extension refuses a path that is
  *   not a library and one that exports no mt_extension_init.
  * Owns resources: closes its provider, its spaces and its runtime; the
- *   provider's own store is static, so nothing here leaks a heap block.
+ *   provider's store is static and each allocated iterator index is freed
+ *   by its close callback [tested: sh test.sh; commit=WORKTREE].
  */
 
 #define MT_SHORTHAND
@@ -36,21 +37,26 @@ static void expect(bool condition, const char *claim)
 static const char *held[] = { "(star sol)", "(star vega)" };
 static size_t held_len = 2;
 
-static bool store_add(void *user, const char *atom)
-{ (void)user;
-  (void)atom;
-  return false;   /* declared read-only, so the engine refuses a write */
+static mt_status store_next(void *user, mt_atom **atom)
+{ size_t *index = user;
+  if ( *index == held_len ) return MT_DONE;
+  *atom = mt_parse(held[(*index)++]);
+  return *atom ? MT_ROW : mt_error();
 }
 
-static const char *store_atom_at(void *user, size_t index)
-{ (void)user;
-  return index < held_len ? held[index] : NULL;
+static mt_status store_match(void *user, const mt_atom *pattern, size_t limit,
+                              mt_iterator *answers)
+{ size_t *index = mt_calloc(1, sizeof(*index));
+  (void)user; (void)pattern; (void)limit;
+  if ( !index ) return MT_NOMEM;
+  *answers = (mt_iterator){index, store_next, mt_free};
+  return MT_OK;
 }
 
-static bool store_clear(void *user)
+static mt_status store_clear(void *user)
 { (void)user;
   held_len = 0;
-  return true;
+  return MT_OK;
 }
 
 /* --- an object type, and how it prints ----------------------------- */
@@ -161,8 +167,8 @@ static void test_a_c_provider_takes_a_space_name_and_gives_it_back(metta *m)
 { mt_answers *answers;
   const mt_row *answer;
   size_t seen = 0;
-  mt_provider provider = { .user = NULL, .add = store_add,
-                           .remove = NULL, .atom_at = store_atom_at,
+  mt_provider provider = { .user = NULL, .add = NULL,
+                           .remove = NULL, .match = store_match,
                            .clear = store_clear, .release = NULL };
   mt_space *space;
 

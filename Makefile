@@ -32,6 +32,7 @@ SWIPL       ?= swipl
 PLBASE      := $(shell $(SWIPL) --dump-runtime-variables 2>/dev/null | sed -n 's/^PLBASE="\(.*\)";$$/\1/p')
 PLLIBDIR    := $(shell $(SWIPL) --dump-runtime-variables 2>/dev/null | sed -n 's/^PLLIBDIR="\(.*\)";$$/\1/p')
 ENGINE_PATH ?= $(abspath $(CURDIR)/../..)
+TEST_TMP    := $(CURDIR)/ai-tmp/cmetta-parity
 
 # The prerequisites, checked rather than described. They were three sentences in
 # the header above and nothing read them, so a tree without SWI's development
@@ -66,13 +67,14 @@ LDLIBS  += -lswipl
 
 LIB       := libcmetta.so
 FAULT_LIB := tests/libcmetta_fault.so
-EXAMPLES  := examples/hello examples/ops examples/stream examples/lower
+EXAMPLES  := examples/hello examples/ops examples/stream examples/lower examples/language
 FAULT_TESTS := tests/test_alloc_failure tests/test_cursor_ids tests/test_reopen \
                tests/test_internal_contracts tests/test_hash
 THREAD_TESTS := tests/test_threads
 TESTS     := tests/test_cmetta tests/test_bad_boot tests/test_quoted_path \
              tests/test_qlf_boot tests/test_batch_add tests/test_unify \
-             tests/test_seam \
+             tests/test_seam tests/test_ownership tests/test_iterators tests/test_transactions tests/test_providers tests/test_native_parity \
+             tests/test_subscriptions tests/test_extensions \
              $(FAULT_TESTS) $(THREAD_TESTS)
 KIT       := kit/driver
 BENCH     := benchmarks/cases
@@ -96,16 +98,16 @@ pkgconfigdir ?= $(libdir)/pkgconfig
 enginedir    ?= $(datadir)/metta
 
 # The soname carries the MAJOR version alone, so a consumer linked against
-# libcmetta.so.0 keeps working across compatible releases and stops linking
+# libcmetta.so.1 keeps working across compatible releases and stops linking
 # when the surface breaks. Two files and two symlinks is the layout every
-# ELF toolchain expects; VERSION must agree with mt_version(), which
-# `make version` checks rather than trusting.
-VERSION   := 0.1.0
-SOVERSION := 0
+# ELF toolchain expects. VERSION is derived from the public header and
+# `make version` checks the loaded library against it.
+VERSION   := $(shell sed -n 's/^\#define MT_VERSION "\([^"]*\)"/\1/p' cmetta.h)
+SOVERSION := $(firstword $(subst ., ,$(VERSION)))
 SOFILE    := libcmetta.so.$(VERSION)
 SONAME    := libcmetta.so.$(SOVERSION)
 
-.PHONY: all test bench examples kit surface docs version hardening sanitize \
+.PHONY: all test bench examples kit surface docs version hardening sanitize runtime-memory \
         install uninstall install-check clean FORCE
 
 kit: $(KIT)
@@ -135,8 +137,16 @@ kit/%: kit/%.c $(LIB)
 benchmarks/%: benchmarks/%.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS) $(LDLIBS) -lm
 
-tests/%: tests/%.c $(LIB)
+tests/%: tests/%.c tests/allocation_tracker.h $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS) $(LDLIBS) -lm
+
+tests/extension_accept.so: tests/extension_fixture.c $(LIB)
+	$(CC) $(CFLAGS) -shared -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS)
+
+tests/extension_refuse.so: tests/extension_fixture.c $(LIB)
+	$(CC) $(CFLAGS) -DCMETTA_FIXTURE_REFUSE -shared -o $@ $< -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS)
+
+tests/test_extensions: tests/extension_accept.so tests/extension_refuse.so
 
 $(FAULT_TESTS): %: %.c $(FAULT_LIB)
 	$(CC) $(CFLAGS) -DMT_TEST_FAULTS -o $@ $< -Ltests \
@@ -183,14 +193,14 @@ docs:
 	  print('docs: every mt_ name in README.md and llms.txt is in the header')"
 
 # The examples run too. An example that no longer compiles, or that compiles
-# and then fails, is documentation that lies, and the README quotes all four
-# directly. The Python seat gates its examples for the same reason.
+# and then fails, is documentation that lies. The README quotes these programs;
+# the Python seat gates its examples for the same reason.
 test: $(TESTS) $(EXAMPLES) $(KIT) surface docs version hardening
 	@./tests/test_cmetta
 	@./tests/test_bad_boot
 	@set -e; \
-	fixture="$(abspath ../../ai-tmp)/cmetta-path-o'brien-unicodé-$$$$"; \
-	mkdir -p "$(abspath ../../ai-tmp)"; \
+	fixture="$(TEST_TMP)/cmetta-path-o'brien-unicodé-$$$$"; \
+	mkdir -p "$(TEST_TMP)"; \
 	trap 'rm -f "$$fixture"' 0 1 2 15; \
 	rm -f "$$fixture"; \
 	ln -s "$(ENGINE_PATH)" "$$fixture"; \
@@ -203,22 +213,28 @@ test: $(TESTS) $(EXAMPLES) $(KIT) surface docs version hardening
 	@./tests/test_batch_add
 	@./tests/test_unify
 	@./tests/test_seam
+	@./tests/test_ownership
+	@./tests/test_iterators
+	@./tests/test_transactions
+	@./tests/test_providers
+	@./tests/test_native_parity
+	@./tests/test_subscriptions
+	@./tests/test_extensions
 	@./tests/test_hash
 	@./tests/test_threads
-	@python3 ./tests/test_kit.py ./kit/driver "$(abspath ../../ai-tmp)"
+	@python3 ./tests/test_kit.py ./kit/driver "$(TEST_TMP)"
 	@for example in $(EXAMPLES); do \
 	    ./$$example > /dev/null || { echo "$$example failed" >&2; exit 1; }; \
 	    echo "$$example ok"; \
 	done
 
-# The version in the Makefile and the one the library reports are the same
-# number written twice, which is a number that drifts. This reads it out of the
-# built library rather than out of the source, so it answers for what a
-# consumer would actually load.
+# Compare the header-derived version with the loaded library's answer.
 version: $(LIB)
-	@printf '#include "cmetta.h"\n#include <stdio.h>\nint main(void){puts(mt_version());return 0;}\n' > .version-probe.c; \
-	$(CC) $(CFLAGS) -o .version-probe .version-probe.c -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS) $(LDLIBS) -lm; \
-	reported=$$(./.version-probe); rm -f .version-probe .version-probe.c; \
+	@set -e; mkdir -p "$(TEST_TMP)"; \
+	trap 'rm -f "$(TEST_TMP)/version-probe" "$(TEST_TMP)/version-probe.c"' 0 1 2 15; \
+	printf '#include "cmetta.h"\n#include <stdio.h>\nint main(void){puts(mt_version());return 0;}\n' > "$(TEST_TMP)/version-probe.c"; \
+	$(CC) $(CFLAGS) -o "$(TEST_TMP)/version-probe" "$(TEST_TMP)/version-probe.c" -L. -Wl,-rpath,$(CURDIR) -lcmetta $(LDFLAGS) $(LDLIBS) -lm; \
+	reported=$$("$(TEST_TMP)/version-probe"); \
 	if [ "$$reported" != "$(VERSION)" ]; then \
 	    echo "mt_version() says $$reported and the Makefile says $(VERSION); \
 they name the same release and must agree" >&2; exit 1; \
@@ -242,6 +258,25 @@ hardening: $(LIB) $(FAULT_LIB)
 sanitize:
 	@sh ./sanitize.sh
 
+# A runtime defect must remain reproducible independently of the binding.
+# This gate retains every scenario's log and fails on any Memcheck error.
+# [tested: make runtime-memory; commit=WORKTREE]
+$(TEST_TMP)/swi-memory-probe: tests/swi_memory_probe.c
+	@mkdir -p "$(TEST_TMP)"
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
+
+runtime-memory: $(TEST_TMP)/swi-memory-probe
+	@status=0; for scenario in baseline int64 unicode; do \
+	    result=0; \
+	    DEBUGINFOD_URLS= TMPDIR="$(TEST_TMP)" valgrind \
+	        --leak-check=full --show-leak-kinds=all \
+	        --errors-for-leak-kinds=definite,indirect --error-exitcode=99 \
+	        --log-file="$(TEST_TMP)/swi-$$scenario-valgrind.log" \
+	        "$(TEST_TMP)/swi-memory-probe" "$$scenario" || result=$$?; \
+	    printf 'SWI memory %s: exit %s\n' "$$scenario" "$$result"; \
+	    if [ "$$result" -ne 0 ]; then status=$$result; fi; \
+	done; exit "$$status"
+
 # The installed library is a DIFFERENT build: it bakes the installed engine's
 # path rather than this checkout's, so a program linked against it boots
 # without $METTA_PATH set. That is the same bargain setup.py makes when it
@@ -261,7 +296,9 @@ $(SOFILE): cmetta.c cmetta.h .enginedir-stamp
 	    -DMT_ENGINE_PATH='"$(enginedir)"' -shared -Wl,-soname,$(SONAME) \
 	    -o $@ cmetta.c $(LDFLAGS) $(LDLIBS)
 
-cmetta.pc: Makefile
+# Directory overrides are inputs even when no source file changes.
+# [tested: make install-check; commit=WORKTREE]
+cmetta.pc: Makefile cmetta.h FORCE
 	@printf '%s\n' \
 	    'prefix=$(PREFIX)' \
 	    'exec_prefix=$${prefix}' \
@@ -271,7 +308,7 @@ cmetta.pc: Makefile
 	    '' \
 	    'Name: cmetta' \
 	    'Description: MeTTa from C: an embedded MeTTa engine and its term API' \
-	    'URL: https://github.com/MesTTo/MeTTa' \
+	    'URL: https://github.com/MesTTo/MeTTa-Kernel' \
 	    'Version: $(VERSION)' \
 	    'Libs: -L$${libdir} -lcmetta' \
 	    'Cflags: -I$${includedir} -std=c11' > $@
@@ -291,11 +328,11 @@ install: $(SOFILE) cmetta.pc version
 	ln -sf $(SONAME) $(DESTDIR)$(libdir)/$(LIB)
 	install -m 644 cmetta.h $(DESTDIR)$(includedir)/cmetta.h
 	install -m 644 cmetta.pc $(DESTDIR)$(pkgconfigdir)/cmetta.pc
-	cd ../.. && find engine lib -type f \
+	cd "$(ENGINE_PATH)" && find engine lib -type f \
 	    ! -name '*.qlf' ! -name '.qlf-stamp' ! -name '*.o' \
 	    ! -path '*/__pycache__/*' \
 	    -exec install -Dm 644 {} $(DESTDIR)$(enginedir)/{} \;
-	cd ../.. && find engine lib -type f -name '*.so' \
+	cd "$(ENGINE_PATH)" && find engine lib -type f -name '*.so' \
 	    -exec install -Dm 755 {} $(DESTDIR)$(enginedir)/{} \;
 	install -Dm 644 extension.pl $(DESTDIR)$(enginedir)/extensions/cmetta/extension.pl
 	install -Dm 644 bridge.pl $(DESTDIR)$(enginedir)/extensions/cmetta/bridge.pl
@@ -313,17 +350,20 @@ uninstall:
 # whole claim: a program outside this tree can boot the engine.
 install-check:
 	rm -rf build/install-check
+	$(MAKE) cmetta.pc PREFIX=$(CURDIR)/ai-tmp/cmetta-parity/previous-prefix
 	# PREFIX rather than DESTDIR, and that is the whole point: DESTDIR only
 	# STAGES a tree whose paths still say /usr, so a staged copy cannot run in
 	# place -- the library boots, looks where it was told, and refuses by name.
 	# A real prefix under build/ is an install that is genuinely installed,
 	# needs no root, and is the configuration a consumer meets.
 	$(MAKE) install PREFIX=$(CURDIR)/build/install-check
+	@test "$$(PKG_CONFIG_PATH=$(CURDIR)/build/install-check/lib/pkgconfig pkg-config --variable=prefix cmetta)" = "$(CURDIR)/build/install-check"
 	@cd build/install-check && \
 	    export PKG_CONFIG_PATH=$(CURDIR)/build/install-check/lib/pkgconfig && \
 	    flags=$$(pkg-config --cflags --libs cmetta) && \
-	    $(CC) -o consumer $(CURDIR)/tests/install_consumer.c $$flags \
-	        -Wl,-rpath,$(CURDIR)/build/install-check/lib $(LDFLAGS) $(LDLIBS)
+	    $(CC) -Wall -Wextra -Wpedantic -Werror -o consumer $(CURDIR)/tests/install_consumer.c $$flags \
+	        -Wl,-rpath,$(CURDIR)/build/install-check/lib
+	@readelf -dW build/install-check/consumer | grep -F 'Shared library: [$(SONAME)]'
 	@answer=$$(env -u METTA_PATH ./build/install-check/consumer); \
 	if [ "$$answer" != "5" ]; then \
 	    echo "an installed consumer answered '$$answer', wanted 5" >&2; exit 1; \
@@ -332,6 +372,7 @@ install-check:
 
 clean:
 	rm -f $(LIB) $(FAULT_LIB) $(SOFILE) cmetta.pc .enginedir-stamp \
+	      tests/extension_accept.so tests/extension_refuse.so \
 	      .version-probe .version-probe.c \
 	      $(EXAMPLES) $(TESTS) $(KIT) $(BENCH)
 	rm -rf build/install-check

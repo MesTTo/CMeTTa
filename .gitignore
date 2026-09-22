@@ -1,11 +1,12 @@
 # This binding's build products. cmetta.c and cmetta.h are the source; the shared
-# library, the four examples, the C suite, the parity driver and the benchmark
+# library, the examples, the C suite, the parity driver and the benchmark
 # driver are all built by the Makefile here and are one machine's binaries.
 libcmetta.so
 examples/hello
 examples/ops
 examples/stream
 examples/lower
+examples/language
 kit/driver
 benchmarks/cases
 
@@ -34,3 +35,8 @@ tests/*.so
 # for every other build product.
 *.py[cod]
 __pycache__/
+
+# Local reasoning and isolated verification trees.
+agenticmind.json
+ai-tmp/
+ai-battery-*/

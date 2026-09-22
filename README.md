@@ -77,7 +77,10 @@ Build with `sh build.sh` and test with `sh test.sh`, using a C11 compiler and SW
 | References | `mt_keep`, `mt_drop` |
 | Inspection | `mt_kind_of`, `mt_kind_str`, `mt_name`, `mt_name_len`, `mt_int`, `mt_float`, `mt_truth`, `mt_ratio_of`, `mt_len`, `mt_at`, `mt_eq`, `mt_hash` |
 | Unification | `mt_unify`, `mt_unifyv`, `mt_bindings_len`, `mt_binding`, `mt_binding_var`, `mt_binding_value`, `mt_bindings_free`, `mt_substitute` |
-| Spaces | `mt_self`, `mt_catalog`, `mt_space_open`, `mt_space_close`, `mt_space_name` |
+| Spaces | `mt_self`, `mt_catalog`, `mt_space_open`, `mt_space_close`, `mt_space_drop`, `mt_space_name` |
+| Closed scopes | `mt_transaction`, `mt_speculate` |
+| Standing queries | `mt_subscribe`, `mt_unsubscribe` |
+| Native producers | `mt_iterator`, `mt_answers_from`, `mt_answer_iter`, `mt_stream`, `mt_stream_of`, `mt_step`, `mt_answers_status` |
 | Programs and answers | `mt_run`, `mt_load`, `mt_do`, `mt_next`, `mt_row_next`, `mt_bound`, `mt_answers_free`, `mt_each`, `mt_rows` |
 | Collected answers | `mt_one`, `mt_first`, `mt_one_int`, `mt_one_float`, `mt_one_truth`, `mt_one_name`, `mt_all`, `mt_list_free` |
 | Text | `mt_parse`, `mt_parsen`, `mt_show`, `mt_show_dup`, `mt_write_dup`, `mt_free` |
@@ -102,6 +105,11 @@ Like `tgmath.h`, `_Generic` selects the declared function for either a runtime's
 | `mt_atoms` | `mt_self_atoms` | `mt_space_atoms` |
 | `mt_count` | `mt_self_count` | `mt_space_count` |
 | `mt_wipe` | `mt_self_wipe` | `mt_space_wipe` |
+| `mt_run` | `mt_self_run` | `mt_space_run` |
+| `mt_load` | `mt_self_load` | `mt_space_load` |
+| `mt_do` | `mt_self_do` | `mt_space_do` |
+| `mt_query` | `mt_self_query` | `mt_space_query` |
+| `mt_eval_under` | `mt_self_eval_under` | `mt_space_eval_under` |
 
 ## Ownership
 
@@ -118,6 +126,19 @@ mt_atom *p = mt_expr("edge", "a", mt_var("y"));
 while (...) mt_each (row, mt_match(kb, mt_keep(p))) ...
 mt_drop(p);
 ```
+
+Version 1 installs as `libcmetta.so.1`. Rebuild consumers and extensions together;
+[MIGRATION.md](MIGRATION.md) describes the provider and allocation changes.
+`mt_alloc`, `mt_calloc` and `mt_resize` allocate transferable list storage;
+`mt_free` releases it through the allocator retained with each block. An
+allocator selected by `mt_allocator_set` must outlive its outstanding blocks.
+Atom teardown uses no allocation and no recursive calls.
+
+`mt_text_ref` borrows immutable counted text; `mt_expr_ref` borrows an immutable
+child vector and retains its children. `mt_children` reads that vector directly.
+Their optional owner callback runs at the last reference. Failed borrowing
+leaves the owner with the caller; `mt_object` and `mt_function` instead take
+their resource on every path, including failure.
 
 ## Errors
 
@@ -176,7 +197,7 @@ mt_expr("f", mt_expr("g", 1), 2.5)     /* (f (g 1) 2.5) */
 | `MT_EXPR` | an expression; the empty one is unit |
 | `MT_SPACE` | an executable space reference |
 | `MT_OBJECT` | a live C value by reference |
-| `MT_HANDLE` | a native engine value by reference |
+| `MT_HANDLE` | native engine display, refused on resubmission because the C codec cannot reconstruct its identity |
 
 C splits the codec's Number tag into four kinds, and reading promotes only where lossless: `mt_float` accepts an Int within 2^53 and refuses one beyond it, while `mt_int` refuses a Float instead of rounding.
 
@@ -215,16 +236,20 @@ Building and inspecting atoms starts no engine, but parsing and rendering use th
 | Door | Result |
 |---|---|
 | `mt_parse`, `mt_parsen` | one form, with a byte count for the latter |
+| `mt_forms` | all source forms without executing directives; no prefix on syntax failure |
 | `mt_show` | presentation text in a per-thread rotating buffer, ready for `printf` |
 | `mt_show_dup` | an owned presentation copy |
 | `mt_write_dup` | owned, counted `mt_string` source, refusing values whose display spelling wouldn't read back equally |
 | `mt_free` | releases copied text, including `mt_string.data` |
 
+Logical text and names use UTF-8, refusing malformed byte sequences. Unsigned
+arguments and `mt_unum` retain all 64 bits; `mt_bigint` canonicalizes digits.
+
 Embedded NUL survives `mt_write_dup` followed by `mt_parsen(written.data, written.len)`.
 
 ## Answers
 
-`mt_eval` computes at most one answer per step, and `mt_each` closes on exhaustion or `break`, leaving an endless generator's remaining answers uncomputed.
+Outside a closed transaction, `mt_eval` computes at most one answer per step, and `mt_each` closes on exhaustion or `break`, leaving an endless generator's remaining answers uncomputed.
 
 ```c
 mt_each (a, mt_eval(m, E("from", 0)))
@@ -284,6 +309,152 @@ printf("%" PRId64 "\n", mt_int(a));       /* or cast to long long */
 printf("%s\n", mt_show(a));                /* or let the engine write it */
 ```
 
+A native producer supplies `mt_iterator {state, next, close}`. `next` yields an
+owned atom with `MT_ROW`, ends with `MT_DONE`, or returns an error set by
+`mt_error_set`. `mt_answers_from` takes the iterator; `close` runs once on
+exhaustion, error or abandonment. `mt_answer_iter` uses this protocol inside a
+host callback and retains the callback arguments until close. A callable value
+returns a consumptive stream, read through `(c-iter value)` or `mt_stream_of`.
+`mt_step` and `mt_answers_status` distinguish exhaustion from failure.
+
+`mt_space_close` releases the C handle; `mt_space_drop` retires the engine space
+and its definitions. `mt_del` removes one unifying occurrence, refusing a bare
+variable; `(remove-atom ...)` is the language's operation for draining a pattern.
+
+## Queries, joins and guards
+
+`mt_query(kb, pattern, guard)` means `(match space pattern (if guard pattern Empty))`.
+The engine joins shared variables and evaluates the guard; NULL means `True`.
+Both atom arguments transfer ownership to the call. The cursor returns instances
+of the pattern, so `mt_bound(row, "x")` reads the engine's binding.
+
+```c
+mt_atom *pattern = mt_expr(",",
+    mt_expr("Parent", mt_var("x"), mt_var("y")),
+    mt_expr("Parent", mt_var("y"), mt_var("z")));
+mt_rows (row, mt_query(kb, mt_keep(pattern),
+                      mt_expr("==", mt_var("x"), "Tom")))
+    printf("%s\n", mt_show(mt_bound(row, "z")));
+mt_drop(pattern);
+```
+
+With `(Parent Tom Bob)` and `(Parent Bob Ann)`, this prints `Ann`.
+`mt_match` remains the primitive stored-pattern lookup; `mt_query` reaches the
+language matcher, including conjunctions.
+
+## Prepared queries and temporary facts
+
+A prepared query is an immutable pattern you retain with `mt_keep`. Each call
+to `mt_query` opens a fresh engine query against current facts. There is no
+separate prepared-object cache to invalidate. For a temporary assumption, add
+facts and collect the query inside `mt_speculate`; all engine writes made in
+that callback are discarded. Collect inside the callback when the answers
+must survive its end, as [language.c](examples/language.c) demonstrates.
+
+## Transactions and speculation
+
+`mt_transaction(m, callback, user)` invokes `mt_scope_fn` once. `MT_OK` commits;
+`MT_FAIL` rolls back; an error rolls back and preserves its reason.
+`mt_speculate` uses the same callback and always discards changes. Nested scopes
+are savepoints. The engine decides the transaction, including provider
+participation and buffered events; C retains its callback registrations until
+that verdict is known.
+
+```c
+static mt_status store_pair(metta *m, void *user)
+{
+    mt_space *kb = user;
+    (void)m;
+    if (!mt_add(kb, mt_expr("edge", 1, 2))) return mt_error();
+    if (!mt_add(kb, mt_expr("edge", 2, 3))) return mt_error();
+    return MT_OK;
+}
+/* mt_transaction(m, store_pair, kb) publishes both facts together. */
+```
+
+The callback and `user` are borrowed for the synchronous call. Queries opened
+inside the closed scope collect through `metta_host_hold`: commit retains their
+rows and rollback discards them. Set an inference bound before asking an endless
+query inside such a scope. Arbitrary C memory and I/O need the caller's recovery
+protocol. A transaction started only inside a MeTTa expression cannot own a C
+registration snapshot; enter every enclosing scope through `mt_transaction`
+before changing C registrations.
+
+## Materialized answers
+
+`mt_all(cursor)` closes the cursor and returns an owned `mt_list`. Its atoms
+remain readable after later writes; `mt_list_free` releases the snapshot.
+A failure on a later pull discards the entire collection and preserves the
+error. This is a snapshot. Python's automatically maintained answer view needs
+a shared engine service before C can expose it without implementing that
+maintenance algorithm again.
+
+## Mutable cells
+
+Cells are engine atoms. The same reference is passed to `new-state`,
+`get-state` and `change-state!` through ordinary term construction.
+
+```c
+mt_atom *cell = mt_one(mt_eval(m, mt_expr("new-state", 0)));
+bool changed = mt_one_truth(mt_eval(m,
+    mt_expr("change-state!", mt_keep(cell), 7)));
+int64_t value = mt_one_int(mt_eval(m, mt_expr("get-state", mt_keep(cell))));
+/* changed == true; value == 7 */
+mt_drop(cell);
+```
+
+Dropping the atom releases C's reference. The engine owns the cell's storage.
+The current engine stores cell values as transactional facts: writes inside
+`mt_speculate` are discarded, while `mt_transaction` commits them on success.
+
+## Typed atoms, arrays and shape types
+
+Language types are atoms such as `(: shape-left (Matrix 2 3))`.
+`mt_type` names a C representation; `(get-type value)` asks the language.
+Shared variables in an arrow type relate dimensions across arguments and result:
+
+```c
+mt_do(kb, "(: shape-left (Matrix 2 3)) (: shape-right (Matrix 3 4)) "
+          "(: shape-product (-> (Matrix $m $k) (Matrix $k $n) (Matrix $m $n)))");
+mt_atom *shape = mt_one(mt_eval(kb,
+    mt_expr("get-type", mt_expr("shape-product", "shape-left", "shape-right"))));
+/* shape is (Matrix 2 4). */
+mt_drop(shape);
+```
+
+For native array memory, `mt_object` retains the pointer through a release
+callback; `mt_expr_ref` exposes an immutable child vector. An external adapter
+supplies dimensions, strides and operations. The core does not infer them from
+an address or select an array library.
+
+## Algebras and semirings
+
+`mt_eval_under(target, algebra, goal)` scopes the engine's algebra selection and
+returns ordinary `(value coefficient)` pairs. It takes both atom arguments.
+The cursor owns each pair until the next step; `mt_keep` or `mt_one` retains it.
+
+```c
+mt_atom *answer = mt_one(mt_eval_under(m, mt_sym("tropical"), mt_expr("+", 2, 3)));
+/* answer is (5 0): tropical's multiplicative identity is 0. */
+mt_drop(answer);
+```
+
+Algebras are `(algebra ...)` rows in `mt_catalog(m)`, naming operations, identities,
+laws, carrier and scope. An unknown algebra raises an error with the remedy to
+declare it. Closing, exhausting or failing a cursor restores the prior selection.
+The coefficients and their validation come from `metta_with_under` and
+`metta_annotation`. Python's tagged-proof traversal, reinterpretation and its
+special aggregate result for `counting` are host algorithms; this door does not
+claim those services exist in the shared engine.
+
+## Reified worlds and compensation
+
+The engine publishes effect coverage, compensation lookup and transaction
+services. Complete world reification, diff, commit, and saga receipt recovery
+currently live in Python. They require shared engine services before C can
+offer them under the same language semantics. The [capability report](ai-cmetta-depth-report.md)
+names that boundary and the source files; there are no success-shaped substitutes.
+
 ## C functions
 
 `mt_def` publishes a callback with designated fields and a required effect class, which the engine uses for caching, reordering, and transactions.
@@ -304,7 +475,7 @@ mt_def(m, (mt_op){ .name = "hypot", .arity = 2,
 
 `(hypot 3.0 4.0)` answers `5.0`.
 
-Names follow C's casing convention, so `word_count` publishes `word-count` as Python's `car_atom` reaches `car-atom`, while names outside C's identifier grammar, such as `prime?` and `%Undefined%`, cross unchanged.
+Names cross exactly: `word_count` and `word-count` remain different names. The `mt_` convention names this API; it never rewrites a published language name.
 
 ## C values
 
@@ -320,8 +491,8 @@ mt_atom *handle = mt_object(&account, "account", NULL);
 | ordinary release | SWI blob garbage collection releases the engine reference; `mt_free_fn` runs after the last C reference also goes |
 | `mt_object_free(handle)` | consumes that C reference and releases the engine blob immediately; returning an invalidated Prolog alias reports `MT_UNSUPPORTED` |
 | other `mt_keep` references | remain valid until dropped |
-| MeTTa `get-type` | `%Undefined%`, because this extension declares no `seam:host_object/1` to identify its own values |
-| `mt_type` | reads the C type name that MeTTa isn't told |
+| MeTTa `get-type` | reads the exact type symbol through `seam:host_object/1` and `seam:grounded_class_type/2`; NULL contributes no type candidate |
+| `mt_type` | borrows that same C type name |
 
 A C function can also be a value applied wherever it lands.
 
@@ -439,7 +610,7 @@ A library includes `cmetta.h`, links against `libcmetta`, and exports `mt_extens
 
 bool mt_extension_init(metta *runtime)
 { mt_provider store = { .user = my_store, .add = store_add,
-                        .atom_at = store_atom_at, .clear = store_clear };
+                        .match = store_match, .clear = store_clear };
   return mt_provider_open(runtime, "&stars", store) &&
          mt_repr(runtime, "star", star_text, NULL) &&
          mt_library(runtime, "solars", "/usr/share/solars/metta");
@@ -471,11 +642,67 @@ These registrations use declared extension points, the C counterpart of `engine/
 
 `mt_point_declare` declares points, `mt_register` adds rows, `mt_point_at`, `mt_seam_at`, and `mt_seam_count` read them, and `mt_claim` consults ownership rows until one takes the request.
 
-A provider exchanges canonical MeTTa text through the bridge and returns its indexed atom from `atom_at(user, i)` or NULL past the end, letting the engine scan and unify as the Prolog Redis provider does.
+`tests/extension_fixture.c` builds separately against the public header; `tests/test_extensions.c` checks successful calls and failed initialization rollback.
 
-C has neither a dataframe notion nor an array interface like Python's Array API/DLPack or JavaScript's `TypedArray`, so numeric libraries carry buffers through `mt_object` without `frame` or `array` extension points.
+## Foreign spaces, row cursors and live objects
 
-`tests/shell/test_a_stranger_extends_the_c_seat.sh` builds an external library against `cmetta.h` alone and exercises every extension door.
+A provider receives borrowed atoms directly. `match(user, pattern, limit, out)`
+opens a candidate `mt_iterator`; the engine unifies every candidate, including
+repeated variables. A variable pattern requests enumeration. The bound is
+advisory and must not truncate an over-approximation before unification.
+Duplicate candidates remain duplicate answers. `remove` reports one occurrence
+through its boolean output. A NULL callback declines that capability.
+
+Supply `begin`, `commit` and `rollback` together when the store can participate
+in transactions. The engine captures the selected provider before beginning;
+withdrawal or reuse of its name cannot redirect completion. Query cursors also
+retain the provider through close. `mt_provider_open` takes its user resource
+on success and failure.
+
+This is also C's table interface: a backend opens a row cursor and converts each
+row to an owned atom. The core names no database or dataframe library. A provider
+may read fields from a live C struct whenever a query opens; opaque fields pass
+through `mt_object`, preserving pointer identity. The borrowed query pattern
+stays alive until the iterator closes, and returned atoms follow `mt_keep`/`mt_drop`.
+
+## Composed spaces
+
+Composition is an engine query over space values. For example, the source
+`(match (superpose (&front &back)) (item $x) $x)` reads both stores and retains
+their multiplicity. Reusing that term reads later writes from either source.
+An overlay uses that read expression and sends writes explicitly to `&front`.
+A C provider can expose that cursor behind a named, read-only space through
+the same foreign-space interface. Python's mapped-view policy and object-field
+discovery are host conveniences; C providers state their field shape explicitly.
+
+## Events and standing queries
+
+`mt_subscribe(m, name, subscription)` registers a pattern and C callback over
+committed additions and removals. The callback receives a borrowed atom and a
+boolean edge; it may retain the atom or cancel itself. `mt_unsubscribe` closes
+the registration. Callbacks run on the writer's thread, and the caller owns any
+queue or scheduler. Rollback delivers nothing. A callback error is reported
+after commit and does not undo the write. Close a subscription before reusing
+its watched space's name. See `tests/test_subscriptions.c`.
+
+Both registration arguments transfer their owned pattern and callback resource
+on every path. `mt_seam_at(m, "subscription", index)` inspects the active machinery
+as data. [language.c](examples/language.c) checks that speculation emits no event
+and one committed addition emits one event.
+
+## Integrations, async and network entry points
+
+Native producers and providers expose incremental rows without requiring a
+scheduler. A C application owns its worker threads, queues and cancellation;
+workers attach through `mt_thread_attach`, then close cursors before detaching.
+HTTP, GraphQL, authentication and third-party array/database adapters belong to
+external libraries loaded through `mt_extension`. There is no hidden server,
+event loop or Python runtime in this binding.
+
+`tests/extension_fixture.c` compiles separately against the public header.
+Its initializer either publishes a callable, equation and source library or
+refuses after publication. `tests/test_extensions.c` checks rollback and the
+successful calls. Initialization cannot roll back arbitrary external I/O.
 
 ## Files
 
@@ -485,7 +712,7 @@ C has neither a dataframe notion nor an array interface like Python's Array API/
 | `cmetta.c` | boot, term conversion, cursors, operations |
 | `bridge.pl` | Prolog calls to the published engine surface |
 | `extension.pl` | declaration read at engine boot |
-| `examples/` | [hello.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/hello.c), [ops.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/ops.c), [stream.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/stream.c), [lower.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/lower.c); built and run by the Makefile's test target |
+| `examples/` | [hello.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/hello.c), [ops.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/ops.c), [stream.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/stream.c), [lower.c](https://github.com/MesTTo/CMeTTa/blob/main/examples/lower.c), [language.c](examples/language.c); built and run by the Makefile's test target |
 | `tests/` | C suite run by `sh test.sh` and the gate |
 | `kit/` | corpus and driver for cross-extension parity |
 | `benchmarks/` | C host costs pinned to `baseline.json` |

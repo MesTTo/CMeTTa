@@ -135,7 +135,7 @@ static void test_public_scalar_readers_cover_their_whole_domain(void)
   for (i = 0; i < sizeof(effects) / sizeof(effects[0]); i++)
     CHECK(strcmp(mt_effect_str((mt_effect)i), effects[i]) == 0);
   CHECK(mt_effect_str((mt_effect)99) == NULL);
-  CHECK(strcmp(mt_version(), "0.1.0") == 0);
+  CHECK(strcmp(mt_version(), MT_VERSION) == 0);
 
   mt_drop(text);
   mt_drop(yes);
@@ -225,9 +225,9 @@ static void test_a_door_before_the_runtime_refuses(void)
   /* The runtime a failed mt_open() hands back is NULL, and every door that
      takes one has to survive being given it. */
   mt_clear();
-  CHECK(mt_run(NULL, "!(+ 1 2)") == NULL);
-  CHECK(mt_do(NULL, "(= (f) 1)") == false);
-  CHECK(mt_load(NULL, "/nonexistent.metta") == NULL);
+  CHECK(mt_run((metta *)NULL, "!(+ 1 2)") == NULL);
+  CHECK(mt_do((metta *)NULL, "(= (f) 1)") == false);
+  CHECK(mt_load((metta *)NULL, "/nonexistent.metta") == NULL);
   CHECK(mt_self(NULL) == NULL);
   CHECK(mt_catalog(NULL) == NULL);
   CHECK(mt_space_open(NULL, "&kb") == NULL);
@@ -1124,15 +1124,20 @@ static void test_a_c_function_is_callable_from_metta(metta *m)
                                  .effect = MT_PURE, .fn = op_double }));
   CHECK(mt_one_int(mt_run(m, "!(cdouble 21)")) == 42);
 
-  CASE("a C name spelled with underscores reaches MeTTa with hyphens");
+  CASE("a published name preserves underscores and remains distinct from hyphens");
   CHECK(mt_def(m, (mt_op){ .name = "tag_it", .arity = 1,
                                  .effect = MT_PURE, .fn = op_tag_it,
                                  .user = (void *)"tagged" }));
-  { mt_atom *got = mt_one(mt_run(m, "!(tag-it 7)"));
+  { mt_atom *got = mt_one(mt_run(m, "!(tag_it 7)"));
     CHECK(got && mt_kind_of(got) == MT_EXPR);
     CHECK(mt_len(got) == 2);
     CHECK(strcmp(mt_name(mt_at(got, 0)), "tagged") == 0);
     mt_drop(got);
+  }
+  { mt_atom *got = mt_one(mt_run(m, "!(tag-it 7)"));
+    mt_atom *unreduced = E("tag-it", 7);
+    CHECK(mt_eq(got, unreduced));
+    mt_drop(got); mt_drop(unreduced);
   }
 
   CASE("a C function's refusal reaches the caller as an error");
@@ -1631,6 +1636,173 @@ static void test_scope_cleanup_releases_on_every_exit(metta *m)
 }
 #endif
 
+static void test_prepared_queries_join_and_guard_current_facts(metta *m)
+{ mt_space *space = mt_space_open(m, "&c-prepared");
+  mt_atom *pattern = E(",", E("Parent", V("x"), V("y")),
+                            E("Parent", V("y"), V("z")));
+  mt_answers *answers;
+  const mt_row *row;
+  mt_list all;
+  CASE("prepared queries retain shape while joins and guards read current facts");
+  mt_clear();
+  CHECK(space && pattern);
+  CHECK(mt_add(space, E("Parent", "Tom", "Bob")));
+  CHECK(mt_add(space, E("Parent", "Bob", "Ann")));
+  answers = mt_query(space, mt_keep(pattern), NULL);
+  CHECK(answers != NULL);
+  row = mt_row_next(answers);
+  CHECK(row && mt_bound(row, "x") && mt_bound(row, "z"));
+  if ( row )
+  { CHECK(strcmp(mt_name(mt_bound(row, "x")), "Tom") == 0);
+    CHECK(strcmp(mt_name(mt_bound(row, "z")), "Ann") == 0);
+  }
+  CHECK(mt_row_next(answers) == NULL && mt_answers_status(answers) == MT_DONE);
+  mt_answers_free(answers);
+  CHECK(mt_add(space, E("Parent", "Ann", "Zoe")));
+  all = mt_all(mt_query(space, mt_keep(pattern), NULL));
+  CHECK(all.len == 2 && mt_ok()); mt_list_free(all);
+  all = mt_all(mt_query(space, mt_keep(pattern), E("==", V("x"), "Bob")));
+  CHECK(all.len == 1 && mt_ok()); mt_list_free(all);
+  all = mt_all(mt_query(space, mt_keep(pattern), B(false)));
+  CHECK(all.len == 0 && mt_ok()); mt_list_free(all);
+  CHECK(mt_space_drop(space)); mt_space_close(space); mt_drop(pattern);
+}
+
+typedef struct temporary_query {
+  mt_space *space;
+  mt_list found;
+} temporary_query;
+
+static mt_status ask_with_temporary_facts(metta *m, void *user)
+{ temporary_query *work = user;
+  (void)m;
+  if ( !mt_add(work->space, E("available", "Ada")) ) return mt_error();
+  work->found = mt_all(mt_query(work->space, E("available", V("who")), NULL));
+  return mt_ok() ? MT_OK : mt_error();
+}
+
+static void test_temporary_facts_leave_owned_answers_after_speculation(metta *m)
+{ temporary_query work = {mt_space_open(m, "&c-temporary"), {NULL, 0}};
+  CASE("speculation discards temporary facts while C retains collected answers");
+  mt_clear();
+  CHECK(work.space != NULL);
+  CHECK(mt_speculate(m, ask_with_temporary_facts, &work) == MT_OK);
+  CHECK(work.found.len == 1 && mt_count(work.space) == 0);
+  if ( work.found.len )
+    CHECK(strcmp(mt_name(mt_at(work.found.items[0], 1)), "Ada") == 0);
+  mt_list_free(work.found);
+  CHECK(mt_space_drop(work.space)); mt_space_close(work.space);
+}
+
+static mt_status write_cell(metta *m, void *user)
+{ mt_atom *cell = user;
+  mt_atom *answer = mt_one(mt_eval(m, E("change-state!", mt_keep(cell), 99)));
+  mt_drop(answer);
+  return mt_ok() ? MT_OK : mt_error();
+}
+
+static void test_mutable_cells_follow_engine_transactions(metta *m)
+{ mt_atom *cell;
+  CASE("mutable cells retain engine identity and follow transaction and speculation verdicts");
+  mt_clear();
+  cell = mt_one(mt_eval(m, E("new-state", 0)));
+  CHECK(cell != NULL);
+  CHECK(mt_one_int(mt_eval(m, E("get-state", mt_keep(cell)))) == 0);
+  CHECK(mt_one_truth(mt_eval(m, E("change-state!", mt_keep(cell), 7))));
+  CHECK(mt_one_int(mt_eval(m, E("get-state", mt_keep(cell)))) == 7);
+  CHECK(mt_speculate(m, write_cell, cell) == MT_OK);
+  CHECK(mt_one_int(mt_eval(m, E("get-state", mt_keep(cell)))) == 7);
+  CHECK(mt_transaction(m, write_cell, cell) == MT_OK);
+  CHECK(mt_one_int(mt_eval(m, E("get-state", mt_keep(cell)))) == 99);
+  mt_drop(cell);
+}
+
+static void test_typed_atoms_relate_array_shapes(metta *m)
+{ mt_space *space = mt_space_open(m, "&c-shapes");
+  mt_atom *shape, *expected;
+  CASE("typed atoms express array shapes through shared dimension variables");
+  mt_clear();
+  CHECK(space != NULL);
+  CHECK(mt_do(space, "(: shape-left (Matrix 2 3)) (: shape-right (Matrix 3 4)) "
+                    "(: shape-product (-> (Matrix $m $k) (Matrix $k $n) (Matrix $m $n)))"));
+  shape = mt_one(mt_eval(space, E("get-type", E("shape-product", "shape-left", "shape-right"))));
+  expected = E("Matrix", 2, 4);
+  CHECK(mt_eq(shape, expected)); mt_drop(shape); mt_drop(expected);
+  CHECK(mt_space_drop(space)); mt_space_close(space);
+}
+
+static void test_native_object_types_reach_engine_dispatch(metta *m)
+{ CASE("a C object's declared type participates in engine type lookup and dispatch");
+  int payload = 7;
+  mt_atom *object = mt_object(&payload, "CAccount", NULL);
+  mt_atom *answer;
+  CHECK(object != NULL);
+  answer = mt_one(mt_eval(m, E("get-type", mt_keep(object))));
+  CHECK(mt_kind_of(answer) == MT_SYMBOL && strcmp(mt_name(answer), "CAccount") == 0);
+  mt_drop(answer);
+  CHECK(mt_do(m, "(: c-account-id (-> CAccount CAccount)) (= (c-account-id $x) $x)"));
+  answer = mt_one(mt_eval(m, E("c-account-id", mt_keep(object))));
+  CHECK(answer && mt_eq(answer, object));
+  mt_drop(answer);
+  answer = mt_one(mt_eval(m, E("get-type-space", mt_spaceref("&self"), mt_keep(object))));
+  CHECK(mt_kind_of(answer) == MT_SYMBOL && strcmp(mt_name(answer), "CAccount") == 0);
+  mt_drop(answer);
+  mt_object_free(object);
+  CASE("a malformed native type refuses instead of disappearing from inference");
+  object = mt_object(&payload, "\xff", NULL);
+  mt_clear();
+  answer = mt_one(mt_eval(m, E("get-type", mt_keep(object))));
+  CHECK(!answer && mt_error() >= MT_ERROR);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "invalid UTF-8"));
+  mt_drop(answer);
+  mt_object_free(object);
+  mt_clear();
+}
+
+static void test_composed_spaces_read_live_sources(metta *m)
+{ mt_space *a = mt_space_open(m, "&c-front"), *b = mt_space_open(m, "&c-back");
+  mt_atom *query = E("match", E("superpose", E(mt_spaceref("&c-front"), mt_spaceref("&c-back"))),
+                               E("item", V("x")), V("x"));
+  mt_list rows;
+  CASE("composed queries read each source and preserve multiplicity without copying facts");
+  mt_clear();
+  CHECK(a && b && query);
+  CHECK(mt_add(a, E("item", 1)) && mt_add(b, E("item", 2)));
+  rows = mt_all(mt_eval(m, mt_keep(query)));
+  CHECK(rows.len == 2 && mt_ok()); mt_list_free(rows);
+  CHECK(mt_add(b, E("item", 2)));
+  rows = mt_all(mt_eval(m, mt_keep(query)));
+  CHECK(rows.len == 3 && mt_ok()); mt_list_free(rows);
+  CHECK(mt_space_drop(a) && mt_space_drop(b));
+  mt_space_close(a); mt_space_close(b); mt_drop(query);
+}
+
+static void test_algebras_are_scoped_engine_data(metta *m)
+{ const char *names[] = {"bool", "tropical", "prob"};
+  mt_atom *ones[] = {N(1), N(0), N(1)};
+  CASE("algebra selection and answer coefficients belong to the engine and restore after close");
+  mt_clear();
+  for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++)
+  { mt_atom *row = mt_one(mt_eval_under(m, S(names[i]), E("+", 2, 3)));
+    CHECK(row && mt_len(row) == 2);
+    CHECK(mt_int(mt_at(row, 0)) == 5);
+    CHECK(mt_eq(mt_at(row, 1), ones[i]));
+    mt_drop(row); mt_drop(ones[i]);
+  }
+  { mt_atom *decl = mt_first(mt_match(mt_catalog(m),
+         E("algebra", "tropical", V("combine"), V("extend"), V("zero"),
+           V("one"), V("laws"), V("carrier"), V("requires"), V("scope"))));
+    CHECK(decl != NULL); mt_drop(decl);
+  }
+  { mt_answers *a = mt_eval_under(m, S("tropical"), E("superpose", E(1, 2)));
+    CHECK(mt_next(a) != NULL); mt_answers_free(a);
+  }
+  CHECK(mt_one_int(mt_eval(m, E("+", 2, 3))) == 5);
+  { mt_list rows = mt_all(mt_eval_under(m, S("c-unknown-algebra"), E("+", 2, 3)));
+    CHECK(!rows.len && mt_error() >= MT_ERROR); mt_list_free(rows); mt_clear();
+  }
+}
+
 int main(void)
 { metta *m;
 
@@ -1687,6 +1859,13 @@ int main(void)
   test_the_counters_measure_engine_work(m);
   test_verbosity_reaches_the_engines_own_door(m);
   test_reopening_is_the_same_runtime(m);
+  test_prepared_queries_join_and_guard_current_facts(m);
+  test_temporary_facts_leave_owned_answers_after_speculation(m);
+  test_mutable_cells_follow_engine_transactions(m);
+  test_typed_atoms_relate_array_shapes(m);
+  test_native_object_types_reach_engine_dispatch(m);
+  test_composed_spaces_read_live_sources(m);
+  test_algebras_are_scoped_engine_data(m);
 #ifdef MT_HAS_AUTO
   test_scope_cleanup_releases_on_every_exit(m);
 #endif

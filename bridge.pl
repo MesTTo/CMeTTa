@@ -18,14 +18,14 @@
 %     [tested: tests/prolog/static_checks.pl,
 %     a_host_binding_calls_only_published_surface;
 %     commit=0c544dba163996ab34fec1cb574f5f4faf8b53f0]
-%   - '$cmetta_dispatch'/3 and '$cmetta_object'/1 are foreign predicates the C
+%   - '$cmetta_dispatch'/3 and '$cmetta_object_live'/1 are foreign predicates the C
 %     half registers before consulting the engine. This file LOADS without
 %     them, because the static gate consults it directly with no C host in the
 %     process, so nothing here may call one at load time.
 %   - the C half runs each call inside its own PL_open_foreign_frame, so a
 %     term handed out here stays valid exactly as long as that frame
 % Guarantees:
-%   - metta_c_next/4 computes at most one answer per call, so a host that
+%   - outside a closed transaction, metta_c_next/4 computes at most one answer per call, so a host that
 %     stops pulling leaves the rest of an infinite stream uncomputed. The case
 %     cited walks an ENDLESS generator and breaks after three answers, which
 %     an eager door could not return from at all
@@ -67,10 +67,12 @@
 %     exists exactly while a provider is open
 %     [tested: extensions/cmetta/tests/test_seam.c,
 %     test_a_c_provider_takes_a_space_name_and_gives_it_back; commit=9ee28a945da58dfdef86119ea082609bd5975aed]
-% Owns resources: one SWI engine and one recorded owner per open cursor,
-%   released by metta_c_close/1 from mt_answers_free().
+% Owns resources: one recorded owner per open cursor. metta_host_hold/3 owns
+%   either a resumable SWI engine or transaction-scoped materialized answers;
+%   metta_c_close/1 releases that owner through metta_host_hold_close/1
+%   [tested: tests/test_transactions.c; commit=WORKTREE].
 % Guarded by: $cmetta_cursors serialises the close winner's reference lookup
-%   and erase. The C half registers the owner and engine reference atoms
+%   and erase. The C half registers the owner reference atom
 %   across frames and checks their runtime generation before using them.
 % Decides: verbosity is set explicitly at boot rather than inherited from argv,
 %   because filereader.pl reads the CLI at load time and an embedded host has
@@ -140,6 +142,15 @@ metta_c_error_advice(Ball, Remedy, Ground) :-
 metta_c_read(Source, Term, Names) :-
     metta_c_text(Source, S),
     sread_with_names(S, Term, Names).
+
+% The source parser owns form boundaries; the atom reader owns each form.
+% No directive is executed and a later syntax error returns no prefix.
+% [tested: tests/test_native_parity.c; commit=WORKTREE]
+metta_c_read_forms(Source, Terms, Names) :-
+    metta_host_read_forms(Source, Pairs),
+    maplist(metta_c_read_form, Pairs, Terms, NameLists),
+    append(NameLists, Names).
+metta_c_read_form([_, Text], Term, Names) :- sread_with_names(Text, Term, Names).
 
 % swrite/2 is the round-trip writer and refuses what it could not read back;
 % sdisplay/2 is presentation and renders it anyway. A caller asking to SEE an
@@ -292,7 +303,7 @@ metta_c_open_eval(Goal, Space, Inferences, Id) :-
     space_module(Space, Module),
     metta_host_inference_budget(with_metta_module(Module, eval(Goal, Out)),
                                 Inferences, Bounded),
-    engine_create(Out, Bounded, Engine),
+    metta_host_hold(Out, Bounded, Engine),
     metta_c_new_cursor(Engine, Id).
 
 % Stored atoms unifying a pattern, which is the primitive door. The language's
@@ -300,8 +311,29 @@ metta_c_open_eval(Goal, Space, Inferences, Id) :-
 metta_c_open_match(Pattern, Space, Inferences, Id) :-
     metta_host_inference_budget(metta_host_stored(Space, Pattern),
                                 Inferences, Bounded),
-    engine_create(Pattern, Bounded, Engine),
+    metta_host_hold(Pattern, Bounded, Engine),
     metta_c_new_cursor(Engine, Id).
+
+% The engine owns algebra selection, carrier validation and annotation flow.
+% The pair is data carried by the ordinary answer cursor.
+% [tested: test_algebras_are_scoped_engine_data; commit=WORKTREE]
+metta_c_open_under([Algebra, Goal], Space, Inferences, Id) :-
+    space_module(Space, Module),
+    metta_host_inference_budget(
+        with_metta_module(Module,
+            metta_with_under(Algebra, metta_c_annotated(Space, Algebra, Goal, Out, K))),
+        Inferences, Bounded),
+    metta_host_hold([Out, K], Bounded, Engine),
+    metta_c_new_cursor(Engine, Id).
+
+metta_c_annotated(Space, Algebra, Goal, Out, K) :-
+    ( metta_algebra_one(Space, One)
+    -> metta_with_trailed('$metta_answer_k', One,
+                         (eval(Goal, Out), metta_annotation(Space, K)))
+    ; throw(error(existence_error(algebra, Algebra),
+                  context(mt_eval_under,
+                          'declare an (algebra ...) row in &metta before selecting it')))
+    ).
 
 % Cursor owners are records rather than dynamic rows: close erases the owner
 % at once, where a retracted row stays in the clause index until clause
@@ -313,15 +345,15 @@ metta_c_new_cursor(Engine, cursor(Id, Ref, Engine)) :-
           Id is Previous + 1,
           recorda('$cmetta_cursors', Engine, Ref) ),
         Catcher,
-        ( Catcher == exit -> true ; engine_destroy(Engine) )).
+        ( Catcher == exit -> true ; metta_host_hold_close(Engine) )).
 
 % [] is exhaustion and [Answer] is one answer, so the C half needs no
 % sentinel. A closed cursor is a caller bug rather than an empty stream, so it
 % raises. The budget needs nothing here: it rides in the engine goal, so a
-% spent cursor raises out of engine_next/2 on the pull that spends it, and an
+% spent cursor raises from the held-cursor service on the pull that spends it, and an
 % unbounded cursor carries no wrapper and pays nothing.
-metta_c_next(Id, Engine, Seconds, Answer) :-
-    (   is_engine(Engine)
+metta_c_next(Id, Ref, Seconds, Answer) :-
+    (   recorded('$cmetta_cursors', Engine, Ref)
     ->  true
     ;   throw(error(existence_error(cmetta_cursor, Id),
                     context(metta_c_next/4, 'this cursor is closed')))
@@ -329,7 +361,7 @@ metta_c_next(Id, Engine, Seconds, Answer) :-
     metta_c_pull(Engine, Seconds, Answer).
 
 metta_c_pull(Engine, Seconds, Answer) :-
-    metta_c_timed(engine_next(Engine, Term), Seconds, Pull),
+    metta_c_timed(metta_host_hold_next(Engine, Term), Seconds, Pull),
     (   call(Pull)
     ->  Answer = [Term]
     ;   Answer = []
@@ -348,9 +380,23 @@ metta_c_close(Ref) :-
                    ;  Engine = none, Outcome = true )),
         Outcome,
         ( Engine == none -> true
-        ; catch(engine_destroy(Engine), error(existence_error(_, _), _), true) )).
+        ; metta_host_hold_close(Engine) )).
 
 %%%%%%%%%% Spaces %%%%%%%%%%
+
+% Callback scopes use the published coordinator. The notification distinguishes
+% rollback from a failure in observation after the database already committed.
+% [tested: tests/test_transactions.c; commit=WORKTREE]
+metta_c_transaction(Ticket) :-
+    metta_transaction_notified('$cmetta_tx_body'(Ticket),
+                               '$cmetta_tx_outcome'(Ticket, true),
+                               '$cmetta_tx_outcome'(Ticket, false)).
+metta_c_speculate(Ticket) :- metta_speculate('$cmetta_tx_body'(Ticket)).
+
+% Observe only the innermost transaction. C roots this goal during its callback
+% and compares compound identity before mutating its non-Prolog registry.
+metta_c_transaction_scope(Scope) :-
+    ( current_transaction(Goal) -> Scope = Goal ; Scope = [] ).
 %
 % metta_add_atoms/2 rather than a per-atom write: it is where the rule that a
 % batch may be judged, journalled and announced once lives, and bypassing it
@@ -365,13 +411,21 @@ metta_c_add_all(Space, Terms) :- metta_add_atoms(Space, Terms).
 % [measured 2026-08-27]; anything else means it was not, and the C half is
 % told which rather than being left to infer it from a count.
 metta_c_remove(Space, Term, Removed) :-
-    metta_host_remove_reported(Space, Term, Verdict),
-    ( Verdict == true -> Removed = true ; Removed = false ).
+    'subtract-atom'(Space, Term, Verdict),
+    ( Verdict == true -> Removed = true
+    ; Verdict == false -> Removed = false
+    ; Verdict = ['Error', _, Reason]
+    -> throw(error(cmetta_operation_failed(mt_del, Reason), none))
+    ; throw(error(type_error(boolean, Verdict), context(metta_c_remove/3, 'subtraction verdict')))
+    ).
 
 metta_c_count(Space, Count) :-
     aggregate_all(count, metta_host_stored(Space, _), Count).
 
 metta_c_clear(Space) :- metta_host_clear_space(Space).
+metta_c_drop_space(Space) :-
+    metta_assert_space_releasable(Space),
+    metta_release_space(Space).
 
 % The engine's own counters: statistics/2 inferences and cputime, the
 % garbage_collection triple, and the thread's answer-table bytes. The C half
@@ -472,8 +526,19 @@ prolog:error_message(cmetta_operation_failed(Name, Why)) -->
 % A cmetta_object is a blob the C half owns. It reaches MeTTa as an ordinary
 % grounded value, compares by identity and prints through the C write
 % callback. One carrying a function pointer is APPLICABLE, which is how C
-% answers what a Python callable answers: '$cmetta_object'(Blob) succeeds for
-% any of ours, and '$cmetta_apply'/3 refuses one with no function.
+% answers what a Python callable answers. Type names and liveness come from
+% the same owned box; inference, subtyping and dispatch stay in the engine.
+% [tested: test_native_object_types_reach_engine_dispatch; commit=WORKTREE]
+:- multifile seam:host_object/1.
+seam:host_object(Obj) :-
+    blob(Obj, cmetta_object),
+    '$cmetta_object_live'(Obj).
+
+:- multifile seam:grounded_class_type/2.
+seam:grounded_class_type(Obj, Type) :-
+    blob(Obj, cmetta_object),
+    '$cmetta_object_type'(Obj, Type).
+
 :- multifile seam:grounded_applicable/1.
 seam:grounded_applicable(Obj) :-
     blob(Obj, cmetta_object),
@@ -488,6 +553,13 @@ seam:grounded_apply(Obj, Args, [], Result) :-
     '$cmetta_apply'(Obj, Args, Result).
 
 %%%%%%%%%% Text coercion %%%%%%%%%%
+
+% A grounded callable returns one value. Explicit iteration consumes that
+% value, preserving the engine's grounded_apply ownership decision.
+% [tested: tests/test_iterators.c; commit=WORKTREE]
+:- multifile seam:extension_builtin/2.
+seam:extension_builtin('c-iter', writesState).
+'c-iter'(Stream, Out) :- '$cmetta_stream'(Stream, Out).
 %
 % A C string reaches Prolog as whichever of atom or string the C half chose;
 % both spellings arrive here so neither side has to care.
@@ -508,6 +580,8 @@ metta_c_atom(In, Out) :- atom_string(Out, In).
 % leads with, and a pure lookup, so anything may ask it without performing an
 % operation, which is what the foreign-space protocol requires.
 :- dynamic metta_c_provider/1.
+:- dynamic metta_c_capability/2.
+:- dynamic metta_c_transactional_provider/1.
 
 % The engine's ownership seam is answered by a ROW asserted when a provider
 % opens, not by a resident clause reading the registry above. The engine asks
@@ -534,7 +608,7 @@ metta_c_atom(In, Out) :- atom_string(Out, In).
 % the engine's ownership row. A space this seat already backs is refused rather
 % than re-pointed at a second store, because the atoms live in the FIRST
 % provider's memory and nothing would move them.
-metta_c_open_provider(Space) :-
+metta_c_open_provider(Space, Capabilities, Transactional) :-
     (   metta_c_provider(Space)
     ->  throw(error(permission_error(open, metta_space, Space),
                     context(metta_c_open_provider/1,
@@ -542,7 +616,14 @@ metta_c_open_provider(Space) :-
     ;   metta_c_require_space_name(Space),
         metta_claim_space(Space, cmetta),
         assertz(metta_c_provider(Space)),
-        assertz(seam:foreign_space(Space))
+        assertz(seam:foreign_space(Space)),
+        forall(member(Capability, Capabilities),
+               ( metta_require_foreign_capability(Space, Capability),
+                 assertz(metta_c_capability(Space, Capability)) )),
+        ( Transactional == true
+        -> assertz(metta_c_transactional_provider(Space)),
+           metta_add_atoms('&metta', [[writes, Space, transactional]])
+        ; true )
     ).
 
 % Giving it back, in the reverse order and quietly, because a teardown path may
@@ -550,6 +631,10 @@ metta_c_open_provider(Space) :-
 % FACT, and retractall/1 unifies HEADS alone, so it would take another seat's
 % bridging clause for the same name with it.
 metta_c_close_provider(Space) :-
+    ( retract(metta_c_transactional_provider(Space))
+    -> metta_host_remove_reported('&metta', [writes, Space, transactional], _)
+    ; true ),
+    retractall(metta_c_capability(Space, _)),
     retractall(metta_c_provider(Space)),
     ( retract(seam:foreign_space(Space)) -> true ; true ),
     metta_disclaim_space(Space, cmetta).
@@ -572,56 +657,50 @@ prolog:error_message(cmetta_bad_space_name(Name)) -->
     [ 'a space a C library backs must be named with a leading ampersand, and \c
        ~w is not'-[Name] ].
 
-% Everything, declared rather than inferred, so the engine refuses an
-% operation this provider does not answer instead of reading the failure as
-% "there is nothing there". A C provider that leaves a callback NULL answers
-% false for it, which is a refusal the engine reports rather than a silence.
+% The C vtable is the source of capabilities. Missing callbacks are refused by
+% the engine before dispatch, while a callback's error crosses as an exception.
+% [tested: tests/test_providers.c; commit=WORKTREE]
 :- multifile seam:foreign_capability/2.
 seam:foreign_capability(Space, Capability) :-
     metta_c_provider(Space),
-    % policy-inventory-exempt: mechanism-internal; reason=a C provider implements the five fixed foreign-provider protocol hooks rather than choosing an engine policy; evidence=extensions/cmetta/bridge.pl:foreign_capability/2
-    member(Capability, [add, remove, match, enumerate, clear]).
+    metta_c_capability(Space, Capability).
 
 seam:foreign_add(Space, Atom) :-
     metta_c_provider(Space), !,
-    swrite(Atom, Text),
-    '$cmetta_provider'(Space, add, Text, _).
+    '$cmetta_provider'(Space, add, Atom, _).
 
 seam:foreign_remove(Space, Atom, Removed) :-
     metta_c_provider(Space), !,
-    swrite(Atom, Text),
-    (   '$cmetta_provider'(Space, remove, Text, _)
-    ->  Removed = true
-    ;   Removed = false
-    ).
+    '$cmetta_provider'(Space, remove, Atom, Removed).
 
 seam:foreign_atoms(Space, Atom) :-
     metta_c_provider(Space), !,
-    metta_c_provider_atom(Space, Atom).
+    '$cmetta_provider_query'(Space, [_, 0], Atom).
 
-% The engine hands one non-conjunctive pattern at a time; candidates enumerate
-% here and unify in place. The options are ignored, which is always correct
-% because the engine applies its own bound afterwards, and a C store with no
-% index has nothing to narrow with anyway.
-seam:foreign_match(Space, Pattern, _Options) :-
+% The provider may over-approximate; C's nondeterministic dispatch unifies each
+% candidate against Pattern before yielding. The bound remains advisory.
+seam:foreign_match(Space, Pattern, Options) :-
     metta_c_provider(Space), !,
-    metta_c_provider_atom(Space, Candidate),
-    Pattern = Candidate.
+    ( memberchk(limit(Limit), Options) -> true ; Limit = 0 ),
+    '$cmetta_provider_query'(Space, [Pattern, Limit], Pattern).
 
 seam:foreign_clear(Space) :-
     metta_c_provider(Space), !,
     '$cmetta_provider'(Space, clear, 0, _).
 
-% Walking a C store by index, which is the shape mt_provider.atom_at takes:
-% answer the atom at a position and nothing past the end. The generator stops
-% at the first index the provider declines, so a store of n atoms costs n+1
-% calls and never a length query the C side may not be able to answer.
-metta_c_provider_atom(Space, Atom) :-
-    between(0, inf, Index),
-    (   '$cmetta_provider'(Space, atom_at, Index, Text)
-    ->  sread(Text, Atom)
-    ;   !, fail
-    ).
+% Capture once before begin. Completion retains the registration itself, so
+% replacing a name cannot redirect its commit or rollback to another backend.
+% [source: engine/ext_points.pl:foreign_participant/3; commit=WORKTREE]
+:- multifile seam:foreign_participant/3.
+seam:foreign_participant(Space, Identity, user:metta_c_capture_provider(Space, Identity)) :-
+    metta_c_provider(Space),
+    '$cmetta_provider_identity'(Space, Identity).
+
+metta_c_capture_provider(Space, Identity,
+        transaction(user:'$cmetta_provider_finish'(Held, begin),
+                    user:'$cmetta_provider_finish'(Held, commit),
+                    user:'$cmetta_provider_finish'(Held, rollback))) :-
+    '$cmetta_provider_capture'(Space, Identity, Held).
 
 % How a C object renders. An ownership seam: the C half fails when no row
 % names that object's type, and the display renderer falls back to the term's
@@ -634,3 +713,21 @@ seam:grounded_text(Obj, Text) :-
 % A directory of MeTTa or Prolog sources a library ships, under an alias.
 metta_c_library_path(Alias, Directory, Ok) :-
     register_metta_library_path(Alias, Directory, Ok).
+
+% Clauses are the engine's event subscribers, including its commit buffering.
+% Each clause head carries its space and pattern, so the engine can index it.
+% Registration and erasure are trailed by the same transaction as C rows.
+% [source: engine/ext_points.pl:atom_added/2, atom_removed/2; commit=WORKTREE]
+:- dynamic metta_c_subscription/3.
+metta_c_subscribe(Name, Token, Space, Pattern) :-
+    metta_c_require_space_name(Space),
+    metta_require_events(Space, 'be subscribed to'),
+    assertz((seam:atom_added(Space, Pattern) :-
+              user:'$cmetta_notify'(Name, Token, true, Pattern)), Added),
+    assertz((seam:atom_removed(Space, Pattern) :-
+              user:'$cmetta_notify'(Name, Token, false, Pattern)), Removed),
+    assertz(metta_c_subscription(Name, Added, Removed)).
+
+metta_c_unsubscribe(Name) :-
+    retract(metta_c_subscription(Name, Added, Removed)),
+    erase(Added), erase(Removed).

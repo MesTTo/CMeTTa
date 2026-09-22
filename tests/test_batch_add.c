@@ -30,7 +30,7 @@ static void expect(bool condition, const char *claim)
 
 static mt_list allocated_list(size_t len)
 { mt_list list = {0};
-  if ( len ) list.items = calloc(len, sizeof(*list.items));
+  if ( len ) list.items = mt_calloc(len, sizeof(*list.items));
   if ( list.items ) list.len = len;
   else if ( len ) failures++;
   return list;
