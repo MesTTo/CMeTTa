@@ -983,10 +983,12 @@ typedef struct mt_op {
   void        *user;    /* handed back to fn on every application         */
 } mt_op;
 
-/* Publish, so `(name a b)` in MeTTa calls it. The name reaches MeTTa through
-   C's own casing convention, so `car_atom` publishes `car-atom`; a name
-   outside C's identifier grammar crosses untouched, which is the escape for
-   `prime?` and `%Undefined%`. */
+/* Publish, so `(name a b)` in MeTTa calls it. The name reaches MeTTa EXACTLY
+   as written, which is what the field above says and what ABI 1 changed:
+   `car_atom` publishes `car_atom`, and a hyphenated head is registered by
+   writing `car-atom` here. This paragraph described the automatic conversion
+   the break removed [source: extensions/cmetta/MIGRATION.md, "mt_def now
+   preserves the published name exactly"]. */
 MT_API bool mt_def(metta *runtime, mt_op op);
 
 /* Withdraw a published function at every arity, giving the name back. */
