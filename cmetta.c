@@ -57,8 +57,8 @@
  *   close explicitly. C allocations carry their allocator and drop performs
  *   no allocation [tested: tests/test_ownership.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
  * Fails when: a dependency leaks despite PL_CLEANUP_SUCCESS. The installed SWI
- *   fails the independent make runtime-memory gate; see the memory result in
- *   CAPABILITIES.md [measured: 2026-09-22, three exit-99 probes;
+ *   fails the independent make runtime-memory gate: three probes exit 99
+ *   [measured: 2026-09-22;
  *   commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
  *
  * Guarded by: nothing, and cmetta.h's "Guarded by" says why: an atom is

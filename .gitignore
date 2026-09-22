@@ -40,3 +40,8 @@ __pycache__/
 agenticmind.json
 ai-tmp/
 ai-battery-*/
+
+# Working notes kept beside the source but not shipped. The ai- prefix is
+# this workspace's mark for a personal file, so the rule covers the class
+# rather than naming each one as it appears.
+ai-*.md
