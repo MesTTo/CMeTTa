@@ -15,9 +15,10 @@ or an expression built from other atoms, and a space is the metagraph they
 form together.
 
 You write equations rather than statements, and the engine matches a pattern
-against the whole space at once. A query answers with every match rather than
-the first, so a rule that fits three ways yields three results and search is
-something you write down instead of something you implement.
+against the whole space at once. Every match is an answer, so a rule that fits
+three ways yields three results, and whether you take one of them, the first,
+or all is the caller's choice rather than the language's. Search is something
+you write down instead of something you implement.
 
 One space holds symbolic rules and grounded values side by side: a number, a
 matrix, a handle to a trained model. A rule can match on what a model produced
