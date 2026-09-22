@@ -5,7 +5,7 @@
  * Assumes:
  *   - SWI-Prolog 10 with threads
  *     [source: /usr/lib/swi-prolog/include/SWI-Prolog.h, PLVERSION 100114;
- *     commit=WORKTREE]
+ *     commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
  *   - extensions/cmetta/bridge.pl is loaded by extensions/cmetta/extension.pl, which
  *     the engine globs at boot, and which finds this file because mt_open()
  *     registers '$cmetta_present'/0 before consulting engine/metta.pl
@@ -26,7 +26,7 @@
  *     stringified into something that cannot go home again
  *   - an ampersand-prefixed atom becomes MT_SPACE only when the engine
  *     says it is a space [tested: test_a_user_space_decodes_as_a_space;
- *     commit=WORKTREE]
+ *     commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
  *   - a door that reaches the engine before mt_open(), or after mt_close(),
  *     REFUSES with MT_MISUSE naming mt_open() instead of dereferencing a
  *     thread environment that is not there
@@ -35,7 +35,7 @@
  *   - term walks do not recurse on the C stack. Decode, encode, equality and
  *     binding use explicit stacks; drop links already-dead nodes directly
  *     [tested: tests/test_cmetta.c, test_a_deep_term_does_not_overrun_the_stack,
- *     tests/test_ownership.c; commit=WORKTREE]
+ *     tests/test_ownership.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
  *   - allocator sizes, callback lists, space counts, engine counters and stack
  *     defaults are validated at their representation boundaries
  *     [tested: tests/test_internal_contracts.c and
@@ -48,18 +48,18 @@
  *   - engine cursors retain the recorded owner reference across frames,
  *     unregister it after close even if Prolog raises, and never touch it
  *     after its runtime has ended [tested: tests/test_cursor_ids.c,
- *     tests/test_transactions.c; commit=WORKTREE].
+ *     tests/test_transactions.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
  *
  * Owns resources: the process's Prolog runtime, shut down through mt_close(); the
  *   op table; one malloc'ed box per live mt_object, released when both the
  *   C atom and the engine blob have let go; each engine cursor's registered
  *   owner atom until mt_answers_free() or runtime cleanup; native iterators
  *   close explicitly. C allocations carry their allocator and drop performs
- *   no allocation [tested: tests/test_ownership.c; commit=WORKTREE].
+ *   no allocation [tested: tests/test_ownership.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
  * Fails when: a dependency leaks despite PL_CLEANUP_SUCCESS. The installed SWI
  *   fails the independent make runtime-memory gate; see the memory result in
  *   CAPABILITIES.md [measured: 2026-09-22, three exit-99 probes;
- *   commit=WORKTREE].
+ *   commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
  *
  * Guarded by: nothing, and cmetta.h's "Guarded by" says why: an atom is
  *   immutable after construction and its refcount is atomic, the error state
@@ -261,7 +261,7 @@ const char *mt_ground(void)
    Lua's allocator contract preserves a block on failed growth:
    https://github.com/lua/lua/blob/6e22fedb74cf0c9b6656e9fce8b7331db847c605/lmem.c
    Time: one allocator call. Space: one aligned header per live allocation.
-   [tested: tests/test_ownership.c; commit=WORKTREE] */
+   [tested: tests/test_ownership.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 typedef union allocation_header {
   max_align_t alignment;
   struct { mt_allocator allocator; size_t size; } value;
@@ -600,7 +600,7 @@ mt_atom *mt_keep(const mt_atom *atom)
    release a DAG. A live node's link is never touched.
    Time: Theta(V + E), V released atoms and E their child references.
    Space: O(1) auxiliary bytes; no allocation and no recursive calls.
-   [tested: tests/test_ownership.c; commit=WORKTREE] */
+   [tested: tests/test_ownership.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 void mt_drop(const mt_atom *atom)
 { mt_atom *pending = (mt_atom *)atom;
   if ( !pending || MT_DEC(&pending->refs) != 1 ) return;
@@ -725,7 +725,7 @@ mt_atom *mt_bigint(const char *decimal)
   }
   /* Match the engine's integer representation: small values are MT_INT and
      leading zeroes never change identity. Time and space: O(D) decimal digits.
-     [tested: tests/test_native_parity.c; commit=WORKTREE] */
+     [tested: tests/test_native_parity.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
   previous_errno = errno;
   errno = 0;
   value = strtoimax(decimal, NULL, 10);
@@ -2369,7 +2369,7 @@ static mt_status ball_status(record_t saved, const char *name, int arity);
 /* Validate before SWI's replacement decoder can silently change malformed
    input. Width and second-byte bounds follow RFC 3629 section 4, including
    shortest encodings, surrogate exclusion and the U+10FFFF ceiling.
-   [source: https://www.rfc-editor.org/rfc/rfc3629.txt; commit=WORKTREE]
+   [source: https://www.rfc-editor.org/rfc/rfc3629.txt; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
    Time: Θ(n) byte inspections, n = length. Space: O(1). */
 static bool valid_utf8(const char *text, size_t length)
 { const unsigned char *bytes = (const unsigned char *)text;
@@ -2400,7 +2400,7 @@ static bool valid_utf8(const char *text, size_t length)
 /* Logical text is UTF-8; filenames use SWI's platform representation. The
    legacy byte constructors interpret UTF-8 as Latin-1. Preserve a conversion
    exception before another FLI call can overwrite it.
-   [tested: tests/test_native_parity.c; commit=WORKTREE] */
+   [tested: tests/test_native_parity.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 static bool put_chars(term_t out, int flags, size_t length, const char *text)
 { if ( length == (size_t)-1 ) length = strlen(text);
   if ( (flags & REP_UTF8) && !valid_utf8(text, length) ) return false;
@@ -2891,7 +2891,7 @@ mt_status mt_fail(mt_call *call, const char *message)
    https://www.swi-prolog.org/pldoc/man?section=foreign-control
    Time: O(A) decoding and cleanup, A argument atoms plus their descendants;
    each resume costs the producer's next operation and one atom encoding.
-   [tested: tests/test_iterators.c; commit=WORKTREE] */
+   [tested: tests/test_iterators.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 typedef struct native_call {
   mt_call call;
   char *name;
@@ -3096,7 +3096,7 @@ static foreign_t pl_cmetta_object_live(term_t t)
 { return blob_box(t) ? TRUE : FALSE; }
 
 /* The box owns the type name; the engine owns type inference and dispatch.
-   [tested: test_native_object_types_reach_engine_dispatch; commit=WORKTREE] */
+   [tested: test_native_object_types_reach_engine_dispatch; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 static foreign_t pl_cmetta_object_type(term_t t, term_t type)
 { mt_box_t *box = blob_box(t);
   term_t name;
@@ -4207,7 +4207,7 @@ static mt_status open_cursor(mt_space *space, const char *pred,
          PL_get_atom(parts + 1, &ref) )
     { /* The record owns either a suspended engine or transaction-held rows.
          A direct reference lookup is independent of the number of cursors.
-         [tested: tests/test_cursor_ids.c; commit=WORKTREE] */
+         [tested: tests/test_cursor_ids.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
       PL_register_atom(ref);
       answers->kind = ANSWERS_ENGINE;
       answers->cursor_id = id;
@@ -4266,7 +4266,7 @@ mt_answers *mt_space_match(mt_space *space, mt_atom *pattern)
 
 /* The query is one engine expression, so pattern and guard share variable cells.
    Time and space: O(1) new nodes; the existing immutable pattern is retained.
-   [tested: test_prepared_queries_join_and_guard_current_facts; commit=WORKTREE] */
+   [tested: test_prepared_queries_join_and_guard_current_facts; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 mt_answers *mt_space_query(mt_space *space, mt_atom *pattern, mt_atom *guard)
 { mt_answers *out = NULL;
   if ( handle_ready(space, "mt_space_query") && atom_given(pattern, "mt_space_query") )
@@ -5393,7 +5393,7 @@ static foreign_t pl_cmetta_provider_query(term_t space, term_t args,
 /* The same captured registration owns a query and a transaction completion.
    The private release callback identifies the box structurally; a user-created
    object with the same display name cannot become a participant.
-   [source: engine/ext_points.pl:foreign_participant/3; commit=WORKTREE] */
+   [source: engine/ext_points.pl:foreign_participant/3; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 static void provider_capture_release(void *row)
 { row_release(row); }
 
@@ -5455,7 +5455,7 @@ static foreign_t pl_cmetta_provider_finish(term_t held, term_t operation)
 /* Updates carry atoms directly, including opaque objects and counted text.
    Retaining the row also permits a callback to withdraw its own registration.
    Time: O(A) conversion, A atom nodes; no print/parse round trip.
-   [tested: tests/test_providers.c; commit=WORKTREE] */
+   [tested: tests/test_providers.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 static foreign_t pl_cmetta_provider(term_t space, term_t operation,
                                     term_t payload, term_t result)
 { mt_row_entry *row = provider_row(space);
@@ -5496,7 +5496,7 @@ static foreign_t pl_cmetta_provider(term_t space, term_t operation,
    The token distinguishes retired hook clauses from a same-name replacement.
    Time: O(R + A), R registration lookup and A decoded atom nodes per event.
    Space: O(A); a notification queues nothing in this library.
-   [tested: tests/test_subscriptions.c; commit=WORKTREE] */
+   [tested: tests/test_subscriptions.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 typedef struct subscription_entry {
   mt_subscription subscription;
   uint64_t token;
@@ -5884,7 +5884,7 @@ static bool undefine_operation(metta *runtime, const char *name)
    Refcounted rows retain payloads across replacement; rollback needs no
    allocation. The engine owns its database rollback separately.
    Time and space: Theta(R + S), R registrations and S copied name bytes.
-   [tested: tests/test_transactions.c; commit=WORKTREE] */
+   [tested: tests/test_transactions.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 static void registry_clear(metta *registry)
 { for (size_t i = 0; i < registry->nops; i++) mt_free(registry->ops[i].name);
   mt_free(registry->ops);
@@ -5974,7 +5974,7 @@ struct transaction_frame {
    identity while this synchronous foreign callback roots it across nested calls.
    Time and space: O(1). No goal traversal or transaction-stack enumeration.
    [source: SWI-Prolog V10.1.14 src/pl-transaction.c:current_transaction,
-   src/pl-fli.c:PL_same_compound; commit=WORKTREE] */
+   src/pl-fli.c:PL_same_compound; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
 static bool registry_writable(const char *door)
 { fid_t f = frame_open(door);
   term_t scope = f ? PL_new_term_ref() : 0;

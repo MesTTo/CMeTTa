@@ -260,7 +260,7 @@ sanitize:
 
 # A runtime defect must remain reproducible independently of the binding.
 # This gate retains every scenario's log and fails on any Memcheck error.
-# [tested: make runtime-memory; commit=WORKTREE]
+# [tested: make runtime-memory; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
 $(TEST_TMP)/swi-memory-probe: tests/swi_memory_probe.c
 	@mkdir -p "$(TEST_TMP)"
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
@@ -297,7 +297,7 @@ $(SOFILE): cmetta.c cmetta.h .enginedir-stamp
 	    -o $@ cmetta.c $(LDFLAGS) $(LDLIBS)
 
 # Directory overrides are inputs even when no source file changes.
-# [tested: make install-check; commit=WORKTREE]
+# [tested: make install-check; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
 cmetta.pc: Makefile cmetta.h FORCE
 	@printf '%s\n' \
 	    'prefix=$(PREFIX)' \

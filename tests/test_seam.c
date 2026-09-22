@@ -14,7 +14,7 @@
  *   not a library and one that exports no mt_extension_init.
  * Owns resources: closes its provider, its spaces and its runtime; the
  *   provider's store is static and each allocated iterator index is freed
- *   by its close callback [tested: sh test.sh; commit=WORKTREE].
+ *   by its close callback [tested: sh test.sh; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
  */
 
 #define MT_SHORTHAND

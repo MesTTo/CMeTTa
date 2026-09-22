@@ -1,6 +1,6 @@
 /* Purpose: exercise extension initialization as one registration transaction.
  * Guarantees: a refused shared library leaves no registrations or equations;
- * a successful library remains callable [tested: test_extensions; commit=WORKTREE].
+ * a successful library remains callable [tested: test_extensions; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
  * Owns resources: runtime shutdown releases every counted C allocation;
  * shared libraries remain mapped until process exit for escaped callbacks.
  */

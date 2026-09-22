@@ -3,7 +3,7 @@
  * Owns resources: scopes close before cursors, spaces and runtime.
  * Guarantees: source clauses and C registrations share the transaction verdict
  * [tested: test_transactions,
- * test_engine_scopes_cannot_abandon_c_registrations; commit=WORKTREE].
+ * test_engine_scopes_cannot_abandon_c_registrations; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
  */
 #include <cmetta.h>
 #include <assert.h>

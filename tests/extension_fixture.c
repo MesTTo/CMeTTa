@@ -1,7 +1,7 @@
 /* Purpose: a separately compiled consumer of the public extension ABI.
  * Guarantees: initialization publishes a callable, an equation and a library
  * together, or refuses after publication to exercise rollback
- * [tested: tests/test_extensions.c; commit=WORKTREE].
+ * [tested: tests/test_extensions.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
  */
 #include <cmetta.h>
 
