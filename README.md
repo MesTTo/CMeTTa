@@ -6,6 +6,37 @@ Purpose: show the C API through examples, with cmetta.h as the contract.
 
 A C program boots MeTTa in its own process, builds and reads terms, runs programs, pulls answers, and publishes functions the language can call.
 
+<!-- shared:what-is-metta -->
+## What MeTTa is
+
+MeTTa is a language for rewriting metagraphs. A program and its data are the
+same thing: atoms in a space, where an atom is a symbol, a number, a variable
+or an expression built from other atoms, and a space is the metagraph they
+form together.
+
+You write equations rather than statements, and the engine matches a pattern
+against the whole space at once. A query answers with every match rather than
+the first, so a rule that fits three ways yields three results and search is
+something you write down instead of something you implement.
+
+One space holds symbolic rules and grounded values side by side: a number, a
+matrix, a handle to a trained model. A rule can match on what a model produced
+and a model can be called from inside a rule, so the neurosymbolic case is
+ordinary here rather than an integration between two systems. Both halves are
+atoms in the same metagraph, read by the same matcher.
+<!-- /shared:what-is-metta -->
+
+## Why C
+
+C is what embedded and systems code is written in, and it is the interface
+every other language already knows how to call. A C program opens the engine
+in its own process, builds terms, and publishes its own functions for the
+language to call back into.
+
+So anything with a C FFI reaches MeTTa through this without a server, a socket
+or a runtime to host: a game engine, a database extension, a device that has a
+compiler and no interpreter.
+
 ```c
 #define MT_SHORTHAND
 #include <cmetta.h>
