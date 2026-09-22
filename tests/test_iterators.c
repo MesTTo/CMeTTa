@@ -3,7 +3,7 @@
  * Guarantees: empty, finite, unbounded, interleaved and failing producers close
  * once; late errors never become successful collections
  * [tested: test_native_iterators_close_on_every_exit,
- * test_engine_iterators_keep_arguments_until_close; commit=WORKTREE].
+ * test_engine_iterators_keep_arguments_until_close; commit=1a60e2a3cce69d5d6bda67100186939d707f4397].
  * Owns resources: producer states, cursors, function atoms and runtime.
  */
 #include <cmetta.h>

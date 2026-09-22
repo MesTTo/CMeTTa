@@ -3,7 +3,7 @@
  * integers and borrowed atoms survive transport, forms never execute, and a
  * single-occurrence removal refuses an unbound atom
  * [tested: test_native_atoms_match_engine_terms,
- * test_unicode_terms_and_names; commit=WORKTREE].
+ * test_unicode_terms_and_names; commit=1a60e2a3cce69d5d6bda67100186939d707f4397].
  * Owns resources: releases every atom, list, substitution and runtime.
  */
 #include <cmetta.h>

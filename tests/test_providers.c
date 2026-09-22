@@ -1,7 +1,7 @@
 /* Purpose: exercise typed C providers through the engine's foreign-space seam.
  * Guarantees: candidates are unified, errors are preserved, missing capabilities
  * refuse, and captured participants survive replacement
- * [tested: test_providers; commit=WORKTREE].
+ * [tested: test_providers; commit=1a60e2a3cce69d5d6bda67100186939d707f4397].
  * Owns resources: each store owns retained atoms and a stack of transaction
  * snapshots; each query owns a snapshot until the engine closes its iterator.
  */

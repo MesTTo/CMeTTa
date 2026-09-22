@@ -2,7 +2,7 @@
  * Owns resources: closes the subscription, drops terms and lists, releases the
  * named space and closes the runtime on success or failure.
  * Guarantees: the reported joins, event count, cell value and annotation are
- * checked against engine answers [tested: make test; commit=WORKTREE].
+ * checked against engine answers [tested: make test; commit=1a60e2a3cce69d5d6bda67100186939d707f4397].
  */
 #include <cmetta.h>
 #include <stdio.h>

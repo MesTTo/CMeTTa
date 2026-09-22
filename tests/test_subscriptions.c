@@ -1,7 +1,7 @@
 /* Purpose: exercise committed event delivery and explicit C subscription life.
  * Guarantees: repeated variables filter both edges; rollback delivers nothing,
  * cancellation can roll back, callback refusal preserves committed writes, and
- * self-cancellation releases once [tested: test_subscriptions; commit=WORKTREE].
+ * self-cancellation releases once [tested: test_subscriptions; commit=1a60e2a3cce69d5d6bda67100186939d707f4397].
  * Owns resources: all allocations are counted through runtime shutdown.
  */
 #include <cmetta.h>
