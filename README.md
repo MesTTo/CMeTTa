@@ -452,7 +452,7 @@ claim those services exist in the shared engine.
 The engine publishes effect coverage, compensation lookup and transaction
 services. Complete world reification, diff, commit, and saga receipt recovery
 currently live in Python. They require shared engine services before C can
-offer them under the same language semantics. The [capability report](ai-cmetta-depth-report.md)
+offer them under the same language semantics. The [capability report](CAPABILITIES.md)
 names that boundary and the source files; there are no success-shaped substitutes.
 
 ## C functions

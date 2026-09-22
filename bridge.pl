@@ -70,7 +70,7 @@
 % Owns resources: one recorded owner per open cursor. metta_host_hold/3 owns
 %   either a resumable SWI engine or transaction-scoped materialized answers;
 %   metta_c_close/1 releases that owner through metta_host_hold_close/1
-%   [tested: tests/test_transactions.c; commit=1a60e2a3cce69d5d6bda67100186939d707f4397].
+%   [tested: tests/test_transactions.c; commit=WORKTREE].
 % Guarded by: $cmetta_cursors serialises the close winner's reference lookup
 %   and erase. The C half registers the owner reference atom
 %   across frames and checks their runtime generation before using them.
@@ -145,7 +145,7 @@ metta_c_read(Source, Term, Names) :-
 
 % The source parser owns form boundaries; the atom reader owns each form.
 % No directive is executed and a later syntax error returns no prefix.
-% [tested: tests/test_native_parity.c; commit=1a60e2a3cce69d5d6bda67100186939d707f4397]
+% [tested: tests/test_native_parity.c; commit=WORKTREE]
 metta_c_read_forms(Source, Terms, Names) :-
     metta_host_read_forms(Source, Pairs),
     maplist(metta_c_read_form, Pairs, Terms, NameLists),
@@ -316,7 +316,7 @@ metta_c_open_match(Pattern, Space, Inferences, Id) :-
 
 % The engine owns algebra selection, carrier validation and annotation flow.
 % The pair is data carried by the ordinary answer cursor.
-% [tested: test_algebras_are_scoped_engine_data; commit=1a60e2a3cce69d5d6bda67100186939d707f4397]
+% [tested: test_algebras_are_scoped_engine_data; commit=WORKTREE]
 metta_c_open_under([Algebra, Goal], Space, Inferences, Id) :-
     space_module(Space, Module),
     metta_host_inference_budget(
@@ -386,7 +386,7 @@ metta_c_close(Ref) :-
 
 % Callback scopes use the published coordinator. The notification distinguishes
 % rollback from a failure in observation after the database already committed.
-% [tested: tests/test_transactions.c; commit=1a60e2a3cce69d5d6bda67100186939d707f4397]
+% [tested: tests/test_transactions.c; commit=WORKTREE]
 metta_c_transaction(Ticket) :-
     metta_transaction_notified('$cmetta_tx_body'(Ticket),
                                '$cmetta_tx_outcome'(Ticket, true),
@@ -528,7 +528,7 @@ prolog:error_message(cmetta_operation_failed(Name, Why)) -->
 % callback. One carrying a function pointer is APPLICABLE, which is how C
 % answers what a Python callable answers. Type names and liveness come from
 % the same owned box; inference, subtyping and dispatch stay in the engine.
-% [tested: test_native_object_types_reach_engine_dispatch; commit=1a60e2a3cce69d5d6bda67100186939d707f4397]
+% [tested: test_native_object_types_reach_engine_dispatch; commit=WORKTREE]
 :- multifile seam:host_object/1.
 seam:host_object(Obj) :-
     blob(Obj, cmetta_object),
@@ -556,7 +556,7 @@ seam:grounded_apply(Obj, Args, [], Result) :-
 
 % A grounded callable returns one value. Explicit iteration consumes that
 % value, preserving the engine's grounded_apply ownership decision.
-% [tested: tests/test_iterators.c; commit=1a60e2a3cce69d5d6bda67100186939d707f4397]
+% [tested: tests/test_iterators.c; commit=WORKTREE]
 :- multifile seam:extension_builtin/2.
 seam:extension_builtin('c-iter', writesState).
 'c-iter'(Stream, Out) :- '$cmetta_stream'(Stream, Out).
@@ -659,7 +659,7 @@ prolog:error_message(cmetta_bad_space_name(Name)) -->
 
 % The C vtable is the source of capabilities. Missing callbacks are refused by
 % the engine before dispatch, while a callback's error crosses as an exception.
-% [tested: tests/test_providers.c; commit=1a60e2a3cce69d5d6bda67100186939d707f4397]
+% [tested: tests/test_providers.c; commit=WORKTREE]
 :- multifile seam:foreign_capability/2.
 seam:foreign_capability(Space, Capability) :-
     metta_c_provider(Space),
@@ -690,7 +690,7 @@ seam:foreign_clear(Space) :-
 
 % Capture once before begin. Completion retains the registration itself, so
 % replacing a name cannot redirect its commit or rollback to another backend.
-% [source: engine/ext_points.pl:foreign_participant/3; commit=1a60e2a3cce69d5d6bda67100186939d707f4397]
+% [source: engine/ext_points.pl:foreign_participant/3; commit=WORKTREE]
 :- multifile seam:foreign_participant/3.
 seam:foreign_participant(Space, Identity, user:metta_c_capture_provider(Space, Identity)) :-
     metta_c_provider(Space),
@@ -717,7 +717,7 @@ metta_c_library_path(Alias, Directory, Ok) :-
 % Clauses are the engine's event subscribers, including its commit buffering.
 % Each clause head carries its space and pattern, so the engine can index it.
 % Registration and erasure are trailed by the same transaction as C rows.
-% [source: engine/ext_points.pl:atom_added/2, atom_removed/2; commit=1a60e2a3cce69d5d6bda67100186939d707f4397]
+% [source: engine/ext_points.pl:atom_added/2, atom_removed/2; commit=WORKTREE]
 :- dynamic metta_c_subscription/3.
 metta_c_subscribe(Name, Token, Space, Pattern) :-
     metta_c_require_space_name(Space),

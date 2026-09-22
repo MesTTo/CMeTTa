@@ -2,7 +2,7 @@
  * teardown independently of the engine.
  * Guarantees: fault injection visits every allocation in construction and a
  * deterministic DAG sweep releases every block [tested: test_dag_sweep;
- * commit=1a60e2a3cce69d5d6bda67100186939d707f4397].
+ * commit=WORKTREE].
  * Owns resources: every atom and buffer is released before its allocator state.
  */
 #include <cmetta.h>
@@ -145,7 +145,7 @@ static void test_numeric_conversion(void)
      by this execution before requiring an extended-precision refusal.
      Native execution still checks the nonrepresentable value.
      [source: Valgrind manual-core.html, Limitations, x86/AMD64 floating point;
-     commit=1a60e2a3cce69d5d6bda67100186939d707f4397] */
+     commit=WORKTREE] */
   volatile long double wider = 1.0L + LDBL_EPSILON;
   a = mt_atom_of(wider);
   if ( wider > 1.0L )

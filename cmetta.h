@@ -5,7 +5,7 @@
  * Assumes:
  *   - SWI-Prolog 10 with its development headers, threads enabled
  *     [source: /usr/lib/swi-prolog/include/SWI-Prolog.h, PLVERSION 100114;
- *     commit=1a60e2a3cce69d5d6bda67100186939d707f4397]
+ *     commit=WORKTREE]
  *   - C11. _Generic carries receiver dispatch and argument coercions.
  *   - the engine tree is reachable, either at the path given to mt_open()
  *     or at $METTA_PATH
@@ -26,7 +26,7 @@
  *   - term walks are iterative. Building, reading, comparing and writing
  *     use explicit stacks; release links dead nodes with O(1) auxiliary space
  *     [tested: tests/test_cmetta.c, test_a_deep_term_does_not_overrun_the_stack,
- *     tests/test_ownership.c; commit=1a60e2a3cce69d5d6bda67100186939d707f4397]
+ *     tests/test_ownership.c; commit=WORKTREE]
  *   - an atom is immutable and refcounted, so a term built once may be run
  *     many times and shared between threads without copying
  *   - building and reading atoms starts no engine
@@ -37,7 +37,7 @@
  *     Inside a transaction, the engine collects into its held-cursor service:
  *     commit retains answers and rollback discards them. SWI cannot yield
  *     across that closed goal [tested: tests/test_transactions.c;
- *     commit=1a60e2a3cce69d5d6bda67100186939d707f4397].
+ *     commit=WORKTREE].
  *
  * Owns resources: one Prolog runtime per process, shut down through mt_close();
  *   one engine, held result, or native iterator per cursor, released by
@@ -280,7 +280,7 @@ MT_API const char *mt_kind_str(mt_kind kind);
 /* Logical text, names and source use UTF-8. Constructors retain bytes without
    starting SWI; transport to the engine refuses malformed encoding. Filenames
    use SWI's platform representation. Lengths always count bytes.
-   [tested: tests/test_native_parity.c; commit=1a60e2a3cce69d5d6bda67100186939d707f4397] */
+   [tested: tests/test_native_parity.c; commit=WORKTREE] */
 
 /* --- building. None of these start the engine. --- */
 
@@ -391,7 +391,7 @@ MT_API mt_atom *mt_keep(const mt_atom *atom);
 /* Drop a reference. NULL-safe. Teardown allocates nothing and uses no recursive
    calls, including for shared and deeply nested expressions. Release callbacks
    run synchronously when their final owner goes away.
-   [tested: tests/test_ownership.c; commit=1a60e2a3cce69d5d6bda67100186939d707f4397] */
+   [tested: tests/test_ownership.c; commit=WORKTREE] */
 MT_API void mt_drop(const mt_atom *atom);
 
 /* --- reading. Each returns the value the way atoi() and strlen() do, and
@@ -747,7 +747,7 @@ MT_API MT_MUST_USE mt_answers *mt_space_query(mt_space *space, mt_atom *pattern,
 /* Evaluate under the engine's per-ask algebra. Each answer is (value coefficient),
    both ordinary atoms; the cursor owns it until the next step. TAKES algebra
    and goal. The declaration remains unchanged after close, failure or exhaustion.
-   [tested: test_algebras_are_scoped_engine_data; commit=1a60e2a3cce69d5d6bda67100186939d707f4397] */
+   [tested: test_algebras_are_scoped_engine_data; commit=WORKTREE] */
 MT_API MT_MUST_USE mt_answers *mt_self_eval_under(metta *runtime, mt_atom *algebra,
                                                  mt_atom *goal);
 MT_API MT_MUST_USE mt_answers *mt_space_eval_under(mt_space *space, mt_atom *algebra,
@@ -1158,7 +1158,7 @@ MT_API bool mt_repr(metta *runtime, const char *type_name, mt_text_fn text,
    nested speculation. A failing completion still releases its local resources.
    The selected registration is retained through completion even if its name is
    closed and reused. External concurrency is the provider's responsibility.
-   [tested: tests/test_providers.c; commit=1a60e2a3cce69d5d6bda67100186939d707f4397] */
+   [tested: tests/test_providers.c; commit=WORKTREE] */
 typedef struct mt_provider {
   void       *user;
   mt_status   (*add)(void *user, const mt_atom *atom);
@@ -1230,7 +1230,7 @@ MT_API bool mt_library(metta *runtime, const char *alias, const char *directory)
    process exit because it may have handed C function values to its caller.
    Refuses when the file cannot be opened, when it exports no
    mt_extension_init, or when that function answers false, each naming which.
-   [tested: tests/test_extensions.c; commit=1a60e2a3cce69d5d6bda67100186939d707f4397] */
+   [tested: tests/test_extensions.c; commit=WORKTREE] */
 typedef bool (*mt_extension_fn)(metta *runtime);
 MT_API bool mt_extension(metta *runtime, const char *path);
 

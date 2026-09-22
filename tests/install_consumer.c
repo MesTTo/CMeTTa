@@ -9,7 +9,7 @@
  * Guarantees: checks version 1's borrowed atoms, exact unsigned values, native
  *   cursors and forms through the installed header and shared object, prints
  *   5, and on Linux confirms CPython is absent from the process
- *   [tested: make install-check; commit=1a60e2a3cce69d5d6bda67100186939d707f4397].
+ *   [tested: make install-check; commit=WORKTREE].
  * Owns resources: releases atoms, collections, cursors and runtime explicitly.
  * Fails when: the engine tree was not installed beside the library, which is
  *   the failure this exists to catch and the reason it prints mt_errmsg().

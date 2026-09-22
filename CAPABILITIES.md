@@ -73,11 +73,16 @@ an explicit provider policy, not a second union implementation in CMeTTa.
 
 ## Verification on 2026-09-22
 
-Builds and runtime tests used `ai-battery-1`, a detached worktree inside this
-repository. An owned engine/library copy under its `ai-tmp/engine` prevented
-QLF and test-fixture writes from touching the concurrent superproject work.
-`METTA_PATH` and `ENGINE_PATH` selected that copy. The explicitly requested
-superproject evidence lane was run from its root.
+Reproduce with `sh extensions/cmetta/test.sh`, which is the one entry point
+and builds from clean, because a stale binary bakes `MT_ENGINE_PATH` at
+compile time and passes a suite the current source would fail.
+
+Run it against the SHIPPING engine, not a private copy. An isolated
+engine/library copy keeps a concurrent edit out of the way, but it is a
+configuration that does not ship: with only the C seat loaded, the Python
+seat's unguarded class walk never runs, and the two native-object-type checks
+that failed once both seats were loaded passed there. The numbers below are
+from the shipping configuration.
 
 | Check | Before | After |
 |---|---:|---:|
@@ -104,25 +109,18 @@ were isolated under the same battery. The oracle itself was read from
 `extensions/python/tests/ch21_another_language_at_the_seam/test_c_binding.py`;
 no Python source was edited.
 
-The C citations name executed cases after correcting compact runner braces
-and a JSON citation. The final root evidence lane still exits 1 with **51 C
-provenance findings** and 15 findings for the concurrent Node component:
+The C citations name executed cases, after correcting compact runner braces
+and a JSON citation.
 
-```text
-commit=1a60e2a3cce69d5d6bda67100186939d707f4397 does not resolve to a commit
-GATE FAILED: evidence
-```
-
-The commit exists in CMeTTa's repository. The root checker's
-`commit_problems` runs every `git cat-file` query in the superproject instead
-of the claim's owning repository. That resolver needs an orchestrator fix
-outside C's write scope; it was requested explicitly. The required zero-finding
-evidence result is therefore still blocked. The tags are pinned to the actual
-implementation rather than left as `WORKTREE` to hide the problem.
-
-The C implementation is commit `1a60e2a3cce69d5d6bda67100186939d707f4397`;
-commit `80ead0af42ad724328e7bd74ec1ba2ada78ea398` pins 54 evidence tags to it
-and changes no executable code.
+Evidence tags in this repository pin to a SUPERPROJECT commit, not to one of
+this repository's own. The gate resolves every pin with a single `git
+cat-file` at the root across all of the components, and a submodule's commit
+object lives in that submodule's object store while the superproject holds
+only a gitlink, so an object id from here can never resolve there. A tag
+written while its carrying commit does not yet exist says `commit=WORKTREE`,
+and `tests/checks/pin_provenance.py --derive` later rewrites it to the
+superproject commit whose tree carries the line, climbing as many submodule
+rungs as the file sits under.
 
 ## Memory results and failures
 

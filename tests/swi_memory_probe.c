@@ -1,7 +1,7 @@
 /* Purpose: isolate SWI allocation failures without loading cmetta or PeTTa.
  * Assumes: the same SWI headers and library used by the C seat.
  * Guarantees: baseline, int64 and Unicode cases differ only in their named
- *   foreign-interface calls [tested: make runtime-memory; commit=1a60e2a3cce69d5d6bda67100186939d707f4397].
+ *   foreign-interface calls [tested: make runtime-memory; commit=WORKTREE].
  * Owns resources: discards each foreign frame and requires successful cleanup.
  */
 #include <SWI-Prolog.h>
