@@ -14,7 +14,6 @@ ai-tmp. Set METTA_PATH to the engine tree when using an isolated checkout.
 `make install PREFIX=/your/prefix` installs the header, engine and
 libcmetta.so.1. Obtain consumer flags with `pkg-config --cflags --libs cmetta`.
 `make install-check` builds and runs a consumer of that installed interface.
-MIGRATION.md describes the ABI 1 changes.
 
 ## A program
 
@@ -247,5 +246,4 @@ Immutable atoms may be shared; cursors and callback state need caller
 serialization. Publish and withdraw registrations while evaluation workers
 are quiescent. Notification callbacks run on the writer's thread.
 
-cmetta.h is the complete contract. README.md gives worked examples and
-MIGRATION.md the ownership changes.
+cmetta.h is the complete contract, and README.md gives worked examples.

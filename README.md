@@ -143,8 +143,7 @@ while (...) mt_each (row, mt_match(kb, mt_keep(p))) ...
 mt_drop(p);
 ```
 
-Version 1 installs as `libcmetta.so.1`. Rebuild consumers and extensions together;
-[MIGRATION.md](MIGRATION.md) describes the provider and allocation changes.
+Version 1 installs as `libcmetta.so.1`. Rebuild consumers and extensions together.
 `mt_alloc`, `mt_calloc` and `mt_resize` allocate transferable list storage;
 `mt_free` releases it through the allocator retained with each block. An
 allocator selected by `mt_allocator_set` must outlive its outstanding blocks.

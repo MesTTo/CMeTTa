@@ -995,8 +995,8 @@ typedef struct mt_op {
    as written, which is what the field above says and what ABI 1 changed:
    `car_atom` publishes `car_atom`, and a hyphenated head is registered by
    writing `car-atom` here. This paragraph described the automatic conversion
-   the break removed [source: extensions/cmetta/MIGRATION.md, "mt_def now
-   preserves the published name exactly"]. */
+   the break removed [source: extensions/cmetta/CHANGELOG.md, "Preserve exact
+   published names"]. */
 MT_API bool mt_def(metta *runtime, mt_op op);
 
 /* Withdraw a published function at every arity, giving the name back. */

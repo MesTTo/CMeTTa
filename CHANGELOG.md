@@ -58,4 +58,4 @@ Open Obligations: None. -->
   and allocation-free atom release to make ownership testable.
 - Document temporary facts, cells, shape types, composed spaces, integration
   boundaries, and the engine services still needed for worlds and maintained views.
-- Change the installed ABI to 1; see [MIGRATION.md](MIGRATION.md) before rebuilding consumers.
+- Change the installed ABI to 1, so consumers and extensions rebuild against it.
