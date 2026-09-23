@@ -66,6 +66,7 @@ LDFLAGS += -L$(PLLIBDIR) -Wl,-rpath,$(PLLIBDIR) -Wl,-z,defs \
 LDLIBS  += -lswipl
 
 LIB       := libcmetta.so
+STATIC_LIB := libcmetta.a
 FAULT_LIB := tests/libcmetta_fault.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower examples/language
 FAULT_TESTS := tests/test_alloc_failure tests/test_cursor_ids tests/test_reopen \
@@ -117,7 +118,15 @@ kit: $(KIT)
 # fresh checkout needs.
 bench: $(BENCH)
 
-all: $(LIB) examples $(KIT) $(BENCH)
+all: $(LIB) $(STATIC_LIB) examples $(KIT) $(BENCH)
+
+# Archive consumers need the same implementation and transitive SWI dependency.
+# [tested: make install-check; commit=WORKTREE]
+cmetta.o: cmetta.c cmetta.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(STATIC_LIB): cmetta.o
+	$(AR) rcs $@ $<
 
 $(LIB): cmetta.c cmetta.h
 	$(CC) $(CFLAGS) -shared -o $@ cmetta.c $(LDFLAGS) $(LDLIBS)
@@ -296,6 +305,14 @@ $(SOFILE): cmetta.c cmetta.h .enginedir-stamp
 	    -DMT_ENGINE_PATH='"$(enginedir)"' -shared -Wl,-soname,$(SONAME) \
 	    -o $@ cmetta.c $(LDFLAGS) $(LDLIBS)
 
+build/install/cmetta.o: cmetta.c cmetta.h .enginedir-stamp
+	@mkdir -p $(@D)
+	$(CC) $(filter-out -DMT_ENGINE_PATH=%,$(CFLAGS)) \
+	    -DMT_ENGINE_PATH='"$(enginedir)"' -c -o $@ $<
+
+build/install/$(STATIC_LIB): build/install/cmetta.o
+	$(AR) rcs $@ $<
+
 # Directory overrides are inputs even when no source file changes.
 # [tested: make install-check; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
 cmetta.pc: Makefile cmetta.h FORCE
@@ -311,6 +328,7 @@ cmetta.pc: Makefile cmetta.h FORCE
 	    'URL: https://github.com/MesTTo/MeTTa-Kernel' \
 	    'Version: $(VERSION)' \
 	    'Libs: -L$${libdir} -lcmetta' \
+	    'Libs.private: -L$(PLLIBDIR) -Wl,-rpath,$(PLLIBDIR) -lswipl -ldl -pthread' \
 	    'Cflags: -I$${includedir} -std=c11' > $@
 
 # The engine tree, its libraries, and this seat's own control file, which is
@@ -320,10 +338,11 @@ cmetta.pc: Makefile cmetta.h FORCE
 # leaving them out of the sdist. The .so artifacts ARE installed, unlike the
 # py3-none-any wheel's, because this install is for one platform by
 # construction.
-install: $(SOFILE) cmetta.pc version
+install: $(SOFILE) build/install/$(STATIC_LIB) cmetta.pc version
 	install -d $(DESTDIR)$(libdir) $(DESTDIR)$(includedir) \
 	           $(DESTDIR)$(pkgconfigdir) $(DESTDIR)$(enginedir)
 	install -m 755 $(SOFILE) $(DESTDIR)$(libdir)/$(SOFILE)
+	install -m 644 build/install/$(STATIC_LIB) $(DESTDIR)$(libdir)/$(STATIC_LIB)
 	ln -sf $(SOFILE) $(DESTDIR)$(libdir)/$(SONAME)
 	ln -sf $(SONAME) $(DESTDIR)$(libdir)/$(LIB)
 	install -m 644 cmetta.h $(DESTDIR)$(includedir)/cmetta.h
@@ -340,6 +359,7 @@ install: $(SOFILE) cmetta.pc version
 
 uninstall:
 	rm -f $(DESTDIR)$(libdir)/$(SOFILE) $(DESTDIR)$(libdir)/$(SONAME) \
+	      $(DESTDIR)$(libdir)/$(STATIC_LIB) \
 	      $(DESTDIR)$(libdir)/$(LIB) $(DESTDIR)$(includedir)/cmetta.h \
 	      $(DESTDIR)$(pkgconfigdir)/cmetta.pc
 	rm -rf $(DESTDIR)$(enginedir)
@@ -369,10 +389,20 @@ install-check:
 	    echo "an installed consumer answered '$$answer', wanted 5" >&2; exit 1; \
 	fi
 	@echo "install-check: a consumer outside this checkout booted the installed engine"
+	@export PKG_CONFIG_PATH=$(CURDIR)/build/install-check/lib/pkgconfig; \
+	    $(CC) -Wall -Wextra -Wpedantic -Werror \
+	    $$(pkg-config --cflags cmetta) tests/install_consumer.c \
+	    -o build/install-check/static-consumer \
+	    -L$(CURDIR)/build/install-check/lib -Wl,-Bstatic -lcmetta -Wl,-Bdynamic \
+	    $$(pkg-config --static --libs-only-L --libs-only-other cmetta) -lswipl -ldl -pthread
+	@if readelf -dW build/install-check/static-consumer | grep -q 'Shared library: \[libcmetta'; then \
+	    echo 'archive consumer unexpectedly requires libcmetta.so' >&2; exit 1; fi
+	@test "$$(env -u METTA_PATH ./build/install-check/static-consumer)" = 5
+	@echo "install-check: archive consumer booted the installed engine"
 
 clean:
-	rm -f $(LIB) $(FAULT_LIB) $(SOFILE) cmetta.pc .enginedir-stamp \
+	rm -f $(LIB) $(STATIC_LIB) cmetta.o $(FAULT_LIB) $(SOFILE) cmetta.pc .enginedir-stamp \
 	      tests/extension_accept.so tests/extension_refuse.so \
 	      .version-probe .version-probe.c \
 	      $(EXAMPLES) $(TESTS) $(KIT) $(BENCH)
-	rm -rf build/install-check
+	rm -rf build/install-check build/install

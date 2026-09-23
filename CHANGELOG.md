@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Let `build.sh` and `test.sh` run in an isolated component checkout. The
+  enclosing gate supplies any deadline; these scripts no longer require a
+  superproject-relative helper.
+
+- Build and install `libcmetta.a`, and publish its SWI dependency through
+  `pkg-config --static`. Exercise an archive consumer alongside the shared one.
+
 - Fix the callbacks example calling `word-count` after publishing `word_count`.
   Check all callback results and the expected refusal so incorrect output fails
   the existing example gate.

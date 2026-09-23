@@ -57,6 +57,21 @@ int main(void)
 
 Build with `sh build.sh` and test with `sh test.sh`, using a C11 compiler and SWI-Prolog's development headers located through `swipl --dump-runtime-variables`.
 
+Install shared and archive libraries into a consumer prefix:
+
+```sh
+make install PREFIX="$PWD/build/prefix"
+export PKG_CONFIG_PATH="$PWD/build/prefix/lib/pkgconfig"
+cc consumer.c $(pkg-config --cflags --libs cmetta) -o consumer
+cc consumer.c $(pkg-config --cflags cmetta) \
+  "$PWD/build/prefix/lib/libcmetta.a" \
+  $(pkg-config --static --libs cmetta) -o archive-consumer
+```
+
+`make install-check` runs both consumers with `METTA_PATH` unset and checks
+that the archive consumer has no dependency on `libcmetta.so`. SWI-Prolog
+remains a shared dependency.
+
 [MesTTo/CMeTTa](https://github.com/MesTTo/CMeTTa) is the C driver beside `extensions/python` and `extensions/node`, separate from the vendored CeTTa substrate.
 
 | Driver | Engine access | Terms |

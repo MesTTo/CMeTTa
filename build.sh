@@ -11,8 +11,6 @@
 set -eu
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 
-# One spelling of the bound, implemented in bounded.sh, which every runner in
-# this tree and a command typed by hand all reach. Spelled as the path here
-# rather than through a `bounded` function, because `exec` cannot exec a
-# function and this file's exit status must stay its delegate's.
-exec sh "$HERE/../../tools/bounded.sh" make --quiet -C "$HERE" all
+# The enclosing gate owns deadlines. A standalone component has no ../../tools.
+# [tested: sh build.sh; commit=WORKTREE]
+exec make --quiet -C "$HERE" all

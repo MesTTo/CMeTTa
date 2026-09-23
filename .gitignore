@@ -2,6 +2,8 @@
 # library, the examples, the C suite, the parity driver and the benchmark
 # driver are all built by the Makefile here and are one machine's binaries.
 libcmetta.so
+libcmetta.a
+cmetta.o
 examples/hello
 examples/ops
 examples/stream
