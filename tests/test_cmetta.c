@@ -1717,33 +1717,37 @@ static void test_the_standard_order_is_the_engines(metta *m)
   CHECK(mt_ok());
 }
 
-static void test_an_engine_value_crosses_back_whole(metta *m)
-{ mt_atom *partial, *again, *held;
+/* A partial application answers as the expression the shared wire grammar
+   gives it, (partial F Args), which is the atom a C program builds and the one
+   the Python and Node seats answer; as there, passing it back does not apply
+   it [source: docs/journal/2026-09-05-node-runtime-gaps.md;
+   commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761]. */
+static void test_a_partial_application_answers_as_its_wire_expression(metta *m)
+{ mt_atom *partial, *built, *both, *want, *held;
   mt_space *kb;
   size_t rows = 0;
 
-  CASE("a partial application answers as a handle that prints as the engine prints it");
+  CASE("a partial application answers as (partial F Args)");
   mt_clear();
   partial = mt_one(mt_eval(m, E("id", E("+", 1))));
+  built = E("partial", "+", E(1));
   CHECK(partial != NULL && mt_ok());
-  CHECK(mt_kind_of(partial) == MT_HANDLE);
+  CHECK(mt_kind_of(partial) == MT_EXPR);
+  CHECK(partial && mt_eq(partial, built));
   CHECK(partial && strcmp(mt_show(partial), "(partial + (1))") == 0);
 
-  CASE("its name is the engine's written form, not the key it is compared by");
-  CHECK(partial && mt_name(partial) && strcmp(mt_name(partial), "partial(+,[1])") == 0);
+  CASE("two partials collapse as the Node seat prints them");
+  both = mt_one(mt_eval(m, E("collapse", E("superpose", E(E("*", 2), E("+", 3))))));
+  want = E(E("partial", "*", E(2)), E("partial", "+", E(3)));
+  CHECK(both && mt_eq(both, want));
+  mt_drop(both);
+  mt_drop(want);
 
-  CASE("the handle goes back as the identical value, so it still applies");
-  CHECK(mt_one_int(mt_eval(m, E(mt_keep(partial), 2))) == 3);
-  again = mt_one(mt_eval(m, E("id", E("+", 1))));
-  CHECK(mt_eq(partial, again));
-  mt_drop(again);
-
-  CASE("stored and matched back, it is still the value");
-  kb = mt_space_open(m, "&cmetta-handles");
+  CASE("stored and matched back, it is the same expression");
+  kb = mt_space_open(m, "&cmetta-partials");
   CHECK(kb && mt_add(kb, E("holds", mt_keep(partial))));
   held = mt_first(mt_match(kb, E("holds", V("f"))));
-  CHECK(held && mt_kind_of(mt_at(held, 1)) == MT_HANDLE);
-  CHECK(held && mt_one_int(mt_eval(m, E(mt_keep(mt_at(held, 1)), 40))) == 41);
+  CHECK(held && mt_eq(mt_at(held, 1), built));
   mt_drop(held);
   CHECK(mt_wipe(kb));
   mt_space_close(kb);
@@ -1753,6 +1757,29 @@ static void test_an_engine_value_crosses_back_whole(metta *m)
   mt_rows (row, mt_run(m, "!(id (+ 1)) !(+ 1 1)")) rows++;
   CHECK(rows == 2 && mt_ok());
   mt_drop(partial);
+  mt_drop(built);
+  mt_clear();
+}
+
+/* A caught refusal carries an engine compound as its payload, and C reads it
+   apart by position, as index-atom does in the engine. */
+static void test_a_refusal_payload_is_an_expression(metta *m)
+{ mt_space *kb = mt_space_open(m, "&cmetta-fence");
+  mt_atom *refusal;
+  const mt_atom *payload;
+
+  CASE("a caught refusal's payload is an expression C reads by position");
+  CHECK(kb && mt_add(kb, E("Order", 7, "x", "y")));
+  refusal = mt_one(mt_eval(m, E("catch", E("match", mt_spaceref("&cmetta-fence"),
+                                              E("Order", E(":seg", V("m")), V("m")), "hit"))));
+  payload = refusal && mt_len(refusal) > 1 ? mt_at(refusal, 1) : NULL;
+  CHECK(payload && mt_kind_of(payload) == MT_EXPR);
+  CHECK(payload && mt_name(mt_at(payload, 0)) &&
+        strcmp(mt_name(mt_at(payload, 0)), "metta_seq_outside_fragment") == 0);
+  CHECK(payload && mt_name(mt_at(payload, 4)) && strcmp(mt_name(mt_at(payload, 4)), "mixed_roles") == 0);
+  mt_drop(refusal);
+  CHECK(kb && mt_wipe(kb));
+  mt_space_close(kb);
   mt_clear();
 }
 
@@ -2221,7 +2248,8 @@ int main(void)
   test_an_answer_keeps_variable_identity(m);
   test_alpha_equivalence_is_a_renaming(m);
   test_the_standard_order_is_the_engines(m);
-  test_an_engine_value_crosses_back_whole(m);
+  test_a_partial_application_answers_as_its_wire_expression(m);
+  test_a_refusal_payload_is_an_expression(m);
   test_many_variables_are_named_without_aborting(m);
   test_solve_runs_let_backwards_and_reads_bindings_by_name(m);
   test_a_refusal_carries_the_engines_remedy_and_ground(m);

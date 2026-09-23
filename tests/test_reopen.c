@@ -3,7 +3,8 @@
  * Assumes: this binary links tests/libcmetta_fault.so, whose test-only getter
  *   exposes the cached handle value without dereferencing it.
  * Guarantees: exits nonzero if shutdown leaves the old cache published, the
- *   restarted runtime does not resolve its own handle, or decoding then fails.
+ *   restarted runtime does not resolve its own handle, decoding then fails, or
+ *   a handle from a closed runtime is accepted back.
  * Owns resources: drops decoded atoms and closes each successfully opened
  *   runtime before exit.
  */
@@ -16,6 +17,7 @@
 #include <string.h>
 
 extern void *mt_test_cached_space_predicate(void);
+extern mt_atom *mt_test_foreign_handle(unsigned seed);
 
 static int failures;
 
@@ -102,8 +104,35 @@ static void test_restart_replaces_runtime_owned_predicates(void)
   mt_close(runtime);
 }
 
+/* A handle belongs to the runtime that made it: its record went with the old
+   heap, so after mt_close() and a fresh mt_open() passing it back is refused
+   by name rather than read out of freed memory. */
+static void test_a_handle_does_not_outlive_its_runtime(void)
+{ metta *runtime = mt_open(NULL);
+  mt_atom *handle;
+  mt_list answers;
+
+  expect(runtime != NULL, "a runtime must boot for the handle");
+  if ( !runtime ) return;
+  handle = mt_test_foreign_handle(7);
+  expect(handle && mt_kind_of(handle) == MT_HANDLE, "the test blob must decode as a handle");
+  mt_close(runtime);
+  runtime = mt_open(NULL);
+  expect(runtime != NULL, "the runtime must reopen");
+  mt_clear();
+  answers = mt_all(mt_eval(runtime, mt_expr("id", mt_keep(handle))));
+  expect(answers.len == 0 && mt_error() == MT_UNSUPPORTED && mt_errmsg() &&
+         strstr(mt_errmsg(), "has since closed") != NULL,
+         "a handle from a closed runtime must be refused by name");
+  mt_list_free(answers);
+  mt_drop(handle);
+  mt_clear();
+  mt_close(runtime);
+}
+
 int main(void)
 { test_restart_replaces_runtime_owned_predicates();
+  test_a_handle_does_not_outlive_its_runtime();
   if ( !failures ) puts("runtime predicate restart ok");
   return failures ? 1 : 0;
 }

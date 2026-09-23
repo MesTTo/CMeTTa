@@ -4,9 +4,10 @@
  *   invalid engine terms that the public bridge never returns.
  * Guarantees: exits nonzero if allocation arithmetic wraps, an improper
  *   callback list is accepted, a foreign native handle bypasses its codec
- *   guard, a handle's key walk holds references per cell rather than per
- *   level, a negative count wraps, a counter loses bits, or clearing limits
- *   does not restore SWI's original stack limit.
+ *   guard, a compound decodes outside the shared wire grammar, a cyclic answer
+ *   is walked instead of refused, a long list costs references per cell, a
+ *   negative count wraps, a counter loses bits, or clearing limits does not
+ *   restore SWI's original stack limit.
  * Owns resources: drops its atom and closes the runtime before exit.
  */
 
@@ -18,7 +19,9 @@
 extern bool mt_test_improper_apply_is_rejected(void);
 extern bool mt_test_native_handle_codec_round_trips(void);
 extern bool mt_test_close_handshake_skips_erase(void);
-extern bool mt_test_long_list_handle_decodes(size_t length);
+extern bool mt_test_long_list_compound_decodes(size_t length);
+extern bool mt_test_wire_grammar(void);
+extern bool mt_test_cyclic_answer_refused(void);
 extern bool mt_test_negative_count_is_rejected(void);
 extern bool mt_test_large_stats_are_exact(void);
 extern bool mt_test_decode_growth_overflow_is_rejected(void);
@@ -49,18 +52,34 @@ static void test_a_handle_released_during_close_leaves_its_record(void)
          "to cleanup, and one released otherwise must erase it");
 }
 
-/* The key walk once made three term references per list cell and kept them
-   until it returned, so a handle over a long list needed stack room for the
-   list twice: 400,000 cells failed with out of memory at every limit from 16
-   to 32 MB. Two references per level, and a list is one level. */
-static void test_a_long_list_handle_keys_in_constant_references(metta *runtime)
+/* A compound's key walk once made three term references per list cell and
+   kept them until it returned, so a compound over a long list needed stack
+   room for the list twice: 400,000 cells failed with out of memory at every
+   limit from 16 to 32 MB. Decoded as an expression, the list is one level of
+   the walk, one reference. */
+static void test_a_long_list_compound_decodes_in_constant_references(metta *runtime)
 { mt_clear();
   expect(mt_limit(runtime, (mt_limits){ .stack_bytes = 24u * 1024u * 1024u }),
          "a 24 MB stack limit must be accepted");
-  expect(mt_test_long_list_handle_decodes(400000),
-         "a handle over a 400,000-element list must decode under a 24 MB "
-         "stack limit, which holds the list once");
+  expect(mt_test_long_list_compound_decodes(400000),
+         "a compound over a 400,000-element list must decode as an expression "
+         "under a 24 MB stack limit, which holds the list once");
   expect(mt_limit(runtime, (mt_limits){0}), "clearing the limit must succeed");
+}
+
+static void test_compounds_decode_in_the_shared_wire_grammar(void)
+{ mt_clear();
+  expect(mt_test_wire_grammar(),
+         "every compound shape must decode to the expression the Python and "
+         "Node seats read it as: (F args...), (cons Head Tail), (F) for zero "
+         "arity, a shared variable one variable, a functor a symbol");
+}
+
+static void test_a_cyclic_answer_is_refused_by_name(void)
+{ mt_clear();
+  expect(mt_test_cyclic_answer_refused(),
+         "a rational-tree answer must be refused by name, not walked forever, "
+         "while a finite one still decodes");
 }
 
 int main(void)
@@ -91,7 +110,9 @@ int main(void)
 
   test_native_handle_decode_and_encode_contract();
   test_a_handle_released_during_close_leaves_its_record();
-  test_a_long_list_handle_keys_in_constant_references(runtime);
+  test_a_long_list_compound_decodes_in_constant_references(runtime);
+  test_compounds_decode_in_the_shared_wire_grammar();
+  test_a_cyclic_answer_is_refused_by_name();
 
   mt_clear();
   expect(mt_test_negative_count_is_rejected(),

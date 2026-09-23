@@ -282,30 +282,31 @@ typedef enum mt_kind {
   MT_HANDLE    /* `h`: a native engine value held by reference       */
 } mt_kind;
 
-/* An MT_HANDLE is an engine value with no MeTTa structure: a native blob, or
-   a compound such as the partial application the engine prints as
-   (partial + (1)). The atom holds the engine term by reference, so mt_show()
-   prints it as the engine does and passing it back to any door puts the
-   identical value back, which still applies, matches and compares as itself;
-   mt_write_dup() refuses it, having no source spelling. Two handles are
-   mt_eq, hash alike and compare equal when they hold one blob of one runtime,
-   or compounds that are variants of each other, never merely because they
-   print alike; a
-   held compound's variables are its own, fresh each time it goes back, so a
-   variant is the one identity it keeps [tested: tests/test_internal_contracts.c,
-   test_native_handle_decode_and_encode_contract; commit=6e91a33be09722c403ae665dd7affd608a067437]. A handle cannot
-   outlive the runtime that answered it: after mt_close() passing it back is
-   refused by name [tested: tests/test_cmetta.c,
-   test_an_engine_value_crosses_back_whole; commit=0733adc4f214bdcb37dce6f378ff75611b79b126].
+/* An engine value reaches C in the wire grammar every seat reads, so an
+   answer is the same atom here as in the Python and Node seats and compares
+   equal to the expression a program builds [source: docs/journal/
+   2026-09-05-node-runtime-gaps.md and extensions/python/metta/_binding/
+   wire.pl, metta_py_encode/4; commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761].
+   A compound the engine hands out, such as a refusal's payload, is the
+   expression (F args...), its functor a symbol and a zero-arity one (F); an
+   improper list is (cons Head Tail) along its spine; a partial application
+   is (partial F Args), which, as in those seats, is data when passed back
+   rather than a function that applies; a variable keeps its identity; and
+   a cyclic answer is refused by name [tested: tests/test_internal_contracts.c,
+   test_compounds_decode_in_the_shared_wire_grammar and
+   test_a_cyclic_answer_is_refused_by_name; commit=WORKTREE].
 
-   Known issue: in a position the engine EVALUATES, its translator reads a
-   blob or a partial application as a value and has no reading for any other
-   compound, so a handle holding one, such as the payload of a caught
-   refusal, answers nothing there and raises nothing: (id h) and (== h h) are
-   empty. Where the engine reads data it goes back whole: a match pattern,
-   quote, unify, a stored atom, and an atom operation over an expression that
-   holds it [measured 2026-09-24; source: engine/translator/lowering.pl,
-   translate_expr_dl/4; commit=33219ffa03a890a068e177d1503fa98978750cca]. */
+   An MT_HANDLE is the one value with no structure: a native blob, such as a
+   host language's object, held by reference. mt_show() prints it as the
+   engine does and passing it back to any door puts the identical blob back;
+   mt_write_dup() refuses it, having no source spelling. Two handles are
+   mt_eq, hash alike and compare equal exactly when they hold one blob of one
+   runtime, never merely because they print alike [tested:
+   tests/test_internal_contracts.c, test_native_handle_decode_and_encode_contract;
+   commit=WORKTREE]. A handle cannot outlive the runtime that answered it:
+   after mt_close() passing it back is refused by name [tested:
+   tests/test_reopen.c, test_a_handle_does_not_outlive_its_runtime;
+   commit=WORKTREE]. */
 
 MT_API const char *mt_kind_str(mt_kind kind);
 
@@ -432,10 +433,9 @@ MT_API void mt_drop(const mt_atom *atom);
 MT_API mt_kind mt_kind_of(const mt_atom *atom);
 
 /* The name of a SYMBOL, VARIABLE or SPACE, the text of a TEXT, the digits of
-   a BIGINT, the engine's written form of a HANDLE, such as partial(+,[1]).
-   NULL for every other kind. Borrowed. A handle's written form presents it
-   and does not identify it; see MT_HANDLE [tested: tests/test_cmetta.c,
-   test_an_engine_value_crosses_back_whole; commit=6e91a33be09722c403ae665dd7affd608a067437]. */
+   a BIGINT, the engine's written form of a HANDLE. NULL for every other kind.
+   Borrowed. A handle's written form presents it and does not identify it;
+   see MT_HANDLE. */
 MT_API const char *mt_name(const mt_atom *atom);
 MT_API size_t mt_name_len(const mt_atom *atom);
 

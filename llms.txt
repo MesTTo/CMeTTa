@@ -61,14 +61,14 @@ variadic macro accepts up to sixteen children. `MT_SHORTHAND` enables
 `S V T N R B E` builders.
 
 Kinds are MT_SYMBOL, MT_VARIABLE, MT_EXPR, MT_TEXT, MT_BOOL, MT_INT, MT_FLOAT,
-MT_BIGINT, MT_RATIONAL, MT_SPACE, MT_OBJECT and MT_HANDLE. An MT_HANDLE holds an
-engine value with no MeTTa structure, a blob or a partial application, by
-reference: it prints as the engine prints it and passes back unchanged.
-`mt_name` answers its written form, such as `partial(+,[1])`; two handles are
-equal when they hold one blob of one runtime or compounds that are variants.
-Known issue: a handle holding a compound other than a partial application
-answers nothing, without an error, where the engine evaluates it, as in
-`(id h)`; it goes back whole in a match, quote, unify or a stored atom.
+MT_BIGINT, MT_RATIONAL, MT_SPACE, MT_OBJECT and MT_HANDLE. An MT_HANDLE holds a
+native blob, such as a host object, by reference: it prints as the engine
+prints it and passes back as the identical blob, and two handles are equal
+exactly when they hold one blob of one runtime. Every other engine term decodes
+in the wire grammar the Python and Node seats share: a compound as `(F args...)`
+and a zero-arity one as `(F)`, an improper list as `(cons Head Tail)`, a partial
+application as `(partial F Args)`, which is data rather than a function when
+passed back; a cyclic answer is refused by name.
 `mt_kind_of(NULL)`
 returns MT_NONE. `mt_int` requires an exact int64 value; `mt_float` refuses
 lossy integer conversion. `mt_unum` preserves uint64 and `mt_bigint`

@@ -193,9 +193,9 @@ $(FAULT_TESTS): %: %.c $(FAULT_LIB)
 	$(CC) $(CFLAGS) -DMT_TEST_FAULTS -o $@ $< -Ltests \
 	    -Wl,-rpath,$(CURDIR)/tests -lcmetta_fault $(LDFLAGS) $(LDLIBS) -lm
 
-$(THREAD_TESTS): %: %.c $(LIB)
-	$(CC) $(CFLAGS) -o $@ $< -pthread -L. -Wl,-rpath,$(CURDIR) \
-	    -lcmetta $(LDFLAGS) $(LDLIBS) -lm
+$(THREAD_TESTS): %: %.c $(FAULT_LIB)
+	$(CC) $(CFLAGS) -DMT_TEST_FAULTS -o $@ $< -pthread -Ltests \
+	    -Wl,-rpath,$(CURDIR)/tests -lcmetta_fault $(LDFLAGS) $(LDLIBS) -lm
 
 # Every MT_API declaration must have a definition in the library. A header and
 # an implementation drift apart silently: an edit that removes a function

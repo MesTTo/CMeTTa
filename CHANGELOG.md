@@ -5,12 +5,29 @@ Open Obligations: None. -->
 
 ## Unreleased
 
-- Document a known issue in the handle contract. A handle holding a compound
-  other than a partial application, such as a caught refusal's payload,
-  answers nothing and raises nothing where the engine evaluates it, because
-  the engine's translator reads only blobs and partial applications as
-  values there; it goes back whole wherever the engine reads data. The
-  engine fix is outside this library.
+- Decode engine values in the wire grammar the Python and Node seats read,
+  and hold only native blobs by reference. A partial application such as
+  `partial(+,[1])` used to be refused, failing every answer of the cursor or
+  run that held it; it now arrives as the expression `(partial + (1))`, equal
+  to the one a C program builds and to the one the other seats answer, and as
+  there it is data when passed back rather than a function that applies.
+  Every other non-list compound the engine hands out, a refusal's payload
+  among them, is `(F args...)` with its functor a symbol, a zero-arity one
+  `(F)`; an improper list is `(cons Head Tail)` along its spine; variables
+  keep their identity; and an answer that is a cyclic term is refused by name
+  instead of walked forever, at the answer, group and C-argument sites where
+  the Python seat refuses it. An `MT_HANDLE` is now only a native blob: it
+  holds a record, prints as the engine prints it, goes back as the identical
+  blob, and two handles are equal exactly when they hold one blob of one
+  runtime. Releasing one erases its record under a handshake with `mt_close`,
+  so no erase reaches the heap `PL_cleanup` frees, and a handle passed back
+  after `mt_close` is refused by name. A compiler without C11 atomics is
+  refused at build time, since `cmetta.h` promises atomic reference counts.
+  Decoding now classifies each term once with `PL_term_type`, where it asked
+  up to six questions, each a checked foreign call, so the term-out bench
+  reads 8.3% fewer instructions and cursor-step 1.1% fewer, net of the
+  acyclicity guard; both rows are re-pinned with their steps placed beside
+  them.
 
 - Add mt_solve, relational let answered as bindings, the C counterpart of the
   Python seat's solve(). mt_solve(target, pattern, subject) evaluates
@@ -30,40 +47,7 @@ Open Obligations: None. -->
   to PL_get_arg, which aborts. Those references now live in a frame per call,
   decode keeps one reference per depth rather than one per sub-expression,
   reading each element into the next depth's so descending copies nothing,
-  and a handle's key walk keeps two per level, a list's tail
-  taking its cell's level, so a handle over a 400,000-element list decodes
-  under a 16 MB limit where it ran out of memory up to 32 MB. A compound
-  handle's text is again the engine's written form, so mt_name() answers
-  partial(+,[1]) rather than the key it is compared by; the key now sits
-  beside the record and identifies blobs within their runtime too.
-
-- Make a compound handle's identity injective and a handle's release safe
-  against a concurrent close. A compound was identified by its quoted text,
-  which prints two blobs, or two variables, alike; it now carries a key that
-  length-prefixes every name, spells floats exactly, names a blob by its
-  atom and a variable by its first occurrence, so two handles are equal
-  exactly when they hold variants. Releasing a handle erases its engine
-  record, and mt_close() now announces itself and waits for any erase in
-  flight while every release checks for the announcement first, so no record
-  is erased into the heap PL_cleanup() frees. A compiler without C11 atomics
-  is refused at build time instead of producing reference counts that race.
-
-- Identify a native-blob handle by its blob atom and a compound handle by its
-  quoted text. Handles compared by their printed text, so two different
-  blobs whose writer prints the same text were `mt_eq`, hashed alike and
-  sorted as equal; the blob atom each handle now holds settles which value it
-  is.
-
-- Hold every engine value with no MeTTa structure as an `MT_HANDLE` that
-  goes back whole. A partial application such as `partial(+,[1])` used to be
-  refused, and the refusal failed every answer of the cursor or run holding
-  it, while the engine prints it as `(partial + (1))` and the Python seat
-  reads it. The handle records the engine term, so `mt_show` prints what the
-  engine prints and passing the handle back puts the identical value back:
-  the partial still applies, `(<handle> 2)` answering 3. Native blobs gain
-  the same round trip, where they used to be refused on resubmission. A
-  handle does not outlive its runtime, and passing one back after
-  `mt_close` is refused by name.
+  and a compound over a 400,000-element list decodes under a 16 MB limit.
 
 - Add `mt_compare`, the engine's standard order of terms, and `mt_order`, the
   same order for `qsort`. Python atoms sort in the engine's term order and C

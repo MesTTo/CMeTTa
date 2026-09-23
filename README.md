@@ -213,7 +213,7 @@ mt_expr("f", mt_expr("g", 1), 2.5)     /* (f (g 1) 2.5) */
 | `MT_EXPR` | an expression; the empty one is unit |
 | `MT_SPACE` | an executable space reference |
 | `MT_OBJECT` | a live C value by reference |
-| `MT_HANDLE` | an engine value with no MeTTa structure, such as a partial application, held by reference: it prints as the engine prints it and goes back as the identical value |
+| `MT_HANDLE` | a native blob, such as a host language's object, held by reference: it prints as the engine prints it and goes back as the identical blob. Every other engine term arrives as an expression in the wire grammar the Python and Node seats read: a compound as `(F args...)`, an improper list as `(cons Head Tail)`, a partial application as `(partial F Args)` |
 
 C splits the codec's Number tag into four kinds, and reading promotes only where lossless: `mt_float` accepts an Int within 2^53 and refuses one beyond it, while `mt_int` refuses a Float instead of rounding.
 

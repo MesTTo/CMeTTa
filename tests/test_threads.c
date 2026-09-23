@@ -2,7 +2,9 @@
  *   previously published C operation, keep its diagnostics isolated from a
  *   concurrent caller, and detach without damaging the main engine.
  * Assumes: mt_def runs before pthread_create; cmetta.h documents the operation
- *   table as unguarded after worker evaluation starts.
+ *   table as unguarded after worker evaluation starts. Links the fault
+ *   library, whose mt_test_foreign_handle makes the native handles the drop
+ *   test needs, since the public surface cannot make one.
  * Guarantees: exits 0 only after two attached workers have received their own
  *   error text, exercised mt_of, isolated the mt_show ring, and detached
  *   [tested: test_threads.c; commit=b339084bb5625996fc88a31608d48ad31c575d1f],
@@ -140,6 +142,9 @@ static void *run_worker(void *opaque)
    deterministically. */
 enum { HANDLES = 4000, DROPPERS = 4 };
 
+/* A handle over a fresh native test blob, from the fault library. */
+extern mt_atom *mt_test_foreign_handle(unsigned seed);
+
 typedef struct dropper
 { mt_atom   **handles;
   size_t      first, count;
@@ -163,9 +168,9 @@ static int drop_handles_while_closing(metta *runtime)
   int failed = 0;
 
   for (i = 0; i < HANDLES; i++)
-  { handles[i] = mt_one(mt_eval(runtime, E("id", E("+", (int64_t)i))));
+  { handles[i] = mt_test_foreign_handle((unsigned)i);
     if ( mt_kind_of(handles[i]) != MT_HANDLE )
-    { fprintf(stderr, "partial %zu did not decode as a handle: %s\n", i,
+    { fprintf(stderr, "test blob %zu did not decode as a handle: %s\n", i,
               mt_errmsg() ? mt_errmsg() : "no message");
       return 1;
     }

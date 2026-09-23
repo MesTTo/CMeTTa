@@ -109,9 +109,9 @@ build_matrix() {
             $sanitize_flags $LINK
     done
     # shellcheck disable=SC2086
-    $CC $COMMON "$ENGINE_DEFINE" $sanitize_flags \
+    $CC $COMMON "$ENGINE_DEFINE" $sanitize_flags -DMT_TEST_FAULTS \
         -o "$out/tests/test_threads" "$HERE/tests/test_threads.c" -pthread \
-        -L"$out" -Wl,-rpath,"$out" -lcmetta $sanitize_flags $LINK
+        -L"$out/tests" -Wl,-rpath,"$out/tests" -lcmetta_fault $sanitize_flags $LINK
     for example_name in $EXAMPLES; do
         # shellcheck disable=SC2086
         $CC $COMMON "$ENGINE_DEFINE" $sanitize_flags \

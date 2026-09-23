@@ -22,11 +22,16 @@
  *   - no Prolog exception crosses into a caller: every query runs under
  *     PL_Q_CATCH_EXCEPTION, and the ball is rendered by the bridge into the
  *     thread-local error text
- *   - an engine term with no MeTTa structure, a blob or a compound such as a
- *     partial application, is held by reference as an MT_HANDLE: it prints
- *     as the engine prints it and goes back as the identical term, never as
- *     text that cannot go home again [tested: tests/test_cmetta.c,
- *     test_an_engine_value_crosses_back_whole; commit=0733adc4f214bdcb37dce6f378ff75611b79b126]
+ *   - an engine term decodes in the wire grammar every seat reads: a
+ *     compound as (F args...), an improper list as (cons Head Tail), a
+ *     partial application as (partial F Args), and a native blob, the one
+ *     value with no structure, held by reference as an MT_HANDLE that goes
+ *     back as the identical blob [tested: tests/test_internal_contracts.c,
+ *     test_compounds_decode_in_the_shared_wire_grammar and
+ *     test_native_handle_decode_and_encode_contract; commit=WORKTREE]
+ *   - a cyclic answer is refused by name rather than walked forever
+ *     [tested: tests/test_internal_contracts.c,
+ *     test_a_cyclic_answer_is_refused_by_name; commit=WORKTREE]
  *   - an ampersand-prefixed atom becomes MT_SPACE only when the engine
  *     says it is a space [tested: test_a_user_space_decodes_as_a_space;
  *     commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
@@ -1017,28 +1022,28 @@ const mt_atom *mt_at(const mt_atom *atom, size_t index)
   return atom->u.e.kids[index];
 }
 
-/* What an MT_HANDLE decoded from the engine holds: a record of the engine
-   term, the runtime generation it belongs to, and the key handle_key() spells
-   it as, which is its identity. The atom's text is the engine's written form,
-   which presents the value and names it in messages but does not identify
-   it: two blobs can be written alike, and two variants differently. See
-   handle_of(). */
+/* What an MT_HANDLE decoded from the engine holds: a record of the native
+   blob it is, and the blob's identity, which is the blob atom within the
+   runtime generation that made it, since an atom handle means nothing once
+   its runtime is gone. The atom's text is the engine's written form, which
+   presents the value and names it in messages but does not identify it:
+   two blobs can be written alike. See handle_of(). */
+typedef struct handle_id { uint64_t generation; atom_t blob; } handle_id;
+
 typedef struct handle_ref
-{ record_t record;
-  uint64_t generation;
-  char    *key;           /* owned */
-  size_t   key_len;
+{ record_t  record;
+  handle_id id;
 } handle_ref;
 
 static void handle_release(void *owner);
 
 /* The bytes mt_eq, mt_hash and mt_compare read as a handle's identity: its
-   key, or for the recordless handle only the fault library makes, its text. */
+   id, or for the recordless handle only the fault library makes, its text. */
 static void handle_identity(const mt_atom *a, const char **bytes, size_t *len)
 { if ( a->release == handle_release )
   { const handle_ref *h = a->owner;
-    *bytes = h->key;
-    *len = h->key_len;
+    *bytes = (const char *)&h->id;
+    *len = sizeof h->id;
   } else
   { *bytes = a->u.t.text;
     *len = a->u.t.len;
@@ -2630,11 +2635,11 @@ MT_COLD static const char *variable_name(term_t names, term_t var)
   return entry.name;
 }
 
-static mt_atom *decode_number(term_t t)
+static mt_atom *decode_number(term_t t, int type)
 { int64_t i;
   double d;
 
-  if ( PL_is_integer(t) )
+  if ( type == PL_INTEGER )
   { if ( PL_get_int64(t, &i) ) return mt_num(i);
     { size_t len;
       char *text = term_text(t, CVT_INTEGER, &len);
@@ -2648,12 +2653,12 @@ static mt_atom *decode_number(term_t t)
       return a;
     }
   }
-  if ( PL_is_float(t) )
+  if ( type == PL_FLOAT )
   { if ( PL_get_float(t, &d) ) return mt_real(d);
     err_set(MT_UNSUPPORTED, "a float the C boundary cannot read");
     return NULL;
   }
-  if ( PL_is_rational(t) )
+  if ( type == PL_RATIONAL )
   { fid_t f = frame_open("decoding a rational");
     term_t av;
     mt_atom *a = NULL;
@@ -2675,27 +2680,42 @@ static mt_atom *decode_number(term_t t)
   return NULL;
 }
 
-/* Whether a term has CHILDREN, which decode() walks with its own stack
-   rather than by calling itself: see MT_STACK above and C35 in
-   ai-cmetta-c-constraints.md. [] is a list in SWI 7 and later, and the empty
-   expression is unit rather than a name, so it belongs here too. Asking
-   before decode_leaf() rather than inside it keeps the answer out of an
-   out-parameter, which is a store and a load per node on the hot path. A
-   variable is neither nil nor a proper list, so testing this first reads the
-   same as the branch order it replaced. */
-static bool decode_is_expr(term_t t)
-{ return PL_get_nil(t) || PL_is_list(t);
+/* Whether a term of this PL_term_type() has CHILDREN, which decode() walks
+   with its own stack rather than by calling itself: see MT_STACK above and
+   C35 in ai-cmetta-c-constraints.md. A list pair has, and so has [], the
+   empty expression in SWI 7 and later, and so has every other compound, a
+   dict included, which the shared wire grammar reads as an expression too.
+   The walk classifies each term ONCE with PL_term_type() and hands the class
+   on, where it used to ask PL_get_nil, PL_is_list and then decode_leaf()'s
+   own chain of PL_is_ questions, each a checked foreign call
+   [measured 2026-09-24, callgrind over 6,000 term-out crossings: the chain
+   cost 582 instructions a crossing once compounds needed a question of
+   their own]. */
+static inline bool opens_level(int type)
+{ return type == PL_LIST_PAIR || type == PL_NIL || type == PL_TERM || type == PL_DICT;
 }
 
-/* An engine value with no MeTTa structure, held by reference: the engine
-   term is recorded, so encoding the handle puts back the identical term, a
-   blob or a compound such as the partial application partial(+,[1]), which
-   the engine prints as (partial + (1)) and which no expression rebuilds. The
-   record belongs to the runtime generation that made it, and is erased on
-   the handle's last release only while that runtime is still open; after
-   mt_close() the heap it lived in is gone with the runtime.
-   [tested: tests/test_cmetta.c, test_an_engine_value_crosses_back_whole;
-   commit=0733adc4f214bdcb37dce6f378ff75611b79b126] */
+/* The Python seat's last resort for a term its grammar has no shape for, the
+   written text [source: extensions/python/metta/_binding/wire.pl,
+   metta_py_encode/4, its term_string clause;
+   commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761]. No term SWI makes today
+   reaches it: a compound whose functor is no text is the one shape kept for
+   it. */
+static mt_atom *written(term_t t)
+{ size_t len;
+  char *text = term_text(t, CVT_WRITEQ, &len);
+  mt_atom *a = text ? atom_text(MT_TEXT, text, len) : NULL;
+  mt_free(text);
+  if ( !a && mt_ok() ) err_set(MT_NOMEM, "out of memory writing an engine term");
+  return a;
+}
+
+/* A native blob held by reference: its record is the engine term, so
+   encoding the handle puts back the identical blob. The record belongs to the
+   runtime generation that made it, and is erased on the handle's last release
+   only while that runtime is still open; after mt_close() the heap it lived
+   in is gone with the runtime [tested: tests/test_cmetta.c,
+   test_a_native_value_crosses_back_whole; commit=WORKTREE]. */
 /* A handle may be dropped on any thread, including while mt_close() tears
    the runtime down on another, and erasing a record into a heap PL_cleanup()
    is freeing would corrupt it. So an eraser announces itself and then looks
@@ -2714,183 +2734,26 @@ static MT_ATOMIC unsigned g_test_record_erases;
 static void handle_release(void *owner)
 { handle_ref *h = owner;
   MT_SC_ADD(&g_record_erasers, 1u);
-  if ( !MT_SC_LOAD(&g_closing) && g_open && h->generation == g_runtime.generation )
+  if ( !MT_SC_LOAD(&g_closing) && g_open && h->id.generation == g_runtime.generation )
   { PL_erase(h->record);
 #ifdef MT_TEST_FAULTS
     MT_INC(&g_test_record_erases);
 #endif
   }
   MT_SC_ADD(&g_record_erasers, (unsigned)-1);
-  mt_free(h->key);
   mt_free(h);
 }
 
-/* The identity key of an engine value held as a handle: the term spelled so
-   that two keys are equal exactly when the terms are variants. The written
-   form is not injective, since two blobs can be written alike and a variable
-   is written as its stack address. Here every token says how long it is
-   before it starts, a name, string or number by its byte count and a
-   compound by its arity, so a key parses back to one tree and needs no
-   closing marks; a blob is its atom within its runtime generation, a float
-   its exact hex digits, and a variable the order of its first occurrence.
-   Time: one visit per subterm, plus one PL_compare per variable already met
-   at each variable occurrence. That scan is the one engine/c/writer.c and the
-   Python wire make, since the foreign interface tells two variables apart
-   only by comparing them [source: extensions/python/metta/_binding/wire.pl,
-   metta_py_wire_name/4; commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761].
-   Term references: two per level of nesting, reused by every compound met at
-   that level, and one per distinct variable, all released on return because
-   the walk runs in a foreign frame of its own. A compound's last argument
-   takes its parent's level, so a list of any length is one level
-   [tested: tests/test_internal_contracts.c,
-   test_a_long_list_handle_keys_in_constant_references; commit=6e91a33be09722c403ae665dd7affd608a067437]. */
-typedef struct key_buf { char *data; size_t len, cap; bool failed; } key_buf;
-
-static void key_put(key_buf *k, const char *bytes, size_t n)
-{ if ( k->failed ) return;
-  if ( n > k->cap - k->len )
-  { size_t cap = k->cap, size;
-    char *grown;
-    if ( n > SIZE_MAX - k->len ) { k->failed = true; return; }
-    do
-      if ( !next_capacity(cap, 64, 1, &cap, &size) ) { k->failed = true; return; }
-    while ( cap - k->len < n );
-    if ( !(grown = mt_resize(k->data, size)) ) { k->failed = true; return; }
-    k->data = grown;
-    k->cap = cap;
-  }
-  memcpy(k->data + k->len, bytes, n);
-  k->len += n;
-}
-
-static void key_tag(key_buf *k, char tag, uintmax_t number)
-{ char buf[32];
-  int n = snprintf(buf, sizeof buf, "%c%ju:", tag, number);
-  key_put(k, buf, (size_t)n);
-}
-
-static void key_text(key_buf *k, char tag, term_t t, int cvt)
-{ size_t len;
-  char *text = term_text(t, cvt, &len);
-  if ( !text ) { k->failed = true; return; }
-  key_tag(k, tag, len);
-  key_put(k, text, len);
-  mt_free(text);
-}
-
-/* One level of the walk: the compound open at that depth, the reference its
-   arguments are read into, and the next argument to read. The references
-   outlive the level and are reused by the next compound at its depth. */
-typedef struct key_level { term_t term, arg; size_t arity, next; } key_level;
-typedef MT_STACK(key_level) key_levels;
-
-static char *handle_key(term_t root, size_t *len)
-{ key_buf k = {0};
-  key_level fixed[MT_WALK_FRAMES];
-  key_levels levels;                /* levels.n made, the first `depth` open */
-  size_t depth = 0, nvars = 0, capvars = 0;
-  term_t *vars = NULL, name, t = root;
-  fid_t f = PL_open_foreign_frame();
-
-  if ( !f ) return NULL;
-  stack_init(&levels, fixed);
-  name = PL_new_term_ref();         /* within the ten a new frame guarantees */
-  while ( t && !k.failed )
-  { atom_t atom;
-    size_t arity, i;
-    void *blob;
-    size_t blob_len;
-    PL_blob_t *type;
-    double d;
-
-    if ( PL_is_variable(t) )
-    { i = 0;
-      while ( i < nvars && PL_compare(vars[i], t) != 0 ) i++;
-      if ( i == nvars )
-      { if ( nvars == capvars )
-        { size_t cap, size;
-          term_t *grown;
-          if ( !next_capacity(capvars, 8, sizeof *vars, &cap, &size) ||
-               !(grown = mt_resize(vars, size)) )
-          { k.failed = true;
-            break;
-          }
-          vars = grown;
-          capvars = cap;
-        }
-        if ( !(vars[nvars] = PL_copy_term_ref(t)) ) { k.failed = true; break; }
-        nvars++;
-      }
-      key_tag(&k, 'v', i);
-    } else if ( PL_is_compound(t) && PL_get_name_arity(t, &atom, &arity) )
-    { if ( !PL_put_atom(name, atom) ) { k.failed = true; break; }
-      key_text(&k, 'c', name, CVT_ATOM);
-      key_tag(&k, '/', arity);
-      if ( arity > 0 )
-      { key_level *level;
-        if ( depth == levels.n )
-        { key_level made = { PL_new_term_ref(), PL_new_term_ref(), 0, 0 };
-          if ( !made.term || !made.arg || !stack_push(&levels, made) )
-          { k.failed = true;
-            break;
-          }
-        }
-        level = &levels.items[depth++];
-        if ( !PL_put_term(level->term, t) ) { k.failed = true; break; }
-        level->arity = arity;
-        level->next = 1;
-      }
-    } else if ( PL_get_blob(t, &blob, &blob_len, &type) && !(type->flags & PL_BLOB_TEXT) &&
-                PL_get_atom(t, &atom) )
-    { key_tag(&k, 'b', g_runtime.generation);
-      key_tag(&k, '.', (uintmax_t)atom);
-    } else if ( PL_is_atom(t) )
-      key_text(&k, 'a', t, CVT_ATOM);
-    else if ( PL_is_string(t) )
-      key_text(&k, 's', t, CVT_STRING);
-    else if ( PL_is_float(t) && PL_get_float(t, &d) )
-    { char buf[48];
-      int n = snprintf(buf, sizeof buf, "%a", d);
-      key_tag(&k, 'f', (uintmax_t)n);
-      key_put(&k, buf, (size_t)n);
-    } else
-      key_text(&k, 'n', t, CVT_WRITEQ);     /* integers and rationals, exact */
-
-    /* The next argument still to spell. Reading a compound's last argument
-       finishes it, so that argument takes over its level. */
-    t = 0;
-    if ( !k.failed && depth > 0 )
-    { key_level *top = &levels.items[depth - 1];
-      if ( !PL_get_arg(top->next, top->term, top->arg) ) { k.failed = true; break; }
-      t = top->arg;
-      if ( top->next++ == top->arity ) depth--;
-    }
-  }
-  stack_free(&levels);
-  mt_free(vars);
-  /* A reference the stacks could not hold left a resource exception behind;
-     the caller reports the failure itself, so the ball is not left pending
-     for the next call into the engine to trip over. */
-  if ( k.failed && PL_exception(0) ) PL_clear_exception();
-  PL_close_foreign_frame(f);
-  if ( k.failed ) { mt_free(k.data); return NULL; }
-  *len = k.len;
-  return k.data;
-}
-
+/* A native blob, held by reference: its record puts the identical blob back
+   when the handle is encoded, and its id is which value it is. */
 static mt_atom *handle_of(term_t t)
 { size_t len;
-  /* A non-text blob is written plainly and a compound quoted, the forms the
-     refusals below name it by. */
-  char *text = term_text(t, PL_is_atom(t) ? CVT_WRITE : CVT_WRITEQ, &len);
+  atom_t blob = 0;
+  char *text = PL_get_atom(t, &blob) ? term_text(t, CVT_WRITE, &len) : NULL;
   handle_ref *h = text ? mt_alloc(sizeof *h) : NULL;
   mt_atom *a = NULL;
-  if ( h )
-  { h->record = 0;
-    h->key = handle_key(t, &h->key_len);
-  }
-  if ( h && h->key && (h->record = PL_record(t)) )
-  { h->generation = g_runtime.generation;
+  if ( h && (h->record = PL_record(t)) )
+  { h->id = (handle_id){ g_runtime.generation, blob };
     if ( (a = atom_text(MT_HANDLE, text, len)) )
     { a->owner = h;
       a->release = handle_release;
@@ -2899,7 +2762,6 @@ static mt_atom *handle_of(term_t t)
   }
   if ( h )
   { if ( h->record ) PL_erase(h->record);
-    mt_free(h->key);
     mt_free(h);
   }
   mt_free(text);
@@ -2907,45 +2769,42 @@ static mt_atom *handle_of(term_t t)
   return a;
 }
 
-/* Every engine term with no children. */
-static mt_atom *decode_leaf(term_t t, term_t names)
-{ if ( PL_is_variable(t) )
-  { const char *name = variable_name(names, t);
-    return name ? atom_text(MT_VARIABLE, name, strlen(name)) : NULL;
-  }
-
-  if ( PL_is_integer(t) || PL_is_float(t) || PL_is_rational(t) )
-    return decode_number(t);
-
-  if ( PL_is_string(t) )
-  { size_t len;
-    char *text = term_text(t, CVT_STRING, &len);
-    mt_atom *a;
-    if ( !text )
-    { err_set(MT_NOMEM, "out of memory reading a string");
-      return NULL;
+/* Every engine term with no children, by the class PL_term_type() gave it. */
+static mt_atom *decode_leaf(term_t t, int type, term_t names)
+{ switch ( type )
+  { case PL_VARIABLE:
+    { const char *name = variable_name(names, t);
+      return name ? atom_text(MT_VARIABLE, name, strlen(name)) : NULL;
     }
-    a = atom_text(MT_TEXT, text, len);
-    mt_free(text);
-    return a;
-  }
-
-  /* Before the atom branch, and it has to be: every SWI atom is a blob
-     underneath, but PL_is_atom() is FALSE for a blob whose type does not
-     carry PL_BLOB_TEXT, so a native value asked about that way is neither an
-     atom nor anything else and falls off the end
-     [measured 2026-08-27: a mt_object reached the refusal branch and the
-     dispatcher answered "No permission to read argument `<counter>'";
-     tested: tests/test_cmetta.c, test_a_c_value_crosses_by_reference;
-     commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3].
-     The PL_BLOB_TEXT mask is the other half: without it an ordinary symbol
-     reads as a native value instead. */
-  { void *blob;
-    size_t blob_len;
-    PL_blob_t *type;
-    if ( PL_get_blob(t, &blob, &blob_len, &type) &&
-         !(type->flags & PL_BLOB_TEXT) )
-    { if ( type == &mt_object_blob )
+    case PL_INTEGER:
+    case PL_RATIONAL:
+    case PL_FLOAT:
+      return decode_number(t, type);
+    case PL_STRING:
+    { size_t len;
+      char *text = term_text(t, CVT_STRING, &len);
+      mt_atom *a;
+      if ( !text )
+      { err_set(MT_NOMEM, "out of memory reading a string");
+        return NULL;
+      }
+      a = atom_text(MT_TEXT, text, len);
+      mt_free(text);
+      return a;
+    }
+    /* A blob whose type does not carry PL_BLOB_TEXT: every SWI atom is a
+       blob underneath, and PL_term_type() answers PL_BLOB for exactly these,
+       so an ordinary symbol never reads as a native value
+       [measured 2026-08-27: a mt_object once reached the refusal branch and
+       the dispatcher answered "No permission to read argument `<counter>'";
+       tested: tests/test_cmetta.c, test_a_c_value_crosses_by_reference;
+       commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]. */
+    case PL_BLOB:
+    { void *blob;
+      size_t blob_len;
+      PL_blob_t *blob_type;
+      if ( !PL_get_blob(t, &blob, &blob_len, &blob_type) ) break;
+      if ( blob_type == &mt_object_blob )
       { mt_box_t *box = blob;
         if ( !box || blob_len != sizeof(*box) )
         { err_set(MT_UNSUPPORTED,
@@ -2961,41 +2820,39 @@ static mt_atom *decode_leaf(term_t t, term_t names)
          `h` tag's whole contract. */
       return handle_of(t);
     }
-  }
+    case PL_ATOM:
+    { size_t len;
+      char *text;
+      mt_atom *a;
 
-  if ( PL_is_atom(t) )
-  { size_t len;
-    char *text;
-    mt_atom *a;
-
-    if ( !(text = term_text(t, CVT_ATOM, &len)) )
-    { err_set(MT_NOMEM, "out of memory reading a symbol");
-      return NULL;
-    }
-    if ( strcmp(text, "true") == 0 || strcmp(text, "false") == 0 )
-    { a = mt_bool(text[0] == 't');
+      if ( !(text = term_text(t, CVT_ATOM, &len)) )
+      { err_set(MT_NOMEM, "out of memory reading a symbol");
+        return NULL;
+      }
+      if ( strcmp(text, "true") == 0 || strcmp(text, "false") == 0 )
+      { a = mt_bool(text[0] == 't');
+        mt_free(text);
+        return a;
+      }
+      a = atom_text(is_space(t) ? MT_SPACE : MT_SYMBOL,
+                    text, len);
       mt_free(text);
       return a;
     }
-    a = atom_text(is_space(t) ? MT_SPACE : MT_SYMBOL,
-                  text, len);
-    mt_free(text);
-    return a;
+    default:
+      break;
   }
-
-  /* A term with no MeTTa structure, a partial application or a closure. It
-     used to be refused, which failed every answer of a run that held one,
-     while the engine prints it and the Python seat reads it; held by
-     reference it prints as the engine prints it and goes home unchanged. */
-  return handle_of(t);
+  return written(t);
 }
 
 /* One expression being built: the children taken so far, and how far along
-   the engine's list this level has walked. */
+   the engine's list this level has walked. An improper list's tail is its
+   last child, and `improper` folds the level into cons cells at its end. */
 typedef struct decode_frame
 { mt_atom **kids;
   size_t    n, cap;
   term_t    tail;
+  bool      improper;
 } decode_frame;
 
 typedef MT_STACK(decode_frame) decode_stack;
@@ -3015,6 +2872,7 @@ static bool decode_frame_push(decode_stack *frames, decode_tails *tails)
   frame.kids = NULL;
   frame.n = frame.cap = 0;
   frame.tail = tails->items[frames->n];
+  frame.improper = false;
   /* Beyond the ten a foreign frame guarantees, PL_new_term_ref() can answer
      0 with a resource exception scheduled, so it is checked
      [source: SWI-Prolog manual, PL_open_foreign_frame: "On success, the stack
@@ -3041,9 +2899,85 @@ static inline bool decode_frame_add(decode_frame *f, mt_atom *kid)
   return true;
 }
 
-/* An engine term as a C atom. A leaf answers at once; an expression is walked
-   with a stack of levels, so a term nested deeper than the C stack can hold
-   decodes rather than killing the process. */
+/* Open a level on the compound or [] in the next depth's reference. A list
+   is walked as it stands. Any other compound is the expression (F args...)
+   of the shared wire grammar: its functor, always a symbol, is the level's
+   first child, and its arguments, put in a list built in the two scratch
+   references, replace it in the level's reference, so a zero-arity compound
+   is (F). 1 when a level is open; 0 when the functor is no text and the term
+   is a leaf after all; -1 on failure, the reason recorded.
+   Time: one list cell per argument, on the global stack of the caller's
+   frame. */
+static int decode_open(decode_stack *frames, decode_tails *tails, int type,
+                       term_t *scratch)
+{ term_t t = tails->items[frames->n];
+  atom_t name;
+  size_t arity, i, len;
+  char *text;
+  mt_atom *functor;
+
+  if ( type == PL_LIST_PAIR || type == PL_NIL )
+    return decode_frame_push(frames, tails) ? 1 : -1;
+
+  if ( !PL_get_name_arity(t, &name, &arity) ||
+       (!*scratch && !(*scratch = PL_new_term_refs(2))) ||
+       !PL_put_atom(*scratch, name) )
+    return -1;
+  if ( !(text = term_text(*scratch, CVT_ATOM, &len)) ) return 0;
+  functor = atom_text(MT_SYMBOL, text, len);
+  mt_free(text);
+  if ( !functor ) return -1;
+
+  if ( !PL_put_nil(*scratch) )
+  { mt_drop(functor);
+    return -1;
+  }
+  for (i = arity; i > 0; i--)
+    if ( !PL_get_arg(i, t, *scratch + 1) || !PL_cons_list(*scratch, *scratch + 1, *scratch) )
+    { mt_drop(functor);
+      return -1;
+    }
+  if ( !PL_put_term(t, *scratch) || !decode_frame_push(frames, tails) )
+  { mt_drop(functor);
+    return -1;
+  }
+  if ( !decode_frame_add(stack_top(frames), functor) )
+  { mt_drop(functor);
+    return -1;
+  }
+  return 1;
+}
+
+/* An improper list's children, the tail last, as the wire grammar's nested
+   (cons Head Tail): [a, b | c] is (cons a (cons b c)). TAKES the children.
+   Time and space: one expression per cell. */
+static mt_atom *cons_chain(size_t n, mt_atom **kids)
+{ mt_atom *cons = mt_sym("cons"), *acc = kids[n - 1];
+  size_t i = n - 1;
+  while ( i > 0 && acc && cons )
+  { mt_atom *cell[3] = { mt_keep(cons), kids[i - 1], acc };
+    acc = mt_exprv(3, cell);
+    i--;
+  }
+  if ( !acc || !cons )
+  { while ( i > 0 ) mt_drop(kids[--i]);
+    mt_drop(acc);
+    acc = NULL;
+  }
+  mt_drop(cons);
+  return acc;
+}
+
+/* An engine term as a C atom, in the wire grammar every seat reads
+   [source: extensions/python/metta/_binding/wire.pl, metta_py_encode/4;
+   docs/journal/2026-09-05-node-runtime-gaps.md;
+   commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761]: a proper list is an
+   expression, an improper one (cons Head Tail) along its spine, any other
+   compound (F args...), a variable keeps its identity, and a native blob is
+   a handle. A leaf answers at once; an expression is walked with a stack of
+   levels, so a term nested deeper than the C stack can hold decodes rather
+   than killing the process. A cyclic term never ends: decode_answer() is the
+   door for a term the engine answered, which can be one. */
 static mt_atom *decode(term_t t, term_t names)
 { decode_frame fixed[MT_WALK_FRAMES];
   decode_stack frames;
@@ -3053,22 +2987,25 @@ static mt_atom *decode(term_t t, term_t names)
   decode_vars seen, *outer = tls_decode_vars;
   decode_frame *f;
   mt_atom *value = NULL;
-  term_t head;
+  term_t head, scratch = 0;
   size_t i;
+  int opened, type = PL_term_type(t);
 
   stack_init(&seen, fixed_vars);
   tls_decode_vars = &seen;
-  if ( !decode_is_expr(t) )
-  { value = decode_leaf(t, names);
+  if ( !opens_level(type) )
+  { value = decode_leaf(t, type, names);
     goto named;
   }
 
   stack_init(&frames, fixed);
   stack_init(&tails, fixed_tails);
-  /* The root's list is walked in a copy, so the caller's reference keeps it. */
+  /* The root is walked in a copy, so the caller's reference keeps it. */
   if ( !(head = PL_copy_term_ref(t)) || !stack_push(&tails, head) ||
-       !decode_frame_push(&frames, &tails) )
+       (opened = decode_open(&frames, &tails, type, &scratch)) < 0 )
     err_set(MT_NOMEM, "out of memory decoding an expression");
+  else if ( opened == 0 )
+    value = written(t);
 
   /* `f` is read out of the stack only where it can have MOVED, which is a
      push or a pop, so the children of one level are taken in a loop that
@@ -3077,40 +3014,49 @@ static mt_atom *decode(term_t t, term_t names)
   { mt_atom *kid;
 
     head = tails.items[frames.n];
-    if ( PL_get_list(f->tail, head, f->tail) )
-    { if ( decode_is_expr(head) )
-      { /* Descend. `f` is not touched afterwards: the push may move it. */
-        if ( decode_frame_push(&frames, &tails) ) continue;
-        err_set(MT_NOMEM, "out of memory decoding an expression");
-        break;
+    if ( !PL_get_list(f->tail, head, f->tail) )
+    { if ( !PL_get_nil(f->tail) )
+      { /* An improper list: its tail is the level's last child. */
+        if ( !PL_put_term(head, f->tail) || !PL_put_nil(f->tail) )
+        { err_set(MT_NOMEM, "out of memory decoding an expression");
+          break;
+        }
+        f->improper = true;
+      } else
+      { /* This level is complete: the children are taken, the array is
+           this walk's to free, and the result becomes a child of the level
+           above or the answer itself. */
+        kid = f->improper ? cons_chain(f->n, f->kids) : mt_exprv(f->n, f->kids);
+        mt_free(f->kids);
+        stack_pop(&frames);
+        if ( !kid ) break;
+        if ( !(f = stack_top(&frames)) )
+        { value = kid;
+          break;
+        }
+        if ( !decode_frame_add(f, kid) )
+        { mt_drop(kid);
+          err_set(MT_NOMEM, "out of memory decoding an expression");
+          break;
+        }
+        continue;
       }
-      if ( !(kid = decode_leaf(head, names)) ) break;   /* it said why */
-      if ( !decode_frame_add(f, kid) )
-      { mt_drop(kid);
-        err_set(MT_NOMEM, "out of memory decoding an expression");
-        break;
-      }
-      continue;
     }
 
-    if ( !PL_get_nil(f->tail) )
-    { err_set(MT_UNSUPPORTED,
-              "a partial list is not a MeTTa expression; the engine handed "
-              "back a term with an unbound or non-list tail");
-      break;
-    }
-
-    /* This level is complete: mt_exprv steals the children, the array is
-       this walk's to free, and the result becomes a child of the level
-       above or the answer itself. */
-    kid = mt_exprv(f->n, f->kids);
-    mt_free(f->kids);
-    stack_pop(&frames);
-    if ( !kid ) break;
-    if ( !(f = stack_top(&frames)) )
-    { value = kid;
-      break;
-    }
+    /* One child, in `head`. */
+    type = PL_term_type(head);
+    if ( opens_level(type) )
+    { /* Descend. `f` is not touched afterwards: the push may move it. */
+      opened = decode_open(&frames, &tails, type, &scratch);
+      if ( opened > 0 ) continue;
+      if ( opened < 0 )
+      { if ( mt_ok() ) err_set(MT_NOMEM, "out of memory decoding an expression");
+        break;
+      }
+      kid = written(head);
+    } else
+      kid = decode_leaf(head, type, names);
+    if ( !kid ) break;                                   /* it said why */
     if ( !decode_frame_add(f, kid) )
     { mt_drop(kid);
       err_set(MT_NOMEM, "out of memory decoding an expression");
@@ -3131,6 +3077,26 @@ named:
   for (i = 0; i < seen.n; i++) mt_free(seen.items[i].name);
   stack_free(&seen);
   return value;
+}
+
+/* A term the engine ANSWERED, which unification without an occurs check can
+   make a rational tree. No atom holds one and the walk would never end, so
+   it is refused by name, at the sites the Python seat refuses it
+   [source: extensions/python/metta/_binding/source.pl,
+   metta_py_wire_acyclic/1; commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761]:
+   answers, groups and a published function's arguments. A parse and a
+   stored atom are finite by construction and take decode() directly.
+   [tested: tests/test_internal_contracts.c,
+   test_a_cyclic_answer_is_refused_by_name; commit=WORKTREE] */
+static mt_atom *decode_answer(term_t t, term_t names)
+{ if ( !PL_is_acyclic(t) )
+  { err_set(MT_UNSUPPORTED,
+            "a rational-tree answer has no finite C form: the engine answered "
+            "a cyclic term, which no atom can hold; match with the stored atom "
+            "as the template to read the atoms themselves");
+    return NULL;
+  }
+  return decode(t, names);
 }
 
 /* --- the other direction ------------------------------------------ */
@@ -3281,7 +3247,7 @@ static bool encode_leaf(const mt_atom *a, term_t out, encode_ctx *ctx)
     case MT_HANDLE:
       if ( a->release == handle_release )
       { const handle_ref *h = a->owner;
-        if ( h->generation == g_runtime.generation )
+        if ( h->id.generation == g_runtime.generation )
           return PL_recorded(h->record, out);
         err_set(MT_UNSUPPORTED,
                 "%s was held by a runtime that has since closed; the value "
@@ -3843,7 +3809,7 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
   if ( registration ) MT_INC(&registration->refs);
   call->runtime = &g_runtime;
   while ( PL_get_list(tail, head, tail) )
-  { mt_atom *atom = decode(head, 0);
+  { mt_atom *atom = decode_answer(head, 0);
     if ( !atom )
     { rc = PL_permission_error("read", "argument", head);
       goto done;
@@ -4916,7 +4882,7 @@ static mt_status collect_groups(term_t groups, mt_answers *out)
 
       if ( av && PL_unify(av, answer) &&
            call_bridge("metta_c_answer_parts", 4, av) == MT_OK )
-      { atom = decode(av + 1, av + 2);
+      { atom = decode_answer(av + 1, av + 2);
         text = term_text(av + 3, CVT_ATOM | CVT_STRING, NULL);
       }
       frame_close(f);
@@ -5379,7 +5345,7 @@ static mt_status answers_pull(mt_answers *answers, const char *door)
   { term_t parts = PL_new_term_refs(4);
     if ( parts && PL_unify(parts, head) &&
          call_bridge("metta_c_answer_parts", 4, parts) == MT_OK )
-    { answers->current = decode(parts + 1, parts + 2);
+    { answers->current = decode_answer(parts + 1, parts + 2);
       answers->current_text = term_text(parts + 3, CVT_ATOM | CVT_STRING, NULL);
     }
   }
@@ -5791,11 +5757,12 @@ static PL_blob_t test_handle_blob =
 /* Construct somebody else's real SWI blobs inside the fault library, decode
    them through the MT_HANDLE branch, and prove a handle goes back as the very
    same blob, that one blob decoded twice is one value while two that print
-   alike are two, and that a handle holding no engine term, which only this
-   library can make, still refuses to be sent back by its printed form. No public
-   constructor is invented for a native value C cannot itself own.
+   alike are two, that a compound holding them is an expression whose child is
+   the handle, and that a handle holding no engine term, which only this
+   library can make, still refuses to be sent back by its printed form. No
+   public constructor is invented for a native value C cannot itself own.
    [tested: tests/test_internal_contracts.c,
-   test_native_handle_decode_and_encode_contract; commit=0733adc4f214bdcb37dce6f378ff75611b79b126] */
+   test_native_handle_decode_and_encode_contract; commit=WORKTREE] */
 bool mt_test_native_handle_codec_round_trips(void)
 { static const unsigned payload = UINT32_C(0xc0decafe), other = UINT32_C(0xfeedface);
   fid_t frame = frame_open("testing a native engine handle");
@@ -5824,7 +5791,8 @@ bool mt_test_native_handle_codec_round_trips(void)
        mt_hash(decoded) != mt_hash(again) || mt_eq(decoded, different) ||
        mt_compare(decoded, different) == 0 )
     goto done;
-  /* So do compounds holding them: wrap(<blob>) and wrap(<look-alike>). */
+  /* A compound holding one is the expression (wrap <handle>), and the
+     handle inside keeps the blob's identity. */
   { functor_t wrap = PL_new_functor(PL_new_atom("wrap"), 1);
     term_t one = PL_new_term_ref(), two = PL_new_term_ref();
     mt_atom *first, *second, *first_again;
@@ -5835,7 +5803,8 @@ bool mt_test_native_handle_codec_round_trips(void)
     first = decode(one, 0);
     second = decode(two, 0);
     first_again = decode(one, 0);
-    distinct = first && second && first_again && mt_kind_of(first) == MT_HANDLE &&
+    distinct = first && second && first_again && mt_kind_of(first) == MT_EXPR &&
+               mt_len(first) == 2 && mt_kind_of(mt_at(first, 1)) == MT_HANDLE &&
                !mt_eq(first, second) && mt_eq(first, first_again) &&
                mt_hash(first) == mt_hash(first_again);
     mt_drop(first);
@@ -5857,17 +5826,30 @@ done:
   return whole;
 }
 
-/* A handle over a long list, wrap([1, 2, ..., length]), decoded through the
-   handle branch. Its key walk holds two references per level and a list's
-   tail takes its cell's level, so the list is one level: it decodes under a
-   stack limit with room for the list once, where the walk that made three
-   references per cell needed room for it twice.
+/* An MT_HANDLE over a fresh test blob, for the tests that need native
+   handles: the engine hands its own resources out as numbers and spaces, so
+   only a host's objects arrive as blobs, and the public surface has no way to
+   make one. One seed is one blob, so two handles over a seed are equal. */
+mt_atom *mt_test_foreign_handle(unsigned seed)
+{ fid_t frame = frame_open("making a test handle");
+  term_t blob = frame ? PL_new_term_ref() : 0;
+  mt_atom *handle = blob && PL_put_blob(blob, &seed, sizeof seed, &test_handle_blob)
+                  ? decode(blob, 0) : NULL;
+  frame_close(frame);
+  return handle;
+}
+
+/* A compound over a long list, wrap([1, 2, ..., length]), decodes as the
+   expression (wrap (1 2 ... length)). The walk holds one reference per level
+   and the list is one level, so it decodes under a stack limit with room for
+   the list once; the key walk this replaced made three references per cell
+   and needed room for it twice.
    [tested: tests/test_internal_contracts.c,
-   test_a_long_list_handle_keys_in_constant_references; commit=6e91a33be09722c403ae665dd7affd608a067437] */
-bool mt_test_long_list_handle_decodes(size_t length)
-{ fid_t frame = frame_open("testing a long list held as a handle");
+   test_a_long_list_compound_decodes_in_constant_references; commit=WORKTREE] */
+bool mt_test_long_list_compound_decodes(size_t length)
+{ fid_t frame = frame_open("testing a compound over a long list");
   term_t list, item, wrapped;
-  mt_atom *held = NULL;
+  mt_atom *read = NULL;
   bool decoded = false;
   size_t i;
 
@@ -5881,14 +5863,89 @@ bool mt_test_long_list_handle_decodes(size_t length)
       goto done;
   if ( !PL_cons_functor(wrapped, PL_new_functor(PL_new_atom("wrap"), 1), list) )
     goto done;
-  held = decode(wrapped, 0);
-  decoded = held && mt_kind_of(held) == MT_HANDLE;
+  read = decode(wrapped, 0);
+  decoded = read && mt_kind_of(read) == MT_EXPR && mt_len(read) == 2 &&
+            mt_len(mt_at(read, 1)) == length;
 done:
   /* A list the stacks could not hold leaves its resource error pending. */
   if ( !decoded && PL_exception(0) ) PL_clear_exception();
-  mt_drop(held);
+  mt_drop(read);
   frame_close(frame);
   return decoded;
+}
+
+/* The shared wire grammar, shape by shape, against what each shape must
+   decode to: the Node seat's three edge cases, zero arity, an improper list
+   and a variable shared into a partial application, then a longer improper
+   list, an unbound tail, nested partials, the leaf kinds inside a compound,
+   and a functor that names a space, which is still a symbol
+   [source: extensions/node/test/binding.test.ts, "carries compound edge
+   cases under the shared expression grammar";
+   commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761].
+   [tested: tests/test_internal_contracts.c,
+   test_compounds_decode_in_the_shared_wire_grammar; commit=WORKTREE] */
+bool mt_test_wire_grammar(void)
+{ struct { const char *prolog; mt_atom *want; } cases[] = {
+    { "zero()", mt_expr("zero") },
+    { "[a|b]", mt_expr("cons", "a", "b") },
+    { "pair(X, partial(f, [X]))", mt_expr("pair", mt_var("x"), mt_expr("partial", "f", mt_expr(mt_var("x")))) },
+    { "[a, b|c]", mt_expr("cons", "a", mt_expr("cons", "b", "c")) },
+    { "[a|T]", mt_expr("cons", "a", mt_var("t")) },
+    { "partial(partial(+, [1]), [2])", mt_expr("partial", mt_expr("partial", "+", mt_expr(1)), mt_expr(2)) },
+    { "f(g(h(1)), \"s\", 2.5, [], true)", mt_expr("f", mt_expr("g", mt_expr("h", 1)), mt_text("s"), 2.5, mt_unit(), mt_bool(true)) },
+    { "'&self'(a)", mt_expr(mt_sym("&self"), "a") },
+  };
+  size_t n = sizeof cases / sizeof *cases, i;
+  bool all = true;
+  fid_t frame = frame_open("testing the wire grammar");
+  term_t t = frame ? PL_new_term_ref() : 0;
+
+  for (i = 0; i < n; i++)
+  { mt_atom *got = NULL;
+    if ( t && PL_chars_to_term(cases[i].prolog, t) ) got = decode_answer(t, 0);
+    if ( !got || !cases[i].want || !mt_alpha_eq(got, cases[i].want) )
+    { fprintf(stderr, "wire grammar: %s decoded as %s\n", cases[i].prolog,
+              got ? mt_show(got) : "(nothing)");
+      all = false;
+    }
+    /* The functor is a symbol even where a leaf of its name is a space. */
+    if ( i == n - 1 && got && mt_kind_of(mt_at(got, 0)) != MT_SYMBOL ) all = false;
+    mt_drop(got);
+    mt_drop(cases[i].want);
+  }
+  frame_close(frame);
+  return all;
+}
+
+/* A cyclic term, X = f(X), handed to the door answers take, is refused by
+   name rather than walked forever; the same door decodes f(a) as ever.
+   [tested: tests/test_internal_contracts.c,
+   test_a_cyclic_answer_is_refused_by_name; commit=WORKTREE] */
+bool mt_test_cyclic_answer_refused(void)
+{ fid_t frame = frame_open("testing a cyclic answer");
+  term_t x, fx, fa;
+  functor_t f = PL_new_functor(PL_new_atom("f"), 1);
+  mt_atom *cyclic = NULL, *finite = NULL;
+  bool refused = false, decoded = false;
+
+  if ( !frame ) return false;
+  x = PL_new_term_ref();
+  fx = PL_new_term_ref();
+  fa = PL_new_term_ref();
+  if ( x && fx && fa && PL_cons_functor(fx, f, x) && PL_unify(x, fx) &&
+       PL_put_atom_chars(fa, "a") && PL_cons_functor(fa, f, fa) )
+  { mt_clear();
+    cyclic = decode_answer(x, 0);
+    refused = !cyclic && mt_error() == MT_UNSUPPORTED && mt_errmsg() &&
+              strstr(mt_errmsg(), "rational-tree answer") != NULL;
+    mt_clear();
+    finite = decode_answer(fa, 0);
+    decoded = finite && mt_len(finite) == 2;
+  }
+  mt_drop(cyclic);
+  mt_drop(finite);
+  frame_close(frame);
+  return refused && decoded;
 }
 
 /* The close handshake, made deterministic: with a close announced, a handle
@@ -5896,18 +5953,19 @@ done:
    it does. The concurrent case is the race this rule exists for, and it is
    too narrow to reproduce on demand, so the rule is tested where it decides.
    [tested: tests/test_internal_contracts.c,
-   test_a_handle_released_during_close_leaves_its_record; commit=6e91a33be09722c403ae665dd7affd608a067437] */
+   test_a_handle_released_during_close_leaves_its_record; commit=WORKTREE] */
 bool mt_test_close_handshake_skips_erase(void)
-{ fid_t frame = frame_open("testing the handle close handshake");
-  term_t partial;
+{ static const unsigned payload = UINT32_C(0xc105ed);
+  fid_t frame = frame_open("testing the handle close handshake");
+  term_t blob;
   mt_atom *during = NULL, *after = NULL;
   unsigned before;
   bool skipped = false, erased = false;
 
   if ( !frame ) return false;
-  partial = PL_new_term_ref();
-  if ( !partial || !PL_chars_to_term("partial(+,[1])", partial) ) goto done;
-  if ( !(during = decode(partial, 0)) || !(after = decode(partial, 0)) ) goto done;
+  blob = PL_new_term_ref();
+  if ( !blob || !PL_put_blob(blob, (void *)&payload, sizeof(payload), &test_handle_blob) ) goto done;
+  if ( !(during = decode(blob, 0)) || !(after = decode(blob, 0)) ) goto done;
 
   before = MT_SC_LOAD(&g_test_record_erases);
   MT_SC_STORE(&g_closing, true);
