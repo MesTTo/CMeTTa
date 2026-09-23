@@ -290,7 +290,7 @@ typedef enum mt_kind {
    mt_write_dup() refuses it, having no source spelling. A handle cannot
    outlive the runtime that answered it: after mt_close() passing it back is
    refused by name [tested: tests/test_cmetta.c,
-   test_an_engine_value_crosses_back_whole; commit=WORKTREE]. */
+   test_an_engine_value_crosses_back_whole; commit=0733adc4f214bdcb37dce6f378ff75611b79b126]. */
 
 MT_API const char *mt_kind_str(mt_kind kind);
 

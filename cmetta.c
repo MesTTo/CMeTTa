@@ -26,7 +26,7 @@
  *     partial application, is held by reference as an MT_HANDLE: it prints
  *     as the engine prints it and goes back as the identical term, never as
  *     text that cannot go home again [tested: tests/test_cmetta.c,
- *     test_an_engine_value_crosses_back_whole; commit=WORKTREE]
+ *     test_an_engine_value_crosses_back_whole; commit=0733adc4f214bdcb37dce6f378ff75611b79b126]
  *   - an ampersand-prefixed atom becomes MT_SPACE only when the engine
  *     says it is a space [tested: test_a_user_space_decodes_as_a_space;
  *     commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
@@ -2616,7 +2616,7 @@ static bool decode_is_expr(term_t t)
    the handle's last release only while that runtime is still open; after
    mt_close() the heap it lived in is gone with the runtime.
    [tested: tests/test_cmetta.c, test_an_engine_value_crosses_back_whole;
-   commit=WORKTREE] */
+   commit=0733adc4f214bdcb37dce6f378ff75611b79b126] */
 typedef struct handle_ref
 { record_t record;
   uint64_t generation;
@@ -5404,7 +5404,7 @@ static PL_blob_t test_handle_blob =
    can make, still refuses to be sent back by its printed form. No public
    constructor is invented for a native value C cannot itself own.
    [tested: tests/test_internal_contracts.c,
-   test_native_handle_decode_and_encode_contract; commit=WORKTREE] */
+   test_native_handle_decode_and_encode_contract; commit=0733adc4f214bdcb37dce6f378ff75611b79b126] */
 bool mt_test_native_handle_codec_round_trips(void)
 { static const unsigned payload = UINT32_C(0xc0decafe);
   fid_t frame = frame_open("testing a native engine handle");
