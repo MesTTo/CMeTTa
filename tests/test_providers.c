@@ -8,7 +8,7 @@
  *   [tested: test_providers; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5].
  * Guarantees: a compound stored through a provider comes back as the term it
  *   was, applying, sharing its variables and removing by value
- *   [tested: test_a_stored_compound_comes_back_whole; commit=WORKTREE].
+ *   [tested: test_a_stored_compound_comes_back_whole; commit=256a3a6aa4248e89c7b007edacc6832d62eb4594].
  * Open Obligations: None.
  */
 #include <cmetta.h>

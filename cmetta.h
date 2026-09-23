@@ -319,7 +319,7 @@ typedef enum mt_kind {
    names in this crossing, since those names are what a carried term shares
    with the atom around it, and mt_alpha_eq renames them with the rest of the
    atom [tested: tests/test_internal_contracts.c,
-   test_a_provider_carries_what_it_stores; commit=WORKTREE]. A handle cannot
+   test_a_provider_carries_what_it_stores; commit=256a3a6aa4248e89c7b007edacc6832d62eb4594]. A handle cannot
    outlive the runtime that answered it: after mt_close() passing it back is
    refused by name [tested: tests/test_reopen.c,
    test_a_handle_does_not_outlive_its_runtime;
@@ -1291,7 +1291,7 @@ MT_API bool mt_repr(metta *runtime, const char *type_name, mt_text_fn text,
    it by value: the carried handle in the engine's argument is mt_eq to the
    stored one, while the list that spells its expression is another atom
    [tested: tests/test_providers.c, test_a_stored_compound_comes_back_whole;
-   commit=WORKTREE]. A store that writes its atoms out as source cannot
+   commit=256a3a6aa4248e89c7b007edacc6832d62eb4594]. A store that writes its atoms out as source cannot
    write a carried one: mt_write_dup() refuses it by name.
 
    Callbacks return MT_OK or an error set with mt_error_set. remove additionally

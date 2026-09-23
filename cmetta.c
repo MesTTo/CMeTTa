@@ -3512,7 +3512,7 @@ static mt_atom *decode(term_t t, term_t names)
    answer, since a stored atom is refused the same way when it is not.
    [tested: tests/test_internal_contracts.c, test_a_provider_carries_what_it_stores
    and tests/test_providers.c, test_a_stored_compound_comes_back_whole;
-   commit=WORKTREE] */
+   commit=256a3a6aa4248e89c7b007edacc6832d62eb4594] */
 static mt_atom *decode_carried(term_t t, term_t names)
 { if ( !PL_is_acyclic(t) )
   { err_set(MT_UNSUPPORTED,
@@ -6432,7 +6432,7 @@ static bool test_variant(term_t a, term_t b)
    two; two readings of a term with variables differ by the names each
    crossing gave them, and are alpha equal exactly when they share alike.
    [tested: tests/test_internal_contracts.c,
-   test_a_provider_carries_what_it_stores; commit=WORKTREE] */
+   test_a_provider_carries_what_it_stores; commit=256a3a6aa4248e89c7b007edacc6832d62eb4594] */
 bool mt_test_carry_round_trips(void)
 { /* `shape` gives each child of the top expression: h a handle, e an
      expression, . any other atom; the empty string, a handle at the root. */
