@@ -5,6 +5,9 @@
  * [tested: test_native_atoms_match_engine_terms,
  * test_unicode_terms_and_names; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
  * Owns resources: releases every atom, list, substitution and runtime.
+ * Guarantees: source plans preserve all five C callback effects, join overloads,
+ *   and do not execute the goal [tested: test_source_effect_plans; commit=WORKTREE].
+ * Open Obligations: None.
  */
 #include <cmetta.h>
 #include <assert.h>

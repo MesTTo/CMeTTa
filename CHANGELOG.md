@@ -1,3 +1,6 @@
+<!-- Purpose: record changes to the C surface and their regression witnesses.
+Open Obligations: None. -->
+
 # Changelog
 
 ## Unreleased

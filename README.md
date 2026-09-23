@@ -1,5 +1,6 @@
 <!--
 Purpose: show the C API through examples, with cmetta.h as the contract.
+Open Obligations: None.
 -->
 
 # CMeTTa
