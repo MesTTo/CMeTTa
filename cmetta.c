@@ -2499,7 +2499,7 @@ static bool name_pair(term_t pair, term_t name, term_t var)
    16,000 distinct variables exhausted the stacks and the 0 PL_new_term_ref
    answered then aborted the process inside PL_get_arg [measured 2026-09-24:
    a probe parsing (f $v0 ... $v15999); tested: tests/test_cmetta.c,
-   test_many_variables_are_named_without_aborting; commit=WORKTREE].
+   test_many_variables_are_named_without_aborting; commit=6e91a33be09722c403ae665dd7affd608a067437].
    Time: one PL_compare per pair. */
 static bool source_name(term_t names, term_t var, char **name)
 { fid_t f;
@@ -2743,7 +2743,7 @@ static void handle_release(void *owner)
    the walk runs in a foreign frame of its own. A compound's last argument
    takes its parent's level, so a list of any length is one level
    [tested: tests/test_internal_contracts.c,
-   test_a_long_list_handle_keys_in_constant_references; commit=WORKTREE]. */
+   test_a_long_list_handle_keys_in_constant_references; commit=6e91a33be09722c403ae665dd7affd608a067437]. */
 typedef struct key_buf { char *data; size_t len, cap; bool failed; } key_buf;
 
 static void key_put(key_buf *k, const char *bytes, size_t n)
@@ -5756,7 +5756,7 @@ done:
    stack limit with room for the list once, where the walk that made three
    references per cell needed room for it twice.
    [tested: tests/test_internal_contracts.c,
-   test_a_long_list_handle_keys_in_constant_references; commit=WORKTREE] */
+   test_a_long_list_handle_keys_in_constant_references; commit=6e91a33be09722c403ae665dd7affd608a067437] */
 bool mt_test_long_list_handle_decodes(size_t length)
 { fid_t frame = frame_open("testing a long list held as a handle");
   term_t list, item, wrapped;
@@ -5789,7 +5789,7 @@ done:
    it does. The concurrent case is the race this rule exists for, and it is
    too narrow to reproduce on demand, so the rule is tested where it decides.
    [tested: tests/test_internal_contracts.c,
-   test_a_handle_released_during_close_leaves_its_record; commit=WORKTREE] */
+   test_a_handle_released_during_close_leaves_its_record; commit=6e91a33be09722c403ae665dd7affd608a067437] */
 bool mt_test_close_handshake_skips_erase(void)
 { fid_t frame = frame_open("testing the handle close handshake");
   term_t partial;

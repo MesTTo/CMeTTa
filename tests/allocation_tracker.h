@@ -4,7 +4,7 @@
  * fail_at is configured only while the test owns allocation activity.
  * Guarantees: zero blocks and bytes after teardown means all allocations made
  * through this allocator were released [tested: tests/test_ownership.c,
- * tests/test_transactions.c; commit=WORKTREE].
+ * tests/test_transactions.c; commit=6e91a33be09722c403ae665dd7affd608a067437].
  */
 #ifndef CMETTA_ALLOCATION_TRACKER_H
 #define CMETTA_ALLOCATION_TRACKER_H

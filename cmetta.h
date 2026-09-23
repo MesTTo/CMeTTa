@@ -293,7 +293,7 @@ typedef enum mt_kind {
    print alike; a
    held compound's variables are its own, fresh each time it goes back, so a
    variant is the one identity it keeps [tested: tests/test_internal_contracts.c,
-   test_native_handle_decode_and_encode_contract; commit=WORKTREE]. A handle cannot
+   test_native_handle_decode_and_encode_contract; commit=6e91a33be09722c403ae665dd7affd608a067437]. A handle cannot
    outlive the runtime that answered it: after mt_close() passing it back is
    refused by name [tested: tests/test_cmetta.c,
    test_an_engine_value_crosses_back_whole; commit=0733adc4f214bdcb37dce6f378ff75611b79b126]. */
@@ -426,7 +426,7 @@ MT_API mt_kind mt_kind_of(const mt_atom *atom);
    a BIGINT, the engine's written form of a HANDLE, such as partial(+,[1]).
    NULL for every other kind. Borrowed. A handle's written form presents it
    and does not identify it; see MT_HANDLE [tested: tests/test_cmetta.c,
-   test_an_engine_value_crosses_back_whole; commit=WORKTREE]. */
+   test_an_engine_value_crosses_back_whole; commit=6e91a33be09722c403ae665dd7affd608a067437]. */
 MT_API const char *mt_name(const mt_atom *atom);
 MT_API size_t mt_name_len(const mt_atom *atom);
 
