@@ -294,7 +294,7 @@ typedef enum mt_kind {
    rather than a function that applies; a variable keeps its identity; and
    a cyclic answer is refused by name [tested: tests/test_internal_contracts.c,
    test_compounds_decode_in_the_shared_wire_grammar and
-   test_a_cyclic_answer_is_refused_by_name; commit=WORKTREE].
+   test_a_cyclic_answer_is_refused_by_name; commit=65b02ca599b0db696faf221f4f39e94210013fc1].
 
    An MT_HANDLE is the one value with no structure: a native blob, such as a
    host language's object, held by reference. mt_show() prints it as the
@@ -303,10 +303,10 @@ typedef enum mt_kind {
    mt_eq, hash alike and compare equal exactly when they hold one blob of one
    runtime, never merely because they print alike [tested:
    tests/test_internal_contracts.c, test_native_handle_decode_and_encode_contract;
-   commit=WORKTREE]. A handle cannot outlive the runtime that answered it:
+   commit=65b02ca599b0db696faf221f4f39e94210013fc1]. A handle cannot outlive the runtime that answered it:
    after mt_close() passing it back is refused by name [tested:
    tests/test_reopen.c, test_a_handle_does_not_outlive_its_runtime;
-   commit=WORKTREE]. */
+   commit=65b02ca599b0db696faf221f4f39e94210013fc1]. */
 
 MT_API const char *mt_kind_str(mt_kind kind);
 
@@ -829,7 +829,7 @@ MT_API MT_MUST_USE mt_answers *mt_space_query(mt_space *space, mt_atom *pattern,
    MT_MISUSE when neither holds a named variable, `_` being no name.
    Longhand: (let pattern subject ($x $y ...)) [tested: tests/test_cmetta.c,
    test_solve_runs_let_backwards_and_reads_bindings_by_name;
-   commit=WORKTREE]. */
+   commit=65b02ca599b0db696faf221f4f39e94210013fc1]. */
 MT_API MT_MUST_USE mt_answers *mt_self_solve(metta *runtime, mt_atom *pattern,
                                             mt_atom *subject);
 MT_API MT_MUST_USE mt_answers *mt_space_solve(mt_space *space, mt_atom *pattern,

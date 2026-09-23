@@ -28,10 +28,10 @@
  *     value with no structure, held by reference as an MT_HANDLE that goes
  *     back as the identical blob [tested: tests/test_internal_contracts.c,
  *     test_compounds_decode_in_the_shared_wire_grammar and
- *     test_native_handle_decode_and_encode_contract; commit=WORKTREE]
+ *     test_native_handle_decode_and_encode_contract; commit=65b02ca599b0db696faf221f4f39e94210013fc1]
  *   - a cyclic answer is refused by name rather than walked forever
  *     [tested: tests/test_internal_contracts.c,
- *     test_a_cyclic_answer_is_refused_by_name; commit=WORKTREE]
+ *     test_a_cyclic_answer_is_refused_by_name; commit=65b02ca599b0db696faf221f4f39e94210013fc1]
  *   - an ampersand-prefixed atom becomes MT_SPACE only when the engine
  *     says it is a space [tested: test_a_user_space_decodes_as_a_space;
  *     commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
@@ -2715,7 +2715,7 @@ static mt_atom *written(term_t t)
    runtime generation that made it, and is erased on the handle's last release
    only while that runtime is still open; after mt_close() the heap it lived
    in is gone with the runtime [tested: tests/test_cmetta.c,
-   test_a_native_value_crosses_back_whole; commit=WORKTREE]. */
+   test_a_native_value_crosses_back_whole; commit=65b02ca599b0db696faf221f4f39e94210013fc1]. */
 /* A handle may be dropped on any thread, including while mt_close() tears
    the runtime down on another, and erasing a record into a heap PL_cleanup()
    is freeing would corrupt it. So an eraser announces itself and then looks
@@ -3087,7 +3087,7 @@ named:
    answers, groups and a published function's arguments. A parse and a
    stored atom are finite by construction and take decode() directly.
    [tested: tests/test_internal_contracts.c,
-   test_a_cyclic_answer_is_refused_by_name; commit=WORKTREE] */
+   test_a_cyclic_answer_is_refused_by_name; commit=65b02ca599b0db696faf221f4f39e94210013fc1] */
 static mt_atom *decode_answer(term_t t, term_t names)
 { if ( !PL_is_acyclic(t) )
   { err_set(MT_UNSUPPORTED,
@@ -5220,7 +5220,7 @@ static mt_atom *solve_template(const mt_atom *pattern, const mt_atom *subject)
    answer is an instance of the template and mt_bound() then reads each
    variable by name. [tested: tests/test_cmetta.c,
    test_solve_runs_let_backwards_and_reads_bindings_by_name;
-   commit=WORKTREE] */
+   commit=65b02ca599b0db696faf221f4f39e94210013fc1] */
 mt_answers *mt_space_solve(mt_space *space, mt_atom *pattern, mt_atom *subject)
 { mt_answers *out = NULL;
   mt_atom *template = NULL;
@@ -5762,7 +5762,7 @@ static PL_blob_t test_handle_blob =
    library can make, still refuses to be sent back by its printed form. No
    public constructor is invented for a native value C cannot itself own.
    [tested: tests/test_internal_contracts.c,
-   test_native_handle_decode_and_encode_contract; commit=WORKTREE] */
+   test_native_handle_decode_and_encode_contract; commit=65b02ca599b0db696faf221f4f39e94210013fc1] */
 bool mt_test_native_handle_codec_round_trips(void)
 { static const unsigned payload = UINT32_C(0xc0decafe), other = UINT32_C(0xfeedface);
   fid_t frame = frame_open("testing a native engine handle");
@@ -5845,7 +5845,7 @@ mt_atom *mt_test_foreign_handle(unsigned seed)
    the list once; the key walk this replaced made three references per cell
    and needed room for it twice.
    [tested: tests/test_internal_contracts.c,
-   test_a_long_list_compound_decodes_in_constant_references; commit=WORKTREE] */
+   test_a_long_list_compound_decodes_in_constant_references; commit=65b02ca599b0db696faf221f4f39e94210013fc1] */
 bool mt_test_long_list_compound_decodes(size_t length)
 { fid_t frame = frame_open("testing a compound over a long list");
   term_t list, item, wrapped;
@@ -5883,7 +5883,7 @@ done:
    cases under the shared expression grammar";
    commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761].
    [tested: tests/test_internal_contracts.c,
-   test_compounds_decode_in_the_shared_wire_grammar; commit=WORKTREE] */
+   test_compounds_decode_in_the_shared_wire_grammar; commit=65b02ca599b0db696faf221f4f39e94210013fc1] */
 bool mt_test_wire_grammar(void)
 { struct { const char *prolog; mt_atom *want; } cases[] = {
     { "zero()", mt_expr("zero") },
@@ -5920,7 +5920,7 @@ bool mt_test_wire_grammar(void)
 /* A cyclic term, X = f(X), handed to the door answers take, is refused by
    name rather than walked forever; the same door decodes f(a) as ever.
    [tested: tests/test_internal_contracts.c,
-   test_a_cyclic_answer_is_refused_by_name; commit=WORKTREE] */
+   test_a_cyclic_answer_is_refused_by_name; commit=65b02ca599b0db696faf221f4f39e94210013fc1] */
 bool mt_test_cyclic_answer_refused(void)
 { fid_t frame = frame_open("testing a cyclic answer");
   term_t x, fx, fa;
@@ -5953,7 +5953,7 @@ bool mt_test_cyclic_answer_refused(void)
    it does. The concurrent case is the race this rule exists for, and it is
    too narrow to reproduce on demand, so the rule is tested where it decides.
    [tested: tests/test_internal_contracts.c,
-   test_a_handle_released_during_close_leaves_its_record; commit=WORKTREE] */
+   test_a_handle_released_during_close_leaves_its_record; commit=65b02ca599b0db696faf221f4f39e94210013fc1] */
 bool mt_test_close_handshake_skips_erase(void)
 { static const unsigned payload = UINT32_C(0xc105ed);
   fid_t frame = frame_open("testing the handle close handshake");
