@@ -136,7 +136,7 @@ will not run; it compares through metta's BenchmarkBaseline" >&2
     bounded env CHECK_PY="$PY" sh "$HERE/extensions/cmetta/bench.sh"
 }
 
-run GATE c-bench check_c_bench
+run_solo GATE c-bench check_c_bench
 
 # The install, proven by USING it. Everything above builds and runs in this
 # checkout, where the engine tree is two directories up and the library is
