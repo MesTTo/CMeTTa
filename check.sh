@@ -54,6 +54,16 @@ suite will not run" >&2
 }
 run GATE c-binding check_c_binding
 
+# The lanes below read what c-binding writes: its test.sh cleans this
+# directory, deleting libcmetta.so, the fault library and the examples, then
+# builds them again, and stranger-c links against that libcmetta.so. Run beside
+# it, stranger-c found the library deleted and failed `cannot find -lcmetta`
+# [measured 2026-09-24: battery 82's gate log]. check.sh's ordering rule for a
+# lane that reads what an earlier lane writes is this barrier; sanitize.sh
+# builds into a directory of its own and install into build/install, so after
+# it no lane writes what another reads.
+lane_barrier
+
 # The extension claim, proved rather than asserted: a shared library this
 # repository has never heard of is written, compiled against cmetta.h alone,
 # loaded by path with mt_extension() and used to extend the seat through five

@@ -5,6 +5,13 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Run the component gate's lanes that link the C library after the lane that
+  rebuilds it. The c-binding lane cleans this directory before building, which
+  deletes `libcmetta.so`, and the gate runs lanes at once, so the stranger-c
+  lane beside it failed `cannot find -lcmetta`. A `lane_barrier` after
+  c-binding orders them, the rule `tools/check.sh` states for a lane that reads
+  what an earlier one writes.
+
 - Decode engine values in the wire grammar the Python and Node seats read,
   and hold only native blobs by reference. A partial application such as
   `partial(+,[1])` used to be refused, failing every answer of the cursor or
