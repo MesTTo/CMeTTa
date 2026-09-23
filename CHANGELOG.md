@@ -5,6 +5,13 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Document a known issue in the handle contract. A handle holding a compound
+  other than a partial application, such as a caught refusal's payload,
+  answers nothing and raises nothing where the engine evaluates it, because
+  the engine's translator reads only blobs and partial applications as
+  values there; it goes back whole wherever the engine reads data. The
+  engine fix is outside this library.
+
 - Add mt_solve, relational let answered as bindings, the C counterpart of the
   Python seat's solve(). mt_solve(target, pattern, subject) evaluates
   (let pattern subject template) with the template derived rather than

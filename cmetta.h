@@ -296,7 +296,16 @@ typedef enum mt_kind {
    test_native_handle_decode_and_encode_contract; commit=6e91a33be09722c403ae665dd7affd608a067437]. A handle cannot
    outlive the runtime that answered it: after mt_close() passing it back is
    refused by name [tested: tests/test_cmetta.c,
-   test_an_engine_value_crosses_back_whole; commit=0733adc4f214bdcb37dce6f378ff75611b79b126]. */
+   test_an_engine_value_crosses_back_whole; commit=0733adc4f214bdcb37dce6f378ff75611b79b126].
+
+   Known issue: in a position the engine EVALUATES, its translator reads a
+   blob or a partial application as a value and has no reading for any other
+   compound, so a handle holding one, such as the payload of a caught
+   refusal, answers nothing there and raises nothing: (id h) and (== h h) are
+   empty. Where the engine reads data it goes back whole: a match pattern,
+   quote, unify, a stored atom, and an atom operation over an expression that
+   holds it [measured 2026-09-24; source: engine/translator/lowering.pl,
+   translate_expr_dl/4; commit=33219ffa03a890a068e177d1503fa98978750cca]. */
 
 MT_API const char *mt_kind_str(mt_kind kind);
 

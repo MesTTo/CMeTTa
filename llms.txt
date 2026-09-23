@@ -66,6 +66,9 @@ engine value with no MeTTa structure, a blob or a partial application, by
 reference: it prints as the engine prints it and passes back unchanged.
 `mt_name` answers its written form, such as `partial(+,[1])`; two handles are
 equal when they hold one blob of one runtime or compounds that are variants.
+Known issue: a handle holding a compound other than a partial application
+answers nothing, without an error, where the engine evaluates it, as in
+`(id h)`; it goes back whole in a match, quote, unify or a stored atom.
 `mt_kind_of(NULL)`
 returns MT_NONE. `mt_int` requires an exact int64 value; `mt_float` refuses
 lossy integer conversion. `mt_unum` preserves uint64 and `mt_bigint`
