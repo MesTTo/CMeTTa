@@ -473,6 +473,17 @@ returning something an unwary caller would read as an answer.
 
 ## C functions
 
+Inspect a term before executing it:
+
+```c
+mt_atom *plan = mt_effect_plan(m, mt_parse("(add-atom &self (item 7))"));
+/* (EffectPlan writesState ((add-atom writesState))) */
+mt_drop(plan);
+```
+
+The shared planner reads source masks and compilation effects. It does not
+execute the requested write; dynamic calls receive a conservative class.
+
 `mt_matcher` supplies custom matching for a grounded value. Its callback
 borrows the other operand and returns candidate atoms. The engine unifies each
 candidate with that operand, so a candidate `(value 7)` binds `$x` in

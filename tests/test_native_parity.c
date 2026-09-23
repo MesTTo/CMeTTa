@@ -25,6 +25,36 @@ static mt_status identity(mt_call *call, void *user)
 static const char *render_text(void *value, void *user)
 { (void)user; return value; }
 
+static void test_source_effect_plans(metta *m)
+{
+  const mt_effect classes[] = {MT_PURE, MT_LOOKUP, MT_NONDET, MT_WRITES, MT_IO};
+  const char *names[] = {"plan-pure", "plan-read", "plan-many", "plan-write", "plan-io"};
+  for (size_t i = 0; i < sizeof(classes)/sizeof(*classes); ++i)
+  {
+    assert(mt_def(m, (mt_op){.name=names[i], .arity=1, .effect=classes[i], .fn=identity}));
+    mt_atom *plan = mt_effect_plan(m, mt_expr(names[i], 7));
+    assert(plan && strcmp(mt_name(mt_at(plan, 0)), "EffectPlan") == 0);
+    if (strcmp(mt_name(mt_at(plan, 1)), mt_effect_str(classes[i])) != 0)
+      fprintf(stderr, "effect plan for %s: %s\n", names[i], mt_show(plan));
+    assert(strcmp(mt_name(mt_at(plan, 1)), mt_effect_str(classes[i])) == 0);
+    assert(mt_len(mt_at(plan, 2)) == 1);
+    mt_drop(plan);
+  }
+  size_t count = mt_count(m);
+  mt_atom *plan = mt_effect_plan(m, mt_parse("(add-atom &self (not-executed 7))"));
+  assert(plan && strcmp(mt_name(mt_at(plan, 1)), "writesState") == 0);
+  assert(mt_count(m) == count); mt_drop(plan);
+  plan = mt_effect_plan(m, mt_parse("(plan-pure (plan-io 7))"));
+  assert(plan && strcmp(mt_name(mt_at(plan, 1)), "oracleIO") == 0);
+  assert(mt_len(mt_at(plan, 2)) == 2); mt_drop(plan);
+  assert(mt_def(m, (mt_op){.name="plan-pure", .arity=2, .effect=MT_WRITES, .fn=identity}));
+  plan = mt_effect_plan(m, mt_expr("plan-pure", 7));
+  assert(plan && strcmp(mt_name(mt_at(plan, 1)), "writesState") == 0); mt_drop(plan);
+  for (size_t i = 0; i < sizeof(classes)/sizeof(*classes); ++i) assert(mt_undef(m, names[i]));
+  mt_list rows = mt_all(mt_match(mt_catalog(m), mt_parse("(effect plan-pure $class)")));
+  assert(mt_ok() && !rows.len); mt_list_free(rows);
+}
+
 static void test_unicode_terms_and_names(metta *m)
 { CASE("UTF-8 terms and names preserve their bytes and reject malformed input"); const char borrowed[] = "λ 😀";
   mt_atom *atom = mt_parse("(λ $日本語 \"λ 😀\")");
@@ -133,6 +163,7 @@ int main(void)
   assert(m);
   test_unicode_terms_and_names(m);
   test_native_atoms_match_engine_terms(m);
+  test_source_effect_plans(m);
   mt_close(m);
   assert(!allocation.blocks && !allocation.bytes);
   mt_allocator_set(previous);

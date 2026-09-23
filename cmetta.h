@@ -733,6 +733,13 @@ MT_API bool mt_space_do(mt_space *space, const char *source);
    would rather not go through _Generic. Each TAKES its atom argument. */
 MT_API MT_MUST_USE mt_answers *mt_self_eval(metta *runtime, mt_atom *goal);
 MT_API MT_MUST_USE mt_answers *mt_space_eval(mt_space *space, mt_atom *goal);
+/* Inspect source effects without evaluating goal. TAKES goal and returns an
+   owned (EffectPlan <joined-class> ((<operation> <class>) ...)) atom. The
+   shared source planner includes compilation effects and conservatively
+   classifies dynamic calls. NULL carries the error through mt_error().
+   [tested: tests/test_native_parity.c; commit=WORKTREE] */
+MT_API MT_MUST_USE mt_atom *mt_self_effect_plan(metta *runtime, mt_atom *goal);
+MT_API MT_MUST_USE mt_atom *mt_space_effect_plan(mt_space *space, mt_atom *goal);
 MT_API MT_MUST_USE mt_answers *mt_self_match(metta *runtime, mt_atom *pattern);
 MT_API MT_MUST_USE mt_answers *mt_space_match(mt_space *space, mt_atom *pattern);
 /* Engine match followed by a True-valued guard. A conjunction is the ordinary
@@ -774,6 +781,7 @@ MT_API bool mt_space_wipe(mt_space *space);
 /* Evaluate one atom LAZILY: each step computes at most one answer, and
    abandoning the cursor leaves the rest uncomputed. TAKES `goal`. */
 #define mt_eval(target, goal)   MT_ON((target), eval)((target), (goal))
+#define mt_effect_plan(target, goal) MT_ON((target), effect_plan)((target), (goal))
 #define mt_run(target, source)  MT_ON((target), run)((target), (source))
 #define mt_load(target, path)   MT_ON((target), load)((target), (path))
 #define mt_do(target, source)   MT_ON((target), do)((target), (source))

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Expose `mt_effect_plan` through the shared source planner. The effect-rank
+  twin found that general `explain` metadata did not describe C registrations;
+  planning now returns the operation roster and joined class without execution.
+  Publish C callback effects to the catalog and compose overloaded ranks;
+  previously the planner conservatively classified even pure callbacks as I/O.
+
 - Release captured provider ownership at transaction completion. The SQLite
   corpus exposed connections retained until blob collection after provider and
   cursor close; a regression now requires immediate release of the last owner.

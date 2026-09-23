@@ -86,6 +86,7 @@
 :- use_module(library(time), [call_with_time_limit/2]).
 
 :- dynamic metta_c_op_spec/3.
+:- dynamic metta_c_op_effect/2.
 % Exception rendering is scratch for ONE caller. A normal dynamic predicate is
 % shared, so two attached C threads could retract or read one another's reason.
 % thread_local/1 gives each attached engine its own clause list, which SWI
@@ -306,6 +307,12 @@ metta_c_open_eval(Goal, Space, Inferences, Id) :-
     metta_host_hold(Out, Bounded, Engine),
     metta_c_new_cursor(Engine, Id).
 
+% The engine owns source masks, operation traversal and effect composition.
+% [tested: tests/test_native_parity.c; commit=WORKTREE]
+metta_c_effect_plan(Space, Goal, ['EffectPlan', Effect, Operations]) :-
+    space_module(Space, Module),
+    metta_host_source_effect_plan(Module, Goal, Operations, Effect).
+
 % Stored atoms unifying a pattern, which is the primitive door. The language's
 % own (match ...) with its template is reached through metta_c_open_eval/4.
 metta_c_open_match(Pattern, Space, Inferences, Id) :-
@@ -479,6 +486,7 @@ metta_c_register_op(Name0, Arity, Kind) :-
     space_module('&self', Base),
     assertz(Base:(Head :- metta_c_dispatch(Name, Args, Result))),
     assertz(metta_c_op_spec(Name, Arity, Kind)),
+    metta_c_sync_effect(Name),
     % Adopt AFTER the dispatch clause is in place: the engine marks the name a
     % function of the base tier, refreshes dependents against the clause that
     % already exists, and claims the name for the c tier last.
@@ -506,7 +514,22 @@ metta_c_retract_op(Name, Arity) :-
     functor(Head, Name, PredArity),
     retractall(Base:Head),
     retractall(metta_c_op_spec(Name, Arity, _)),
+    metta_c_sync_effect(Name),
     ( metta_host_drop_function(Name, PredArity) -> true ; true ).
+
+% Publishing a classification only as function ownership left the shared
+% planner treating C callbacks as oracleIO. The catalog effect is the common
+% classifier input; overloads compose through the engine's own lattice.
+% [tested: tests/test_native_parity.c; commit=WORKTREE]
+metta_c_sync_effect(Name) :-
+    forall(retract(metta_c_op_effect(Name, Previous)),
+           metta_host_remove_reported('&metta', [effect, Name, Previous], _)),
+    findall(Kind, metta_c_op_spec(Name, _, Kind), Classes),
+    ( Classes == [] -> true
+    ; metta_effect_compose(Classes, Effect),
+      metta_add_atoms('&metta', [[effect, Name, Effect]]),
+      assertz(metta_c_op_effect(Name, Effect))
+    ).
 
 % A C operation's refusal, rendered the way every other engine diagnostic is.
 % Without this SWI answers "Unknown message: cmetta_operation_failed(...)",

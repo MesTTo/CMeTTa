@@ -4303,6 +4303,28 @@ mt_answers *mt_space_eval(mt_space *space, mt_atom *goal)
 { return open_with(space, "mt_space_eval", goal, false);
 }
 
+/* One owned projection of the shared planner; no target evaluation or local
+   effect walk. [tested: tests/test_native_parity.c; commit=WORKTREE] */
+mt_atom *mt_space_effect_plan(mt_space *space, mt_atom *goal)
+{ mt_atom *result = NULL;
+  fid_t f = 0;
+  if ( handle_ready(space, "mt_space_effect_plan") &&
+       atom_given(goal, "mt_space_effect_plan") &&
+       (f = frame_open("mt_space_effect_plan")) )
+  { term_t av = PL_new_term_refs(3);
+    if ( av && put_name(av, space->name) && put_atom(goal, av + 1) &&
+         call_bridge("metta_c_effect_plan", 3, av) == MT_OK )
+      result = decode(av + 2, 0);
+    if ( !result && mt_ok() ) err_set(MT_ERROR, "the engine refused the effect plan");
+  }
+  if ( f ) frame_close(f);
+  mt_drop(goal);
+  return result;
+}
+
+mt_atom *mt_self_effect_plan(metta *runtime, mt_atom *goal)
+{ return mt_space_effect_plan(mt_self(runtime), goal); }
+
 mt_answers *mt_space_match(mt_space *space, mt_atom *pattern)
 { return open_with(space, "mt_space_match", pattern, true);
 }
