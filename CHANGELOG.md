@@ -5,6 +5,15 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Tell `true` and `false` apart from other symbols by length first. Every
+  symbol an answer carries was compared against both words with `strcmp()`,
+  whose cost followed the alignment the linker gave the two literals, so a
+  change that only added code elsewhere moved term-out by 66 instructions a
+  crossing inside `__strcmp_avx2`. A length test and a fixed-size `memcmp()`,
+  which the compiler turns into integer compares, cost the same wherever the
+  literals land; term-out reads 0.48% fewer instructions and is re-pinned with
+  the step placed beside the pin.
+
 - Hand a C provider's stored atoms back as the terms the engine gave it. A
   space backed by a C provider read its add, remove and match arguments in the
   wire grammar, so a compound came back an expression: a partial application

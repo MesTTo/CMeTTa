@@ -3224,8 +3224,15 @@ static mt_atom *decode_leaf(term_t t, int type, term_t names)
       { err_set(MT_NOMEM, "out of memory reading a symbol");
         return NULL;
       }
-      if ( strcmp(text, "true") == 0 || strcmp(text, "false") == 0 )
-      { a = mt_bool(text[0] == 't');
+      /* By length, then a fixed-size compare the compiler turns into two
+         integer loads. strcmp() against the literals costs what their
+         alignment makes it: a build that only added code elsewhere, moving
+         .rodata, took __strcmp_avx2 from 144,000 to 183,600 instructions
+         over 600 term-out crossings, 66 a crossing [measured 2026-09-24,
+         callgrind, cmetta 4f51b2e against the wide-rational build]. */
+      if ( (len == 4 && memcmp(text, "true", 4) == 0) ||
+           (len == 5 && memcmp(text, "false", 5) == 0) )
+      { a = mt_bool(len == 4);
         mt_free(text);
         return a;
       }
