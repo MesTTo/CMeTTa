@@ -458,7 +458,7 @@ MT_API bool mt_eq(const mt_atom *a, const mt_atom *b);
    as mt_eq compares it. Needs no engine; false for NULL. This is how to ask
    whether an answer is the atom you expected when the answer's variables
    carry engine names [tested: tests/test_cmetta.c,
-   test_alpha_equivalence_is_a_renaming; commit=WORKTREE]. */
+   test_alpha_equivalence_is_a_renaming; commit=52d89c668f800fe58692a0b3a3a733591e39e94e]. */
 MT_API bool mt_alpha_eq(const mt_atom *a, const mt_atom *b);
 
 /* Structural FNV-1a hash matching mt_eq(): equal atoms always hash alike,
