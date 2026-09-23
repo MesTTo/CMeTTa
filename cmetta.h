@@ -737,7 +737,7 @@ MT_API MT_MUST_USE mt_answers *mt_space_eval(mt_space *space, mt_atom *goal);
    owned (EffectPlan <joined-class> ((<operation> <class>) ...)) atom. The
    shared source planner includes compilation effects and conservatively
    classifies dynamic calls. NULL carries the error through mt_error().
-   [tested: tests/test_native_parity.c; commit=WORKTREE] */
+   [tested: tests/test_native_parity.c; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5] */
 MT_API MT_MUST_USE mt_atom *mt_self_effect_plan(metta *runtime, mt_atom *goal);
 MT_API MT_MUST_USE mt_atom *mt_space_effect_plan(mt_space *space, mt_atom *goal);
 MT_API MT_MUST_USE mt_answers *mt_self_match(metta *runtime, mt_atom *pattern);
@@ -1058,7 +1058,7 @@ MT_API MT_MUST_USE mt_atom *mt_function(mt_fn fn, void *user,
    Takes user on every path; release runs after the last C, blob and active
    matcher cursor owner releases it. Native mt_unify remains structural and
    does not invoke engine hooks.
-   [tested: tests/test_matchers.c; commit=WORKTREE] */
+   [tested: tests/test_matchers.c; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5] */
 MT_API MT_MUST_USE mt_atom *mt_matcher(mt_fn fn, void *user,
                                     mt_free_fn release);
 
@@ -1201,7 +1201,7 @@ typedef struct mt_provider {
    suspended queries and transaction completion retain the old provider until
    their last owner releases it. Completed transaction captures release eagerly,
    so closing the final cursor after close runs release without waiting for GC
-   [tested: tests/test_providers.c; commit=WORKTREE]. */
+   [tested: tests/test_providers.c; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5]. */
 MT_API bool mt_provider_open(metta *runtime, const char *space,
                              mt_provider provider);
 MT_API bool mt_provider_close(metta *runtime, const char *space);

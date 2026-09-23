@@ -1,7 +1,7 @@
 /* Purpose: prove custom grounded matching, candidate bindings and ownership.
  * Owns resources: deterministically releases matcher blobs and cursor state.
  * Guarantees: matching refuses, binds, streams, propagates errors and closes
- *   on abandonment [tested: make test; commit=WORKTREE].
+ *   on abandonment [tested: make test; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5].
  * Open Obligations: None.
  */
 #include "cmetta.h"

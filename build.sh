@@ -12,5 +12,5 @@ set -eu
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 
 # The enclosing gate owns deadlines. A standalone component has no ../../tools.
-# [tested: sh build.sh; commit=WORKTREE]
+# [tested: sh build.sh; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5]
 exec make --quiet -C "$HERE" all

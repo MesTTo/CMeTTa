@@ -1792,7 +1792,7 @@ mt_atom *mt_function(mt_fn fn, void *user,
 
 /* The matching callback uses the same retained native-call machinery as an
    operation. Only the engine ownership hook differs.
-   [tested: tests/test_matchers.c; commit=WORKTREE] */
+   [tested: tests/test_matchers.c; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5] */
 mt_atom *mt_matcher(mt_fn fn, void *user, mt_free_fn release)
 { mt_box_t *box;
   if ( !fn )
@@ -4304,7 +4304,7 @@ mt_answers *mt_space_eval(mt_space *space, mt_atom *goal)
 }
 
 /* One owned projection of the shared planner; no target evaluation or local
-   effect walk. [tested: tests/test_native_parity.c; commit=WORKTREE] */
+   effect walk. [tested: tests/test_native_parity.c; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5] */
 mt_atom *mt_space_effect_plan(mt_space *space, mt_atom *goal)
 { mt_atom *result = NULL;
   fid_t f = 0;
@@ -5519,7 +5519,7 @@ static foreign_t pl_cmetta_provider_finish(term_t held, term_t operation)
   /* A participant completes once. Keeping this private blob until atom GC
      would retain a closed provider's database after every cursor is gone.
      The engine never rolls back a participant whose commit was attempted.
-     [tested: tests/test_providers.c; commit=WORKTREE] */
+     [tested: tests/test_providers.c; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5] */
   if ( completed )
   { atom_t blob;
     if ( !PL_get_atom(held, &blob) || !PL_free_blob(blob) )

@@ -5,7 +5,7 @@
  * Owns resources: each store owns retained atoms and a stack of transaction
  * snapshots; each query owns a snapshot until the engine closes its iterator.
  * Guarantees: completed captures release the final provider owner immediately
- *   [tested: test_providers; commit=WORKTREE].
+ *   [tested: test_providers; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5].
  * Open Obligations: None.
  */
 #include <cmetta.h>

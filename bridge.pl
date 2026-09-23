@@ -308,7 +308,7 @@ metta_c_open_eval(Goal, Space, Inferences, Id) :-
     metta_c_new_cursor(Engine, Id).
 
 % The engine owns source masks, operation traversal and effect composition.
-% [tested: tests/test_native_parity.c; commit=WORKTREE]
+% [tested: tests/test_native_parity.c; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5]
 metta_c_effect_plan(Space, Goal, ['EffectPlan', Effect, Operations]) :-
     space_module(Space, Module),
     metta_host_source_effect_plan(Module, Goal, Operations, Effect).
@@ -520,7 +520,7 @@ metta_c_retract_op(Name, Arity) :-
 % Publishing a classification only as function ownership left the shared
 % planner treating C callbacks as oracleIO. The catalog effect is the common
 % classifier input; overloads compose through the engine's own lattice.
-% [tested: tests/test_native_parity.c; commit=WORKTREE]
+% [tested: tests/test_native_parity.c; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5]
 metta_c_sync_effect(Name) :-
     forall(retract(metta_c_op_effect(Name, Previous)),
            metta_host_remove_reported('&metta', [effect, Name, Previous], _)),
@@ -578,7 +578,7 @@ seam:grounded_apply(Obj, Args, [], Result) :-
 % Candidates cross through the retained callback cursor; structural unification
 % binds the original operand's variables. The engine decides which value owns
 % matching and bypasses this hook when the other operand is a free variable.
-% [tested: tests/test_matchers.c; commit=WORKTREE]
+% [tested: tests/test_matchers.c; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5]
 :- multifile seam:matchable_value/1.
 seam:matchable_value(Obj) :-
     blob(Obj, cmetta_object),

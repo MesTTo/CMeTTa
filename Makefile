@@ -28,7 +28,7 @@
 #   contaminate one another [tested: GATE_ONLY=1 sh check.sh c-sanitize;
 #   commit=b339084bb5625996fc88a31608d48ad31c575d1f].
 # Guarantees: installed archive consumers receive the private SWI linker flags
-#   [tested: make install-check; commit=WORKTREE].
+#   [tested: make install-check; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5].
 # Open Obligations: None.
 
 SWIPL       ?= swipl
@@ -124,7 +124,7 @@ bench: $(BENCH)
 all: $(LIB) $(STATIC_LIB) examples $(KIT) $(BENCH)
 
 # Archive consumers need the same implementation and transitive SWI dependency.
-# [tested: make install-check; commit=WORKTREE]
+# [tested: make install-check; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5]
 cmetta.o: cmetta.c cmetta.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 

@@ -1,7 +1,7 @@
 /* Purpose: publish C functions to MeTTa three ways, so a program written in
  *   the language can call code written here.
  * Guarantees: checks every result before reporting success, including the
- *   exact published word_count name [tested: make test; commit=WORKTREE].
+ *   exact published word_count name [tested: make test; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5].
  * Owns resources: one runtime and one object reference, released on exit.
  * Open Obligations:
  *   To Do: None
