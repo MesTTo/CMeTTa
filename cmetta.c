@@ -1022,32 +1022,66 @@ const mt_atom *mt_at(const mt_atom *atom, size_t index)
   return atom->u.e.kids[index];
 }
 
-/* What an MT_HANDLE decoded from the engine holds: a record of the native
-   blob it is, and the blob's identity, which is the blob atom within the
-   runtime generation that made it, since an atom handle means nothing once
-   its runtime is gone. The atom's text is the engine's written form, which
-   presents the value and names it in messages but does not identify it:
-   two blobs can be written alike. See handle_of(). */
+/* What an MT_HANDLE decoded from the engine holds: a record of the engine
+   term, the runtime generation that made it, since a record means nothing
+   once its runtime is gone, and which value it is. A native blob is its blob
+   atom. A term a provider door carried (see carried()) is its variant key,
+   the term spelled with each variable as the order of its first occurrence,
+   beside the names those variables have in this crossing, first occurrence
+   first: the names are what tie it to the variables of the atom around it.
+   The atom's text is the engine's written form, which presents the value and
+   names it in messages but does not identify it: two blobs can be written
+   alike. See handle_of(). */
 typedef struct handle_id { uint64_t generation; atom_t blob; } handle_id;
 
 typedef struct handle_ref
 { record_t  record;
   handle_id id;
+  char     *key;        /* a carried term's variant key, owned; NULL for a blob */
+  size_t    key_len;
+  char    **names;      /* a carried term's variable names, owned */
+  size_t    n_names;
 } handle_ref;
 
 static void handle_release(void *owner);
 
-/* The bytes mt_eq, mt_hash and mt_compare read as a handle's identity: its
-   id, or for the recordless handle only the fault library makes, its text. */
-static void handle_identity(const mt_atom *a, const char **bytes, size_t *len)
+/* The bytes mt_eq, mt_hash and mt_compare read as a handle's identity, and
+   which of three sources they are, so two sources are never compared as one:
+   'b' a blob's id, 'c' a carried term's variant key, whose variable names the
+   callers read beside it, and 't' the text of the recordless handle only the
+   fault library makes. */
+static char handle_identity(const mt_atom *a, const char **bytes, size_t *len)
 { if ( a->release == handle_release )
   { const handle_ref *h = a->owner;
+    if ( h->key )
+    { *bytes = h->key;
+      *len = h->key_len;
+      return 'c';
+    }
     *bytes = (const char *)&h->id;
     *len = sizeof h->id;
-  } else
-  { *bytes = a->u.t.text;
-    *len = a->u.t.len;
+    return 'b';
   }
+  *bytes = a->u.t.text;
+  *len = a->u.t.len;
+  return 't';
+}
+
+/* A carried handle's record, or NULL for any other atom. */
+static const handle_ref *carried_ref(const mt_atom *a)
+{ const handle_ref *h = a->kind == MT_HANDLE && a->release == handle_release
+                      ? a->owner : NULL;
+  return h && h->key ? h : NULL;
+}
+
+/* Whether two carried handles of one variant key name the same variables in
+   the same places. */
+static bool names_equal(const handle_ref *x, const handle_ref *y)
+{ size_t i;
+  if ( x->n_names != y->n_names ) return false;
+  for (i = 0; i < x->n_names; i++)
+    if ( strcmp(x->names[i], y->names[i]) != 0 ) return false;
+  return true;
 }
 
 /* Two atoms of the same kind, compared WITHOUT their children: for an
@@ -1065,9 +1099,9 @@ static bool eq_shallow(const mt_atom *a, const mt_atom *b)
     case MT_HANDLE:
       { const char *x, *y;
         size_t xn, yn;
-        handle_identity(a, &x, &xn);
-        handle_identity(b, &y, &yn);
-        return xn == yn && memcmp(x, y, xn) == 0;
+        char tx = handle_identity(a, &x, &xn), ty = handle_identity(b, &y, &yn);
+        return tx == ty && xn == yn && memcmp(x, y, xn) == 0 &&
+               (tx != 'c' || names_equal(a->owner, b->owner));
       }
     case MT_INT:      return a->u.i == b->u.i;
     case MT_FLOAT:
@@ -1169,15 +1203,19 @@ typedef struct alpha_pair
 
 typedef MT_STACK(alpha_pair) alpha_pairs;
 
-static alpha_key alpha_key_of(const mt_atom *v, size_t *anonymous)
+static alpha_key alpha_key_named(const char *name, size_t len, size_t *anonymous)
 { alpha_key key = { NULL, 0, 0 };
-  if ( v->u.t.len == 1 && v->u.t.text[0] == '_' )
+  if ( len == 1 && name[0] == '_' )
     key.anonymous = (*anonymous)++;
   else
-  { key.name = v->u.t.text;
-    key.len = v->u.t.len;
+  { key.name = name;
+    key.len = len;
   }
   return key;
+}
+
+static alpha_key alpha_key_of(const mt_atom *v, size_t *anonymous)
+{ return alpha_key_named(v->u.t.text, v->u.t.len, anonymous);
 }
 
 static bool alpha_key_eq(alpha_key x, alpha_key y)
@@ -1203,9 +1241,28 @@ static bool alpha_bind(alpha_pairs *pairs, alpha_key x, alpha_key y)
   return stack_push(pairs, pair);
 }
 
+/* Two carried handles under the renaming: one variant key, and at each place
+   the variables one variable under the renaming built so far, which a
+   carried term shares with the atom around it. */
+static bool alpha_carried(alpha_pairs *pairs, const handle_ref *x,
+                          const handle_ref *y, size_t *anonymous_a,
+                          size_t *anonymous_b)
+{ size_t i;
+  if ( x->key_len != y->key_len || memcmp(x->key, y->key, x->key_len) != 0 ||
+       x->n_names != y->n_names )
+    return false;
+  for (i = 0; i < x->n_names; i++)
+    if ( !alpha_bind(pairs,
+                     alpha_key_named(x->names[i], strlen(x->names[i]), anonymous_a),
+                     alpha_key_named(y->names[i], strlen(y->names[i]), anonymous_b)) )
+      return false;
+  return true;
+}
+
 /* Equality up to a consistent renaming of variables, MeTTa's =alpha and the
    engine's variant check. mt_eq's walk with one change at the leaves: two
-   variables are compared through the renaming rather than by name.
+   variables, and the variables a carried handle names, are compared through
+   the renaming rather than by name.
    Time: O(n + n*v) for n nodes and v distinct variables; space O(d + v) for
    depth d. */
 bool mt_alpha_eq(const mt_atom *a, const mt_atom *b)
@@ -1230,6 +1287,12 @@ bool mt_alpha_eq(const mt_atom *a, const mt_atom *b)
     { alpha_key kx = alpha_key_of(x, &anonymous_a);
       alpha_key ky = alpha_key_of(y, &anonymous_b);
       if ( !alpha_bind(&pairs, kx, ky) )
+      { equal = false;
+        break;
+      }
+    } else if ( carried_ref(x) && carried_ref(y) )
+    { if ( !alpha_carried(&pairs, carried_ref(x), carried_ref(y),
+                          &anonymous_a, &anonymous_b) )
       { equal = false;
         break;
       }
@@ -1485,13 +1548,22 @@ static int compare_leaves(const mt_atom *a, const mt_atom *b)
       if ( a->kind != b->kind ) return a->kind == MT_OBJECT ? -1 : 1;
       if ( a->kind == MT_OBJECT )
         return a->u.box == b->u.box ? 0 : (uintptr_t)a->u.box < (uintptr_t)b->u.box ? -1 : 1;
-      /* By identity, so the order agrees with mt_eq: variants written with
-         different variable names are one value. */
+      /* By identity, so the order agrees with mt_eq: a carried term's key,
+         then the names of its variables. */
       { const char *x, *y;
-        size_t xn, yn;
-        handle_identity(a, &x, &xn);
-        handle_identity(b, &y, &yn);
-        return compare_bytes(x, xn, y, yn);
+        size_t xn, yn, i;
+        char tx = handle_identity(a, &x, &xn), ty = handle_identity(b, &y, &yn);
+        const handle_ref *hx, *hy;
+        int order;
+        if ( tx != ty ) return tx < ty ? -1 : 1;
+        if ( (order = compare_bytes(x, xn, y, yn)) != 0 || tx != 'c' ) return order;
+        hx = a->owner;
+        hy = b->owner;
+        for (i = 0; i < hx->n_names && i < hy->n_names; i++)
+          if ( (order = compare_bytes(hx->names[i], strlen(hx->names[i]),
+                                      hy->names[i], strlen(hy->names[i]))) != 0 )
+            return order;
+        return hx->n_names == hy->n_names ? 0 : hx->n_names < hy->n_names ? -1 : 1;
       }
     case 4:
       return 0;
@@ -1585,10 +1657,16 @@ static uint64_t hash_shallow(uint64_t hash, const mt_atom *atom)
       return hash_bytes(hash, atom->u.t.text, atom->u.t.len);
     case MT_HANDLE:
       { const char *bytes;
-        size_t len;
-        handle_identity(atom, &bytes, &len);
+        size_t len, i;
+        char tag = handle_identity(atom, &bytes, &len);
+        const handle_ref *carried = tag == 'c' ? atom->owner : NULL;
+        hash = hash_bytes(hash, &tag, sizeof(tag));
         hash = hash_bytes(hash, &len, sizeof(len));
-        return hash_bytes(hash, bytes, len);
+        hash = hash_bytes(hash, bytes, len);
+        /* Each name with its terminator, so no two lists run together. */
+        for (i = 0; carried && i < carried->n_names; i++)
+          hash = hash_bytes(hash, carried->names[i], strlen(carried->names[i]) + 1);
+        return hash;
       }
     case MT_INT:
       return hash_bytes(hash, &atom->u.i, sizeof(atom->u.i));
@@ -2330,7 +2408,8 @@ typedef struct mt_row_entry {
   X(BRIDGE_UNSUBSCRIBE,         "metta_c_unsubscribe", 1, "user") \
   X(BRIDGE_WRITE_ATOM,          "metta_c_write_atom", 3, "user") \
   X(BRIDGE_HOST_SET_SILENT,     "metta_host_set_silent", 1, "user") \
-  X(BRIDGE_SET_PROLOG_FLAG,     "set_prolog_flag", 2, "user")
+  X(BRIDGE_SET_PROLOG_FLAG,     "set_prolog_flag", 2, "user") \
+  X(BRIDGE_TERM_VARIABLES,      "term_variables", 2, "system")
 
 typedef enum bridge_id
 {
@@ -2813,6 +2892,7 @@ static MT_ATOMIC unsigned g_test_record_erases;
 
 static void handle_release(void *owner)
 { handle_ref *h = owner;
+  size_t i;
   MT_SC_ADD(&g_record_erasers, 1u);
   if ( !MT_SC_LOAD(&g_closing) && g_open && h->id.generation == g_runtime.generation )
   { PL_erase(h->record);
@@ -2821,6 +2901,9 @@ static void handle_release(void *owner)
 #endif
   }
   MT_SC_ADD(&g_record_erasers, (unsigned)-1);
+  for (i = 0; i < h->n_names; i++) mt_free(h->names[i]);
+  mt_free(h->names);
+  mt_free(h->key);
   mt_free(h);
 }
 
@@ -2830,7 +2913,7 @@ static mt_atom *handle_of(term_t t)
 { size_t len;
   atom_t blob = 0;
   char *text = PL_get_atom(t, &blob) ? term_text(t, CVT_WRITE, &len) : NULL;
-  handle_ref *h = text ? mt_alloc(sizeof *h) : NULL;
+  handle_ref *h = text ? mt_calloc(1, sizeof *h) : NULL;
   mt_atom *a = NULL;
   if ( h && (h->record = PL_record(t)) )
   { h->id = (handle_id){ g_runtime.generation, blob };
@@ -2846,6 +2929,233 @@ static mt_atom *handle_of(term_t t)
   }
   mt_free(text);
   if ( !a && mt_ok() ) err_set(MT_NOMEM, "out of memory holding an engine value");
+  return a;
+}
+
+/* The variant key of a carried term: the term spelled so that two keys are
+   equal exactly when the terms are variants. Every token says how long it is
+   before it starts, a name, string or number by its byte count and a
+   compound by its arity, so a key parses back to one tree and needs no
+   closing marks; a blob is its atom within its runtime generation, a float
+   its exact hex digits, and a variable the order of its first occurrence,
+   the order term_variables/2 lists them in, which is how carried() pairs the
+   key with the variables' names.
+   Time: one visit per subterm, plus one PL_compare per variable already met
+   at each variable occurrence, the scan engine/c/writer.c and the Python
+   wire make, since the foreign interface tells two variables apart only by
+   comparing them [source: extensions/python/metta/_binding/wire.pl,
+   metta_py_wire_name/4; commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761].
+   Term references: two per level of nesting, reused by every compound met at
+   that level, and one per distinct variable, all released on return because
+   the walk runs in a foreign frame of its own. A compound's last argument
+   takes its parent's level, so a list of any length is one level.
+   [source: this walk keyed every compound handle from 6e91a33 until 65b02ca;
+   commit=6e91a33be09722c403ae665dd7affd608a067437] */
+typedef struct key_buf { char *data; size_t len, cap; bool failed; } key_buf;
+
+static void key_put(key_buf *k, const char *bytes, size_t n)
+{ if ( k->failed ) return;
+  if ( n > k->cap - k->len )
+  { size_t cap = k->cap, size;
+    char *grown;
+    if ( n > SIZE_MAX - k->len ) { k->failed = true; return; }
+    do
+      if ( !next_capacity(cap, 64, 1, &cap, &size) ) { k->failed = true; return; }
+    while ( cap - k->len < n );
+    if ( !(grown = mt_resize(k->data, size)) ) { k->failed = true; return; }
+    k->data = grown;
+    k->cap = cap;
+  }
+  memcpy(k->data + k->len, bytes, n);
+  k->len += n;
+}
+
+static void key_tag(key_buf *k, char tag, uintmax_t number)
+{ char buf[32];
+  int n = snprintf(buf, sizeof buf, "%c%ju:", tag, number);
+  key_put(k, buf, (size_t)n);
+}
+
+static void key_text(key_buf *k, char tag, term_t t, int cvt)
+{ size_t len;
+  char *text = term_text(t, cvt, &len);
+  if ( !text ) { k->failed = true; return; }
+  key_tag(k, tag, len);
+  key_put(k, text, len);
+  mt_free(text);
+}
+
+/* One level of the walk: the compound open at that depth, the reference its
+   arguments are read into, and the next argument to read. The references
+   outlive the level and are reused by the next compound at its depth. */
+typedef struct key_level { term_t term, arg; size_t arity, next; } key_level;
+typedef MT_STACK(key_level) key_levels;
+
+static char *variant_key(term_t root, size_t *len)
+{ key_buf k = {0};
+  key_level fixed[MT_WALK_FRAMES];
+  key_levels levels;                /* levels.n made, the first `depth` open */
+  size_t depth = 0, nvars = 0, capvars = 0;
+  term_t *vars = NULL, name, t = root;
+  fid_t f = PL_open_foreign_frame();
+
+  if ( !f ) return NULL;
+  stack_init(&levels, fixed);
+  name = PL_new_term_ref();         /* within the ten a new frame guarantees */
+  while ( t && !k.failed )
+  { atom_t atom;
+    size_t arity, i;
+    void *blob;
+    size_t blob_len;
+    PL_blob_t *type;
+    double d;
+
+    if ( PL_is_variable(t) )
+    { i = 0;
+      while ( i < nvars && PL_compare(vars[i], t) != 0 ) i++;
+      if ( i == nvars )
+      { if ( nvars == capvars )
+        { size_t cap, size;
+          term_t *grown;
+          if ( !next_capacity(capvars, 8, sizeof *vars, &cap, &size) ||
+               !(grown = mt_resize(vars, size)) )
+          { k.failed = true;
+            break;
+          }
+          vars = grown;
+          capvars = cap;
+        }
+        if ( !(vars[nvars] = PL_copy_term_ref(t)) ) { k.failed = true; break; }
+        nvars++;
+      }
+      key_tag(&k, 'v', i);
+    } else if ( PL_is_compound(t) && PL_get_name_arity(t, &atom, &arity) )
+    { char *functor;
+      size_t functor_len;
+      if ( !PL_put_atom(name, atom) ) { k.failed = true; break; }
+      /* A functor with no text, a dict's C'dict' among them, is spelled as
+         SWI writes it, under a tag of its own so it never meets an ordinary
+         name written alike. */
+      if ( (functor = term_text(name, CVT_ATOM, &functor_len)) )
+      { key_tag(&k, 'c', functor_len);
+        key_put(&k, functor, functor_len);
+        mt_free(functor);
+      } else
+        key_text(&k, 'C', name, CVT_WRITEQ);
+      key_tag(&k, '/', arity);
+      if ( arity > 0 )
+      { key_level *level;
+        if ( depth == levels.n )
+        { key_level made = { PL_new_term_ref(), PL_new_term_ref(), 0, 0 };
+          if ( !made.term || !made.arg || !stack_push(&levels, made) )
+          { k.failed = true;
+            break;
+          }
+        }
+        level = &levels.items[depth++];
+        if ( !PL_put_term(level->term, t) ) { k.failed = true; break; }
+        level->arity = arity;
+        level->next = 1;
+      }
+    } else if ( PL_get_blob(t, &blob, &blob_len, &type) && !(type->flags & PL_BLOB_TEXT) &&
+                PL_get_atom(t, &atom) )
+    { key_tag(&k, 'b', g_runtime.generation);
+      key_tag(&k, '.', (uintmax_t)atom);
+    } else if ( PL_is_atom(t) )
+      key_text(&k, 'a', t, CVT_ATOM);
+    else if ( PL_is_string(t) )
+      key_text(&k, 's', t, CVT_STRING);
+    else if ( PL_is_float(t) && PL_get_float(t, &d) )
+    { char buf[48];
+      int n = snprintf(buf, sizeof buf, "%a", d);
+      key_tag(&k, 'f', (uintmax_t)n);
+      key_put(&k, buf, (size_t)n);
+    } else if ( PL_is_atomic(t) )
+      key_text(&k, 'n', t, CVT_WRITEQ);     /* integers and rationals, exact */
+    else
+      k.failed = true;                      /* nothing else is a term */
+
+    /* The next argument still to spell. Reading a compound's last argument
+       finishes it, so that argument takes over its level. */
+    t = 0;
+    if ( !k.failed && depth > 0 )
+    { key_level *top = &levels.items[depth - 1];
+      if ( !PL_get_arg(top->next, top->term, top->arg) ) { k.failed = true; break; }
+      t = top->arg;
+      if ( top->next++ == top->arity ) depth--;
+    }
+  }
+  stack_free(&levels);
+  mt_free(vars);
+  /* A reference the stacks could not hold left a resource exception behind;
+     the caller reports the failure itself, so the ball is not left pending
+     for the next call into the engine to trip over. */
+  if ( k.failed && PL_exception(0) ) PL_clear_exception();
+  PL_close_foreign_frame(f);
+  if ( k.failed ) { mt_free(k.data); return NULL; }
+  *len = k.len;
+  return k.data;
+}
+
+/* A term the provider door holds rather than reads, because the wire grammar
+   would hand it back changed: a non-list compound would come back an
+   expression and an improper list a (cons Head Tail) chain, where a store
+   has to give the engine back the term the engine gave it. Its record is the
+   term paired with its variables in first-occurrence order, and the names
+   those variables have in this crossing ride beside it, so encoding the
+   handle puts the identical term back with each variable unified with the
+   goal's variable of that name, and a variable the term shares with the rest
+   of its atom stays shared (see put_carried()). Its identity is the variant
+   key with the names.
+   `refs` is the decode's five scratch references, made on first use and
+   reused, so a payload of many carried terms holds five rather than five
+   each; only the variable table's own references outlive the call.
+   Time: variant_key()'s walk, plus term_variables/2 and one variable_name()
+   scan per variable. */
+MT_COLD static mt_atom *carried(term_t t, term_t names, term_t *refs)
+{ handle_ref *h = NULL;
+  mt_atom *a = NULL;
+  char *text = NULL;
+  size_t len = 0, count = 0;
+
+  if ( !*refs && !(*refs = PL_new_term_refs(5)) ) goto done;
+  /* refs: the term, its variables, the recorded pair, a cell and the rest */
+  if ( !PL_put_term(*refs, t) || !PL_put_variable(*refs + 1) ||
+       !PL_call_predicate(NULL, PL_Q_CATCH_EXCEPTION, bridge_predicate(BRIDGE_TERM_VARIABLES), *refs) ||
+       PL_skip_list(*refs + 1, 0, &count) != PL_LIST ||
+       !(h = mt_calloc(1, sizeof *h)) ||
+       (count && !(h->names = mt_calloc(count, sizeof *h->names))) ||
+       !PL_put_term(*refs + 4, *refs + 1) )
+    goto done;
+  h->id = (handle_id){ g_runtime.generation, 0 };
+  while ( PL_get_list(*refs + 4, *refs + 3, *refs + 4) )
+  { const char *name = variable_name(names, *refs + 3);
+    if ( !name || !(h->names[h->n_names] = mt_strdup(name)) ) goto done;
+    h->n_names++;
+  }
+  if ( !PL_cons_functor(*refs + 2, g_runtime.pair_functor, *refs, *refs + 1) ||
+       !(h->record = PL_record(*refs + 2)) ||
+       !(h->key = variant_key(t, &h->key_len)) ||
+       !(text = term_text(t, CVT_WRITEQ, &len)) ||
+       !(a = atom_text(MT_HANDLE, text, len)) )
+    goto done;
+  a->owner = h;
+  a->release = handle_release;
+  h = NULL;
+done:
+  if ( h )
+  { size_t i;
+    if ( h->record ) PL_erase(h->record);
+    for (i = 0; i < h->n_names; i++) mt_free(h->names[i]);
+    mt_free(h->names);
+    mt_free(h->key);
+    mt_free(h);
+  }
+  mt_free(text);
+  if ( !a )
+  { if ( PL_exception(0) ) PL_clear_exception();
+    if ( mt_ok() ) err_set(MT_NOMEM, "out of memory holding a term a provider stores");
+  }
   return a;
 }
 
@@ -3048,17 +3358,43 @@ static mt_atom *cons_chain(size_t n, mt_atom **kids)
   return acc;
 }
 
+/* Whether the wire grammar would hand this term back changed, which is what
+   the provider door holds rather than reads: a non-list compound or a dict,
+   read as an expression, and an improper or partial list, read as a
+   (cons Head Tail) chain. A proper list, [] and every leaf read back as
+   themselves. Time: one spine walk for a list pair. */
+static bool carries(term_t t, int type)
+{ return type == PL_TERM || type == PL_DICT ||
+         (type == PL_LIST_PAIR && PL_skip_list(t, 0, NULL) != PL_LIST);
+}
+
+/* The walk is written once and read two ways, `carry` a constant at each
+   call, so the ordinary reading compiles with no trace of the other: adding
+   the carried reading left term-out at 325724736 instructions against
+   325868724 before it and cursor-step at 320688860 against 320709872
+   [measured 2026-09-24: sh bench.sh term-out cursor-step, minimum of six per
+   side over two interleaved rounds in battery 82, only cmetta.c and cmetta.h
+   changed between 4b7a44b and the carried reading]. The GNU spelling, as
+   MT_COLD's. */
+#if defined(__GNUC__) || defined(__clang__)
+#define MT_WALK_INLINE __attribute__((always_inline)) inline
+#else
+#define MT_WALK_INLINE inline
+#endif
+
 /* An engine term as a C atom, in the wire grammar every seat reads
    [source: extensions/python/metta/_binding/wire.pl, metta_py_encode/4;
    docs/journal/2026-09-05-node-runtime-gaps.md;
    commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761]: a proper list is an
    expression, an improper one (cons Head Tail) along its spine, any other
    compound (F args...), a variable keeps its identity, and a native blob is
-   a handle. A leaf answers at once; an expression is walked with a stack of
-   levels, so a term nested deeper than the C stack can hold decodes rather
-   than killing the process. A cyclic term never ends: decode_answer() is the
-   door for a term the engine answered, which can be one. */
-static mt_atom *decode(term_t t, term_t names)
+   a handle. With `carry`, every term carries() names is held as a handle
+   instead (see carried()), so everything else reads back as itself. A leaf
+   answers at once; an expression is walked with a stack of levels, so a
+   term nested deeper than the C stack can hold decodes rather than killing
+   the process. A cyclic term never ends: decode_answer() and
+   decode_carried() are the doors for a term that can be one. */
+MT_WALK_INLINE static mt_atom *decode_walk(term_t t, term_t names, const bool carry)
 { decode_frame fixed[MT_WALK_FRAMES];
   decode_stack frames;
   term_t fixed_tails[MT_WALK_FRAMES];
@@ -3067,12 +3403,16 @@ static mt_atom *decode(term_t t, term_t names)
   decode_vars seen, *outer = tls_decode_vars;
   decode_frame *f;
   mt_atom *value = NULL;
-  term_t head, scratch = 0;
+  term_t head, scratch = 0, carry_refs = 0;
   size_t i;
   int opened, type = PL_term_type(t);
 
   stack_init(&seen, fixed_vars);
   tls_decode_vars = &seen;
+  if ( carry && carries(t, type) )
+  { value = carried(t, names, &carry_refs);
+    goto named;
+  }
   if ( !opens_level(type) )
   { value = decode_leaf(t, type, names);
     goto named;
@@ -3125,7 +3465,9 @@ static mt_atom *decode(term_t t, term_t names)
 
     /* One child, in `head`. */
     type = PL_term_type(head);
-    if ( opens_level(type) )
+    if ( carry && carries(head, type) )
+      kid = carried(head, names, &carry_refs);
+    else if ( opens_level(type) )
     { /* Descend. `f` is not touched afterwards: the push may move it. */
       opened = decode_open(&frames, &tails, type, &scratch);
       if ( opened > 0 ) continue;
@@ -3157,6 +3499,28 @@ named:
   for (i = 0; i < seen.n; i++) mt_free(seen.items[i].name);
   stack_free(&seen);
   return value;
+}
+
+static mt_atom *decode(term_t t, term_t names)
+{ return decode_walk(t, names, false);
+}
+
+/* A term the engine hands a provider to store, or to match what it stored
+   against: every part the wire grammar would give back changed is carried
+   as a handle that puts the identical term back, so a store answers the
+   engine with the value the engine gave it. Finite by the same rule as an
+   answer, since a stored atom is refused the same way when it is not.
+   [tested: tests/test_internal_contracts.c, test_a_provider_carries_what_it_stores
+   and tests/test_providers.c, test_a_stored_compound_comes_back_whole;
+   commit=WORKTREE] */
+static mt_atom *decode_carried(term_t t, term_t names)
+{ if ( !PL_is_acyclic(t) )
+  { err_set(MT_UNSUPPORTED,
+            "a rational-tree term has no finite C form: the engine asked a "
+            "provider to hold a cyclic term, which no atom can hold");
+    return NULL;
+  }
+  return decode_walk(t, names, true);
 }
 
 /* A term the engine ANSWERED, which unification without an occurs check can
@@ -3286,6 +3650,24 @@ static bool put_chars(term_t out, int flags, size_t length, const char *text)
 static bool put_name(term_t out, const char *name)
 { return put_chars(out, PL_ATOM | REP_UTF8, (size_t)-1, name); }
 
+/* A carried term put back: the recorded term, each of its variables unified
+   with the goal's variable of the name it had when it was carried, so a
+   variable it shares with the rest of its atom is one variable again. The
+   term is a copy, so the unification binds only the copy's variables. */
+static bool put_carried(const handle_ref *h, term_t out, encode_ctx *ctx)
+{ term_t pair = PL_new_term_ref(), vars = PL_new_term_ref(),
+         var = PL_new_term_ref(), named = PL_new_term_ref();
+  size_t i;
+  if ( !pair || !vars || !var || !named || !PL_recorded(h->record, pair) ||
+       !PL_get_arg(1, pair, out) || !PL_get_arg(2, pair, vars) )
+    return false;
+  for (i = 0; i < h->n_names; i++)
+    if ( !PL_get_list(vars, var, vars) || !encode_var(ctx, h->names[i], named) ||
+         !PL_unify(var, named) )
+      return false;
+  return true;
+}
+
 /* Every atom with no children. An expression is encode()'s own business,
    because a list is built bottom up and that is where the walk lives. */
 static bool encode_leaf(const mt_atom *a, term_t out, encode_ctx *ctx)
@@ -3327,11 +3709,15 @@ static bool encode_leaf(const mt_atom *a, term_t out, encode_ctx *ctx)
     case MT_HANDLE:
       if ( a->release == handle_release )
       { const handle_ref *h = a->owner;
-        if ( h->id.generation == g_runtime.generation )
-          return PL_recorded(h->record, out);
-        err_set(MT_UNSUPPORTED,
-                "%s was held by a runtime that has since closed; the value "
-                "did not survive it", a->u.t.text);
+        if ( h->id.generation != g_runtime.generation )
+        { err_set(MT_UNSUPPORTED,
+                  "%s was held by a runtime that has since closed; the value "
+                  "did not survive it", a->u.t.text);
+          return false;
+        }
+        if ( !h->key ) return PL_recorded(h->record, out);
+        if ( put_carried(h, out, ctx) ) return true;
+        if ( mt_ok() ) err_set(MT_NOMEM, "out of memory putting back %s", a->u.t.text);
         return false;
       }
       err_set(MT_UNSUPPORTED,
@@ -3864,7 +4250,7 @@ static foreign_t native_continue(term_t result, control_t control)
 
 static foreign_t run_call(const char *name, mt_fn fn, void *user,
                           mt_box_t *owner, mt_row_entry *registration,
-                          term_t args, term_t result)
+                          term_t args, term_t result, bool carry)
 { native_call *held;
   mt_call *call;
   term_t head = PL_new_term_ref(), tail = PL_copy_term_ref(args);
@@ -3890,7 +4276,7 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
   if ( registration ) MT_INC(&registration->refs);
   call->runtime = &g_runtime;
   while ( PL_get_list(tail, head, tail) )
-  { mt_atom *atom = decode_answer(head, 0);
+  { mt_atom *atom = carry ? decode_carried(head, 0) : decode_answer(head, 0);
     if ( !atom )
     { rc = PL_permission_error("read", "argument", head);
       goto done;
@@ -3950,7 +4336,7 @@ static foreign_t pl_cmetta_dispatch(term_t name, term_t args, term_t result,
     mt_free(text);
     return rc;
   }
-  { foreign_t answered = run_call(op->name, op->fn, op->user, NULL, NULL, args, result);
+  { foreign_t answered = run_call(op->name, op->fn, op->user, NULL, NULL, args, result, false);
     mt_free(text);
     return answered;
   }
@@ -3988,7 +4374,7 @@ static foreign_t pl_cmetta_match(term_t t, term_t other, term_t result,
   args = PL_new_term_ref(); nil = PL_new_term_ref();
   if ( !args || !nil || !PL_put_nil(nil) || !PL_cons_list(args, other, nil) )
     return PL_resource_error("memory");
-  return run_call("matcher", box->match, box->user, box, NULL, args, result);
+  return run_call("matcher", box->match, box->user, box, NULL, args, result, false);
 }
 
 static foreign_t pl_cmetta_object_live(term_t t)
@@ -4019,7 +4405,7 @@ static foreign_t pl_cmetta_apply(term_t t, term_t args, term_t result,
   box = blob_box(t);
   if ( !box || !box->apply ) return FALSE;
   return run_call(box->type ? box->type : "function",
-                  box->apply, box->user, box, NULL, args, result);
+                  box->apply, box->user, box, NULL, args, result, false);
 }
 
 /* ================================================================== *
@@ -6031,6 +6417,97 @@ bool mt_test_cyclic_answer_refused(void)
   return refused && decoded;
 }
 
+/* Whether two engine terms are variants, the round trip's measure. */
+static bool test_variant(term_t a, term_t b)
+{ term_t av = PL_new_term_refs(2);
+  return av && PL_put_term(av, a) && PL_put_term(av + 1, b) &&
+         PL_call_predicate(NULL, PL_Q_NODEBUG, PL_predicate("=@=", 2, "system"), av);
+}
+
+/* The provider door's reading, shape by shape: what the wire grammar would
+   give back changed is carried as a handle and the rest reads as itself, and
+   every shape goes back as a variant of the term it was, a variable shared
+   between a carried part and the rest included. Two readings of one ground
+   term are one value; a compound and the list that spells its expression are
+   two; two readings of a term with variables differ by the names each
+   crossing gave them, and are alpha equal exactly when they share alike.
+   [tested: tests/test_internal_contracts.c,
+   test_a_provider_carries_what_it_stores; commit=WORKTREE] */
+bool mt_test_carry_round_trips(void)
+{ /* `shape` gives each child of the top expression: h a handle, e an
+     expression, . any other atom; the empty string, a handle at the root. */
+  static const struct { const char *prolog, *shape; } cases[] = {
+    { "[stored, partial(+, [1])]", ".h" },
+    { "[pair, X, partial(f, [X])]", "..h" },
+    { "[a|b]", "" },
+    { "[p, [a|T], T]", ".h." },
+    { "[p, _{a: 1}]", ".h" },
+    { "[p, zero()]", ".h" },
+    { "[wrap, [1, 2, [3]], \"s\", 2.5, [], true]", ".e..e." },
+  };
+  size_t n = sizeof cases / sizeof *cases, i, k;
+  bool all = true;
+  fid_t frame = frame_open("testing the provider door's reading");
+  term_t t = frame ? PL_new_term_ref() : 0, back = frame ? PL_new_term_ref() : 0;
+  mt_atom *one = NULL, *again = NULL, *spelled = NULL, *shared = NULL, *apart = NULL;
+
+  if ( !t || !back ) { frame_close(frame); return false; }
+  for (i = 0; i < n; i++)
+  { mt_atom *got = NULL;
+    const char *shape = cases[i].shape;
+    bool fits;
+    if ( PL_chars_to_term(cases[i].prolog, t) ) got = decode_carried(t, 0);
+    fits = got && (*shape ? mt_kind_of(got) == MT_EXPR && mt_len(got) == strlen(shape)
+                          : mt_kind_of(got) == MT_HANDLE);
+    for (k = 0; fits && shape[k]; k++)
+    { mt_kind kind = mt_kind_of(mt_at(got, k));
+      fits = shape[k] == 'h' ? kind == MT_HANDLE
+           : shape[k] == 'e' ? kind == MT_EXPR
+           : kind != MT_HANDLE && kind != MT_EXPR;
+    }
+    if ( !fits || !put_atom(got, back) || !test_variant(t, back) )
+    { fprintf(stderr, "provider door: %s read as %s and did not come back whole\n",
+              cases[i].prolog, got ? mt_show(got) : "(nothing)");
+      all = false;
+    }
+    mt_drop(got);
+  }
+
+  /* Identity. */
+  if ( PL_chars_to_term("[stored, partial(+, [1])]", t) )
+  { one = decode_carried(t, 0);
+    again = decode_carried(t, 0);
+  }
+  if ( PL_chars_to_term("[stored, [partial, +, [1]]]", t) ) spelled = decode_carried(t, 0);
+  if ( !one || !again || !spelled || !mt_eq(one, again) || mt_hash(one) != mt_hash(again) ||
+       mt_compare(one, again) != 0 || mt_eq(one, spelled) || mt_alpha_eq(one, spelled) ||
+       mt_compare(one, spelled) == 0 )
+  { fprintf(stderr, "provider door: a carried ground term is not one value, "
+            "or equals the list spelling its expression\n");
+    all = false;
+  }
+  mt_drop(again);
+  again = NULL;
+  if ( PL_chars_to_term("[pair, X, partial(f, [X])]", t) )
+  { shared = decode_carried(t, 0);
+    again = decode_carried(t, 0);
+  }
+  if ( PL_chars_to_term("[pair, X, partial(f, [Y])]", t) ) apart = decode_carried(t, 0);
+  if ( !shared || !again || !apart || mt_eq(shared, again) || !mt_alpha_eq(shared, again) ||
+       mt_alpha_eq(shared, apart) )
+  { fprintf(stderr, "provider door: carried variables are not renamed as "
+            "the atom's own are\n");
+    all = false;
+  }
+  mt_drop(one);
+  mt_drop(again);
+  mt_drop(spelled);
+  mt_drop(shared);
+  mt_drop(apart);
+  frame_close(frame);
+  return all;
+}
+
 /* The close handshake, made deterministic: with a close announced, a handle
    released on this thread does not erase its record, and with none announced
    it does. The concurrent case is the race this rule exists for, and it is
@@ -6625,7 +7102,7 @@ static foreign_t pl_cmetta_provider_query(term_t space, term_t args,
   if ( PL_foreign_control(control) != PL_FIRST_CALL )
     return native_continue(result, control);
   if ( !(row = provider_row(space)) ) return FALSE;
-  return run_call(row->row.name, provider_match, row->row.value, NULL, row, args, result);
+  return run_call(row->row.name, provider_match, row->row.value, NULL, row, args, result, true);
 }
 
 /* The same captured registration owns a query and a transaction completion.
@@ -6701,7 +7178,8 @@ static foreign_t pl_cmetta_provider_finish(term_t held, term_t operation)
   return result;
 }
 
-/* Updates carry atoms directly, including opaque objects and counted text.
+/* Updates carry atoms directly, including opaque objects and counted text,
+   read by decode_carried() so a stored atom goes back as the term it was.
    Retaining the row also permits a callback to withdraw its own registration.
    Time: O(A) conversion, A atom nodes; no print/parse round trip.
    [tested: tests/test_providers.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
@@ -6726,7 +7204,7 @@ static foreign_t pl_cmetta_provider(term_t space, term_t operation,
     status = entry->provider.clear(entry->provider.user);
   else if ( (strcmp(name, "add") == 0 && entry->provider.add) ||
             (strcmp(name, "remove") == 0 && entry->provider.remove) )
-  { atom = decode(payload, 0);
+  { atom = decode_carried(payload, 0);
     status = atom ? (strcmp(name, "add") == 0
                      ? entry->provider.add(entry->provider.user, atom)
                      : entry->provider.remove(entry->provider.user, atom, &removed))

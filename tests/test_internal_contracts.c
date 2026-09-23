@@ -5,7 +5,8 @@
  * Guarantees: exits nonzero if allocation arithmetic wraps, an improper
  *   callback list is accepted, a foreign native handle bypasses its codec
  *   guard, a compound decodes outside the shared wire grammar, a cyclic answer
- *   is walked instead of refused, a long list costs references per cell, a
+ *   is walked instead of refused, a provider's store gets back a term other
+ *   than the one it was given, a long list costs references per cell, a
  *   negative count wraps, a counter loses bits, or clearing limits does not
  *   restore SWI's original stack limit.
  * Owns resources: drops its atom and closes the runtime before exit.
@@ -22,6 +23,7 @@ extern bool mt_test_close_handshake_skips_erase(void);
 extern bool mt_test_long_list_compound_decodes(size_t length);
 extern bool mt_test_wire_grammar(void);
 extern bool mt_test_cyclic_answer_refused(void);
+extern bool mt_test_carry_round_trips(void);
 extern bool mt_test_negative_count_is_rejected(void);
 extern bool mt_test_large_stats_are_exact(void);
 extern bool mt_test_decode_growth_overflow_is_rejected(void);
@@ -82,6 +84,15 @@ static void test_a_cyclic_answer_is_refused_by_name(void)
          "while a finite one still decodes");
 }
 
+static void test_a_provider_carries_what_it_stores(void)
+{ mt_clear();
+  expect(mt_test_carry_round_trips(),
+         "a provider must read every term the wire grammar would give back "
+         "changed as a handle, and every term must go back as a variant of "
+         "itself, sharing included, a carried ground term one value and the "
+         "list spelling its expression another");
+}
+
 int main(void)
 { metta *runtime = mt_open(NULL);
   mt_atom *dummy;
@@ -113,6 +124,7 @@ int main(void)
   test_a_long_list_compound_decodes_in_constant_references(runtime);
   test_compounds_decode_in_the_shared_wire_grammar();
   test_a_cyclic_answer_is_refused_by_name();
+  test_a_provider_carries_what_it_stores();
 
   mt_clear();
   expect(mt_test_negative_count_is_rejected(),

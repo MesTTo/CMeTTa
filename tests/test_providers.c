@@ -6,6 +6,9 @@
  * snapshots; each query owns a snapshot until the engine closes its iterator.
  * Guarantees: completed captures release the final provider owner immediately
  *   [tested: test_providers; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5].
+ * Guarantees: a compound stored through a provider comes back as the term it
+ *   was, applying, sharing its variables and removing by value
+ *   [tested: test_a_stored_compound_comes_back_whole; commit=WORKTREE].
  * Open Obligations: None.
  */
 #include <cmetta.h>
@@ -234,6 +237,47 @@ static int test_providers(void)
   return 0;
 }
 
+/* A value the engine stores through a provider comes back as the value it
+   stored, as the native space gives it back: a partial application still
+   applies, a variable it shares with the atom around it is still shared,
+   removing it by value removes it, and the list that spells its expression
+   is another atom, which removes nothing. */
+static int test_a_stored_compound_comes_back_whole(void)
+{ CASE("a compound stored through a provider comes back as the term it was"); tracker allocation = {0};
+  mt_allocator previous = mt_allocator_set((mt_allocator){tracked_resize, &allocation});
+  metta *m = mt_open(NULL);
+  counters counts = {0};
+  mt_provider p;
+  store *s;
+  CHECK(m);
+  p = provider(&counts, false); s = p.user;
+  CHECK(mt_provider_open(m, "&c-held", p));
+  CHECK(mt_one_truth(mt_eval(m, mt_expr("let", mt_var("p"), mt_expr("id", mt_expr("+", 1)),
+      mt_expr("add-atom", mt_spaceref("&c-held"), mt_expr("stored", mt_var("p")))))));
+  CHECK(s->atoms.len == 1 && mt_kind_of(mt_at(s->atoms.items[0], 1)) == MT_HANDLE);
+  CHECK(mt_one_int(mt_eval(m, mt_expr("match", mt_spaceref("&c-held"),
+      mt_expr("stored", mt_var("x")), mt_expr(mt_var("x"), 2)))) == 3);
+  /* Each removal is read to its end: a cursor freed unread never runs. */
+  mt_list_free(mt_all(mt_eval(m, mt_expr("remove-atom", mt_spaceref("&c-held"),
+      mt_expr("stored", mt_expr("partial", "+", mt_expr(1)))))));
+  CHECK(mt_ok() && s->atoms.len == 1);
+  mt_list_free(mt_all(mt_eval(m, mt_expr("let", mt_var("p"), mt_expr("id", mt_expr("+", 1)),
+      mt_expr("remove-atom", mt_spaceref("&c-held"), mt_expr("stored", mt_var("p")))))));
+  CHECK(mt_ok() && s->atoms.len == 0);
+  CHECK(mt_one_truth(mt_eval(m, mt_expr("let", mt_var("p"), mt_expr("id", mt_expr("+", mt_var("v"))),
+      mt_expr("add-atom", mt_spaceref("&c-held"), mt_expr("pair", mt_var("v"), mt_var("p")))))));
+  CHECK(mt_one_int(mt_eval(m, mt_expr("match", mt_spaceref("&c-held"),
+      mt_expr("pair", mt_var("a"), mt_var("b")),
+      mt_expr("let", mt_var("a"), 5, mt_expr(mt_var("b"), 1))))) == 6);
+  CHECK(mt_provider_close(m, "&c-held"));
+  mt_close(m);
+  CHECK(counts.releases == 1 && counts.opened == counts.closed);
+  CHECK(!allocation.blocks && !allocation.bytes);
+  mt_allocator_set(previous);
+  puts("providers: a stored compound applies, shares, removes by value and stays apart from its spelling");
+  return 0;
+}
+
 int main(void)
-{ return test_providers();
+{ return test_providers() || test_a_stored_compound_comes_back_whole();
 }

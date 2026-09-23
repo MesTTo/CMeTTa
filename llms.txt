@@ -61,14 +61,20 @@ variadic macro accepts up to sixteen children. `MT_SHORTHAND` enables
 `S V T N R B E` builders.
 
 Kinds are MT_SYMBOL, MT_VARIABLE, MT_EXPR, MT_TEXT, MT_BOOL, MT_INT, MT_FLOAT,
-MT_BIGINT, MT_RATIONAL, MT_SPACE, MT_OBJECT and MT_HANDLE. An MT_HANDLE holds a
-native blob, such as a host object, by reference: it prints as the engine
-prints it and passes back as the identical blob, and two handles are equal
-exactly when they hold one blob of one runtime. Every other engine term decodes
-in the wire grammar the Python and Node seats share: a compound as `(F args...)`
-and a zero-arity one as `(F)`, an improper list as `(cons Head Tail)`, a partial
-application as `(partial F Args)`, which is data rather than a function when
-passed back; a cyclic answer is refused by name.
+MT_BIGINT, MT_RATIONAL, MT_SPACE, MT_OBJECT and MT_HANDLE. An MT_HANDLE holds an
+engine value by reference, a native blob such as a host object from any door
+and a term a provider carried: it prints as the engine prints it and passes
+back as the identical value. Two blob handles are equal exactly when they hold
+one blob of one runtime; two carried ones when their terms are variants whose
+variables have the same names, and mt_alpha_eq renames those with the rest of
+the atom. Every other engine term decodes in the wire grammar the Python and
+Node seats share: a compound as `(F args...)` and a zero-arity one as `(F)`, an
+improper list as `(cons Head Tail)`, a partial application as
+`(partial F Args)`, and each goes back as that expression, so a partial passed
+back is data rather than a function; a cyclic answer is refused by name.
+Answers, rows, mt_arg, a matcher's operand, notifications and parses all read
+that way; a provider's add, remove and match are the one door that carries
+instead, since a store must hand back the term it was given.
 `mt_kind_of(NULL)`
 returns MT_NONE. `mt_int` requires an exact int64 value; `mt_float` refuses
 lossy integer conversion. `mt_unum` preserves uint64 and `mt_bigint`
@@ -236,7 +242,11 @@ candidate iterator through match. A variable pattern requests enumeration.
 The engine unifies each candidate; duplicates remain duplicate answers.
 The match limit is advisory and may be ignored. Apply it only to exact
 answers. NULL callbacks decline capabilities. remove reports whether one
-occurrence was removed through its bool output.
+occurrence was removed through its bool output. Arguments arrive so that each
+goes back unchanged: a non-list compound, a dict and an improper or partial
+list arrive carried as an MT_HANDLE holding the engine's term, so a stored
+partial application still applies when matched back, and remove and match find
+it by value; mt_write_dup refuses a carried handle.
 
 Supply begin/commit/rollback together or omit all three. Completion retains
 the chosen provider across withdrawal and name reuse. Queries retain it

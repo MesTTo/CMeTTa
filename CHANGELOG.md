@@ -5,6 +5,23 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Hand a C provider's stored atoms back as the terms the engine gave it. A
+  space backed by a C provider read its add, remove and match arguments in the
+  wire grammar, so a compound came back an expression: a partial application
+  stored through a provider answered `((partial + (1)) 2)` where the native
+  space applies it and answers `3`. A provider now reads its arguments so that
+  each goes back unchanged: proper lists, symbols, numbers, text and variables
+  as the wire grammar reads them, and a non-list compound, a dict and an
+  improper or partial list carried as an `MT_HANDLE` holding the engine's
+  term. Answering a stored atom puts the identical term back, a variable it
+  shares with the rest of its atom still shared, `remove` and `match` find it
+  by value, and the list that spells its expression is a different atom. Two
+  carried handles are equal when their terms are variants whose variables
+  have the same names, and `mt_alpha_eq` renames those with the rest of the
+  atom. Every other door still reads the wire grammar, so answers, a published
+  function's arguments, a matcher's operand and notifications are expressions
+  as in the Python and Node seats; `cmetta.h` says which door is which.
+
 - Resolve each bridge predicate once per runtime. Every door the engine
   answers through called `PL_predicate()`, which interns the name and the
   module and looks the procedure up, on every call, about 2,227 instructions
@@ -34,7 +51,8 @@ Open Obligations: None. -->
   `(F)`; an improper list is `(cons Head Tail)` along its spine; variables
   keep their identity; and an answer that is a cyclic term is refused by name
   instead of walked forever, at the answer, group and C-argument sites where
-  the Python seat refuses it. An `MT_HANDLE` is now only a native blob: it
+  the Python seat refuses it. Everywhere but a provider's arguments (see the
+  entry above), an `MT_HANDLE` is now only a native blob: it
   holds a record, prints as the engine prints it, goes back as the identical
   blob, and two handles are equal exactly when they hold one blob of one
   runtime. Releasing one erases its record under a handshake with `mt_close`,

@@ -213,7 +213,7 @@ mt_expr("f", mt_expr("g", 1), 2.5)     /* (f (g 1) 2.5) */
 | `MT_EXPR` | an expression; the empty one is unit |
 | `MT_SPACE` | an executable space reference |
 | `MT_OBJECT` | a live C value by reference |
-| `MT_HANDLE` | a native blob, such as a host language's object, held by reference: it prints as the engine prints it and goes back as the identical blob. Every other engine term arrives as an expression in the wire grammar the Python and Node seats read: a compound as `(F args...)`, an improper list as `(cons Head Tail)`, a partial application as `(partial F Args)` |
+| `MT_HANDLE` | an engine value held by reference: a native blob, such as a host language's object, from any door, and a term a provider carried. It prints as the engine prints it and goes back as the identical value. Every other engine term arrives as an expression in the wire grammar the Python and Node seats read: a compound as `(F args...)`, an improper list as `(cons Head Tail)`, a partial application as `(partial F Args)`, each going back as that expression. A provider's add, remove and match are the one exception, because a store has to give back what it was given: there a term that grammar would change arrives carried |
 
 C splits the codec's Number tag into four kinds, and reading promotes only where lossless: `mt_float` accepts an Int within 2^53 and refuses one beyond it, while `mt_int` refuses a Float instead of rounding.
 
@@ -720,6 +720,17 @@ repeated variables. A variable pattern requests enumeration. The bound is
 advisory and must not truncate an over-approximation before unification.
 Duplicate candidates remain duplicate answers. `remove` reports one occurrence
 through its boolean output. A NULL callback declines that capability.
+
+A store has to answer the engine with the atoms the engine gave it, so a
+provider reads its arguments such that each goes back unchanged. Proper lists,
+symbols, numbers, text and variables read as the wire grammar reads them; a
+non-list compound, a dict and an improper or partial list arrive carried, each
+an `MT_HANDLE` holding the engine's term. A partial application stored through
+a C provider therefore still applies when matched back, as from the native
+space, a variable it shares with the rest of its atom stays shared, and
+`remove` and `match` find it by value, while the list that spells its
+expression is a different atom. A store that writes atoms out as source cannot
+write a carried one, and `mt_write_dup` refuses it by name.
 
 Supply `begin`, `commit` and `rollback` together when the store can participate
 in transactions. The engine captures the selected provider before beginning;

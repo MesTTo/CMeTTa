@@ -290,22 +290,39 @@ typedef enum mt_kind {
    A compound the engine hands out, such as a refusal's payload, is the
    expression (F args...), its functor a symbol and a zero-arity one (F); an
    improper list is (cons Head Tail) along its spine; a partial application
-   is (partial F Args), which, as in those seats, is data when passed back
-   rather than a function that applies; a variable keeps its identity; and
-   a cyclic answer is refused by name [tested: tests/test_internal_contracts.c,
+   is (partial F Args); a variable keeps its identity; and a cyclic answer is
+   refused by name [tested: tests/test_internal_contracts.c,
    test_compounds_decode_in_the_shared_wire_grammar and
    test_a_cyclic_answer_is_refused_by_name; commit=65b02ca599b0db696faf221f4f39e94210013fc1].
+   A value read this way goes back as the atom C holds, never as the engine's
+   term, so, as in those seats, a partial application passed back is data
+   rather than a function that applies, and (id p) on a refusal's payload
+   acts on the expression [measured 2026-09-24: the Python seat answers
+   ((partial + (1)) 2) for the same hand-back]. Answers and rows (mt_next,
+   mt_step, mt_first, mt_one, mt_all, mt_bound), a published function's
+   arguments (mt_arg), a matcher's operand, a subscription's notification, a
+   parse and an effect plan all read this way. The one door that does not is
+   a provider's add, remove and match: a store has to hand the engine back the
+   term the engine gave it, so what this grammar would change arrives there
+   carried, as described at mt_provider.
 
-   An MT_HANDLE is the one value with no structure: a native blob, such as a
-   host language's object, held by reference. mt_show() prints it as the
-   engine does and passing it back to any door puts the identical blob back;
-   mt_write_dup() refuses it, having no source spelling. Two handles are
-   mt_eq, hash alike and compare equal exactly when they hold one blob of one
-   runtime, never merely because they print alike [tested:
-   tests/test_internal_contracts.c, test_native_handle_decode_and_encode_contract;
-   commit=65b02ca599b0db696faf221f4f39e94210013fc1]. A handle cannot outlive the runtime that answered it:
-   after mt_close() passing it back is refused by name [tested:
-   tests/test_reopen.c, test_a_handle_does_not_outlive_its_runtime;
+   An MT_HANDLE holds an engine value by reference: a native blob, such as a
+   host language's object, from any door, and a term a provider carried.
+   mt_show() prints it as the engine does and passing it back to any door
+   puts the identical value back; mt_write_dup() refuses it, having no source
+   spelling. Two blob handles are mt_eq, hash alike and compare equal exactly
+   when they hold one blob of one runtime, never merely because they print
+   alike [tested: tests/test_internal_contracts.c,
+   test_native_handle_decode_and_encode_contract;
+   commit=65b02ca599b0db696faf221f4f39e94210013fc1]. Two carried handles are
+   mt_eq exactly when their terms are variants whose variables have the same
+   names in this crossing, since those names are what a carried term shares
+   with the atom around it, and mt_alpha_eq renames them with the rest of the
+   atom [tested: tests/test_internal_contracts.c,
+   test_a_provider_carries_what_it_stores; commit=WORKTREE]. A handle cannot
+   outlive the runtime that answered it: after mt_close() passing it back is
+   refused by name [tested: tests/test_reopen.c,
+   test_a_handle_does_not_outlive_its_runtime;
    commit=65b02ca599b0db696faf221f4f39e94210013fc1]. */
 
 MT_API const char *mt_kind_str(mt_kind kind);
@@ -537,7 +554,11 @@ MT_API uint64_t mt_hash(const mt_atom *atom);
    one normalized substitution without walking a replacement again, so a
    cyclic binding such as `$x = (f $x)` remains a finite `(f $x)`.
    [tested: tests/test_unify.c;
-   commit=e927fffde3a19d9927892bf64a7fc6202b866ae0] */
+   commit=e927fffde3a19d9927892bf64a7fc6202b866ae0]
+
+   Both treat an MT_HANDLE as a leaf, which unifies with a variable or a
+   handle equal to it and which substitution leaves as it is: the variables
+   inside a carried term are the engine's to bind, when the handle goes back. */
 typedef struct mt_bindings mt_bindings;
 
 MT_API MT_MUST_USE mt_bindings *mt_unify(const mt_atom *left,
@@ -1257,6 +1278,21 @@ MT_API bool mt_repr(metta *runtime, const char *type_name, mt_text_fn text,
    close, and the engine unifies every candidate. limit is advisory, zero when
    absent: apply it only when candidates are exact answers. A variable pattern
    asks for all atoms, so enumeration needs no second callback.
+
+   A store answers the engine with the atoms the engine gave it, so add,
+   remove and match read every argument such that it goes back as the term it
+   was: a proper list, a symbol, a number, text and a variable read as the
+   wire grammar reads them, and a non-list compound, a dict and an improper or
+   partial list, which that grammar would give back changed, arrive CARRIED,
+   each an MT_HANDLE holding the engine's term. Answering a stored atom puts
+   the identical term back, a variable it shares with the rest of its atom
+   still shared, so a partial application stored here still applies when
+   matched back, exactly as from the native space. Removing and matching find
+   it by value: the carried handle in the engine's argument is mt_eq to the
+   stored one, while the list that spells its expression is another atom
+   [tested: tests/test_providers.c, test_a_stored_compound_comes_back_whole;
+   commit=WORKTREE]. A store that writes its atoms out as source cannot
+   write a carried one: mt_write_dup() refuses it by name.
 
    Callbacks return MT_OK or an error set with mt_error_set. remove additionally
    writes whether one occurrence was removed. NULL declines a capability.
