@@ -5,6 +5,14 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Relink the library and every program built on it when the compiler, its
+  flags, the SWI host or the engine path change. A `.toolchain-stamp` holds the
+  command line each output bakes in and is rewritten only when it differs, the
+  way git's Makefile tracks its CFLAGS. A library linked against the stock SWI
+  before the engine began refusing unpatched hosts had kept booting it, and
+  every program linking it died in PL_initialise; a copied checkout also kept
+  booting the original's engine.
+
 - Expose `mt_effect_plan` through the shared source planner. The effect-rank
   twin found that general `explain` metadata did not describe C registrations;
   planning now returns the operation roster and joined class without execution.

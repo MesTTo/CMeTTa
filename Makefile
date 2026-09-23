@@ -20,8 +20,9 @@
 #   [tested: extensions/cmetta/check.sh c-install; commit=1c40a5f96c308941b4c0669594acb06403109751].
 # Decides: the engine tree is baked in as MT_ENGINE_PATH so a linked program
 #   boots with no environment set, and $METTA_PATH still overrides it at run
-#   time. A checkout that moves needs a rebuild, which is the same bargain
-#   setup.py makes when it copies the runtime into the Python wheel.
+#   time. A checkout that moves relinks at its next `make`, because the path is
+#   part of the toolchain stamp, which is the same bargain setup.py makes when
+#   it copies the runtime into the Python wheel.
 #   Every ordinary build treats warnings as errors, refuses undefined shared-
 #   library symbols, and emits stack-protected full-RELRO objects. `make
 #   sanitize` rebuilds in root ai-tmp so sanitizer and ordinary objects never
@@ -67,6 +68,32 @@ CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -Werror -fPIC \
 LDFLAGS += -L$(PLLIBDIR) -Wl,-rpath,$(PLLIBDIR) -Wl,-z,defs \
            -Wl,-z,relro,-z,now
 LDLIBS  += -lswipl
+
+# A VARIABLE an output bakes in is an input make cannot see change: a target
+# newer than its sources is up to date whatever it was built with. So each such
+# value is written to a stamp that is rewritten only when the value differs,
+# and every target baking it depends on the stamp, which is how git's own
+# Makefile tracks its compiler flags (TRACK_CFLAGS and GIT-CFLAGS there,
+# including this escape for the single quotes CFLAGS carries around
+# MT_ENGINE_PATH). An unchanged value relinks nothing.
+#
+# `toolchain` is the whole command line the ordinary build compiles and links
+# with. The part of it that moves is the SWI host: `swipl` on PATH decides
+# PLBASE and PLLIBDIR, libcmetta.so links that libswipl by rpath, and the engine
+# refuses an unpatched host at boot, so a library linked before the host
+# changed kept the stock one and every program linking it died in
+# PL_initialise [measured 2026-09-23: benchmarks/cases boot 1 raised
+# error(metta_host_unpatched(..., none(/usr/lib/swi-prolog)), _) from a
+# libcmetta.so linked at 16:21, before the refusal landed, and booted once
+# relinked under the patched swipl; commit=681fdd8b07ed652d7e3798704c0bebce30094c47].
+# ENGINE_PATH is the other part: a copy of this checkout, a battery tree
+# included, used to keep the library linked in the original and so booted the
+# ORIGINAL's engine rather than its own.
+toolchain = $(CC) $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+.%-stamp: FORCE
+	@printf '%s' '$(subst ','\'',$($*))' | cmp -s - $@ 2>/dev/null || \
+	    printf '%s' '$(subst ','\'',$($*))' > $@
+FORCE:
 
 LIB       := libcmetta.so
 STATIC_LIB := libcmetta.a
@@ -125,16 +152,18 @@ all: $(LIB) $(STATIC_LIB) examples $(KIT) $(BENCH)
 
 # Archive consumers need the same implementation and transitive SWI dependency.
 # [tested: make install-check; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5]
-cmetta.o: cmetta.c cmetta.h
+cmetta.o: cmetta.c cmetta.h .toolchain-stamp
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(STATIC_LIB): cmetta.o
 	$(AR) rcs $@ $<
 
-$(LIB): cmetta.c cmetta.h
+# Every other program here links one of these two libraries, so it follows
+# them when the toolchain stamp moves.
+$(LIB): cmetta.c cmetta.h .toolchain-stamp
 	$(CC) $(CFLAGS) -shared -o $@ cmetta.c $(LDFLAGS) $(LDLIBS)
 
-$(FAULT_LIB): cmetta.c cmetta.h
+$(FAULT_LIB): cmetta.c cmetta.h .toolchain-stamp
 	$(CC) $(CFLAGS) -DMT_TEST_FAULTS -shared -o $@ cmetta.c \
 	    $(LDFLAGS) $(LDLIBS)
 
@@ -274,7 +303,7 @@ sanitize:
 # A runtime defect must remain reproducible independently of the binding.
 # This gate retains every scenario's log and fails on any Memcheck error.
 # [tested: make runtime-memory; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
-$(TEST_TMP)/swi-memory-probe: tests/swi_memory_probe.c
+$(TEST_TMP)/swi-memory-probe: tests/swi_memory_probe.c .toolchain-stamp
 	@mkdir -p "$(TEST_TMP)"
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
 
@@ -297,19 +326,15 @@ runtime-memory: $(TEST_TMP)/swi-memory-probe
 # The baked engine path is a VARIABLE, not a file, so make cannot see it
 # change: `make install PREFIX=/a` followed by `make install PREFIX=/b` shipped
 # /a's path inside /b's library, because the .so was newer than its two sources
-# both times. The stamp turns the configuration into a prerequisite, which is
-# the ordinary way a Makefile notices one, and it rewrites only when the value
-# actually differs so an unchanged prefix relinks nothing.
-.enginedir-stamp: FORCE
-	@printf '%s' '$(enginedir)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(enginedir)' > $@
-FORCE:
-
-$(SOFILE): cmetta.c cmetta.h .enginedir-stamp
+# both times. .enginedir-stamp is the stamp rule near the top of this file
+# applied to `enginedir`; the installed library also compiles and links with
+# the ordinary toolchain, so it follows .toolchain-stamp as well.
+$(SOFILE): cmetta.c cmetta.h .enginedir-stamp .toolchain-stamp
 	$(CC) $(filter-out -DMT_ENGINE_PATH=%,$(CFLAGS)) \
 	    -DMT_ENGINE_PATH='"$(enginedir)"' -shared -Wl,-soname,$(SONAME) \
 	    -o $@ cmetta.c $(LDFLAGS) $(LDLIBS)
 
-build/install/cmetta.o: cmetta.c cmetta.h .enginedir-stamp
+build/install/cmetta.o: cmetta.c cmetta.h .enginedir-stamp .toolchain-stamp
 	@mkdir -p $(@D)
 	$(CC) $(filter-out -DMT_ENGINE_PATH=%,$(CFLAGS)) \
 	    -DMT_ENGINE_PATH='"$(enginedir)"' -c -o $@ $<
@@ -405,7 +430,8 @@ install-check:
 	@echo "install-check: archive consumer booted the installed engine"
 
 clean:
-	rm -f $(LIB) $(STATIC_LIB) cmetta.o $(FAULT_LIB) $(SOFILE) cmetta.pc .enginedir-stamp \
+	rm -f $(LIB) $(STATIC_LIB) cmetta.o $(FAULT_LIB) $(SOFILE) cmetta.pc \
+	      .enginedir-stamp .toolchain-stamp \
 	      tests/extension_accept.so tests/extension_refuse.so \
 	      .version-probe .version-probe.c \
 	      $(EXAMPLES) $(TESTS) $(KIT) $(BENCH)

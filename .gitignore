@@ -14,11 +14,13 @@ examples/language
 kit/driver
 benchmarks/cases
 
-# The install products and the configuration stamp that decides when the
-# installed library has to be rebuilt.
+# The install products and the configuration stamps that decide when a library
+# has to be rebuilt: the installed engine path, and the in-tree toolchain with
+# the SWI host it links.
 libcmetta.so.*
 cmetta.pc
 .enginedir-stamp
+.toolchain-stamp
 build/
 
 # The C suite's own binaries, and the library the fault-injection tests link.
