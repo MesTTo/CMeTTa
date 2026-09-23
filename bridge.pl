@@ -552,6 +552,21 @@ seam:grounded_apply(Obj, Args, [], Result) :-
     blob(Obj, cmetta_object),
     '$cmetta_apply'(Obj, Args, Result).
 
+% Candidates cross through the retained callback cursor; structural unification
+% binds the original operand's variables. The engine decides which value owns
+% matching and bypasses this hook when the other operand is a free variable.
+% [tested: tests/test_matchers.c; commit=WORKTREE]
+:- multifile seam:matchable_value/1.
+seam:matchable_value(Obj) :-
+    blob(Obj, cmetta_object),
+    '$cmetta_object_matchable'(Obj).
+
+:- multifile seam:custom_match/2.
+seam:custom_match(Obj, Other) :-
+    blob(Obj, cmetta_object),
+    '$cmetta_match'(Obj, Other, Candidate),
+    Other = Candidate.
+
 %%%%%%%%%% Text coercion %%%%%%%%%%
 
 % A grounded callable returns one value. Explicit iteration consumes that

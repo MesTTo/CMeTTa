@@ -473,6 +473,14 @@ returning something an unwary caller would read as an answer.
 
 ## C functions
 
+`mt_matcher` supplies custom matching for a grounded value. Its callback
+borrows the other operand and returns candidate atoms. The engine unifies each
+candidate with that operand, so a candidate `(value 7)` binds `$x` in
+`(unify matcher (value $x) $x Empty)` to `7`. `MT_FAIL` declines a match;
+`mt_fail` reports an error. `mt_answer_iter` streams candidates and closes on
+exhaustion or abandonment. The release callback owns the same lifetime as
+`mt_object`; a free variable binds the matcher whole without calling it.
+
 `mt_def` publishes a callback with designated fields and a required effect class, which the engine uses for caching, reordering, and transactions.
 
 ```c

@@ -75,7 +75,7 @@ THREAD_TESTS := tests/test_threads
 TESTS     := tests/test_cmetta tests/test_bad_boot tests/test_quoted_path \
              tests/test_qlf_boot tests/test_batch_add tests/test_unify \
              tests/test_seam tests/test_ownership tests/test_iterators tests/test_transactions tests/test_providers tests/test_native_parity \
-             tests/test_subscriptions tests/test_extensions \
+             tests/test_subscriptions tests/test_extensions tests/test_matchers \
              $(FAULT_TESTS) $(THREAD_TESTS)
 KIT       := kit/driver
 BENCH     := benchmarks/cases
@@ -229,6 +229,7 @@ test: $(TESTS) $(EXAMPLES) $(KIT) surface docs version hardening
 	@./tests/test_native_parity
 	@./tests/test_subscriptions
 	@./tests/test_extensions
+	@./tests/test_matchers
 	@./tests/test_hash
 	@./tests/test_threads
 	@python3 ./tests/test_kit.py ./kit/driver "$(TEST_TMP)"

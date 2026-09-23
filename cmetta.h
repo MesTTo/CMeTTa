@@ -1042,6 +1042,18 @@ MT_API bool mt_object_free(mt_atom *atom);
 MT_API MT_MUST_USE mt_atom *mt_function(mt_fn fn, void *user,
                                      mt_free_fn release);
 
+/* A grounded value with custom structural matching inside engine `unify`.
+   fn borrows one argument, the other operand, and answers candidate atoms
+   with mt_answer or mt_answer_iter. Each candidate unifies with that operand;
+   MT_FAIL means no match. Errors abort matching. A free variable binds the
+   value whole without invoking fn. This value is not callable.
+   Takes user on every path; release runs after the last C, blob and active
+   matcher cursor owner releases it. Native mt_unify remains structural and
+   does not invoke engine hooks.
+   [tested: tests/test_matchers.c; commit=WORKTREE] */
+MT_API MT_MUST_USE mt_atom *mt_matcher(mt_fn fn, void *user,
+                                    mt_free_fn release);
+
 /* ================================================================== *
  * Extending this seat
  * ================================================================== */

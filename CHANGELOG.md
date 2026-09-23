@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `mt_matcher` after the custom-matching corpus exposed a missing C door
+  to the engine's grounded-value matching hooks. Candidate iterators retain
+  callback data, propagate errors and close when abandoned.
+
 - Let `build.sh` and `test.sh` run in an isolated component checkout. The
   enclosing gate supplies any deadline; these scripts no longer require a
   superproject-relative helper.

@@ -519,6 +519,7 @@ typedef struct mt_box
   char                 *type;
   mt_free_fn  release;
   mt_fn           apply;
+  mt_fn           match;
   mt_answers     *stream;
   void                 *user;
 } mt_box_t;
@@ -1789,6 +1790,25 @@ mt_atom *mt_function(mt_fn fn, void *user,
   return box ? object_from_box(box) : NULL;
 }
 
+/* The matching callback uses the same retained native-call machinery as an
+   operation. Only the engine ownership hook differs.
+   [tested: tests/test_matchers.c; commit=WORKTREE] */
+mt_atom *mt_matcher(mt_fn fn, void *user, mt_free_fn release)
+{ mt_box_t *box;
+  if ( !fn )
+  { if ( release ) release(user);
+    err_set(MT_MISUSE, "mt_matcher needs a function, not NULL");
+    return NULL;
+  }
+  box = box_new(user, "Matcher", release, NULL, user);
+  if ( !box )
+  { if ( release ) release(user);
+    return NULL;
+  }
+  box->match = fn;
+  return object_from_box(box);
+}
+
 /* ================================================================== *
  * The runtime
  * ================================================================== */
@@ -3021,7 +3041,7 @@ static foreign_t run_call(const char *name, mt_fn fn, void *user,
   status = fn(call, user);
   if ( status == MT_OK && call->answered && !call->failed )
   { if ( call->iterator.next )
-    { if ( owner )
+    { if ( owner && !owner->match )
       { mt_atom *stream = mt_stream((mt_iterator){held, native_iterator_next,
                                                   native_iterator_close});
         term_t out = PL_new_term_ref();
@@ -3090,6 +3110,25 @@ static mt_box_t *blob_box(term_t t)
 static foreign_t pl_cmetta_object_callable(term_t t)
 { mt_box_t *box = blob_box(t);
   return ( box && box->apply ) ? TRUE : FALSE;
+}
+
+static foreign_t pl_cmetta_object_matchable(term_t t)
+{ mt_box_t *box = blob_box(t);
+  return (box && box->match) ? TRUE : FALSE;
+}
+
+static foreign_t pl_cmetta_match(term_t t, term_t other, term_t result,
+                                control_t control)
+{ mt_box_t *box;
+  term_t args, nil;
+  if ( PL_foreign_control(control) != PL_FIRST_CALL )
+    return native_continue(result, control);
+  box = blob_box(t);
+  if ( !box || !box->match ) return FALSE;
+  args = PL_new_term_ref(); nil = PL_new_term_ref();
+  if ( !args || !nil || !PL_put_nil(nil) || !PL_cons_list(args, other, nil) )
+    return PL_resource_error("memory");
+  return run_call("matcher", box->match, box->user, box, NULL, args, result);
 }
 
 static foreign_t pl_cmetta_object_live(term_t t)
@@ -3290,6 +3329,10 @@ metta *mt_open(const mt_config *config)
                       as_pl_function((mt_anyfn)pl_cmetta_dispatch), PL_FA_NONDETERMINISTIC);
   PL_register_foreign("$cmetta_object_callable", 1,
                       as_pl_function((mt_anyfn)pl_cmetta_object_callable), 0);
+  PL_register_foreign("$cmetta_object_matchable", 1,
+                      as_pl_function((mt_anyfn)pl_cmetta_object_matchable), 0);
+  PL_register_foreign("$cmetta_match", 3,
+                      as_pl_function((mt_anyfn)pl_cmetta_match), PL_FA_NONDETERMINISTIC);
   PL_register_foreign("$cmetta_object_live", 1,
                       as_pl_function((mt_anyfn)pl_cmetta_object_live), 0);
   PL_register_foreign("$cmetta_object_type", 2,
