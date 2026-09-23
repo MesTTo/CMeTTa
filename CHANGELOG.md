@@ -5,6 +5,17 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Hold every engine value with no MeTTa structure as an `MT_HANDLE` that
+  goes back whole. A partial application such as `partial(+,[1])` used to be
+  refused, and the refusal failed every answer of the cursor or run holding
+  it, while the engine prints it as `(partial + (1))` and the Python seat
+  reads it. The handle records the engine term, so `mt_show` prints what the
+  engine prints and passing the handle back puts the identical value back:
+  the partial still applies, `(<handle> 2)` answering 3. Native blobs gain
+  the same round trip, where they used to be refused on resubmission. A
+  handle does not outlive its runtime, and passing one back after
+  `mt_close` is refused by name.
+
 - Add `mt_compare`, the engine's standard order of terms, and `mt_order`, the
   same order for `qsort`. Python atoms sort in the engine's term order and C
   atoms could not be sorted at all, so a C program had to ask the engine to

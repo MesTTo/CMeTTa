@@ -15,7 +15,7 @@
 #include <stdio.h>
 
 extern bool mt_test_improper_apply_is_rejected(void);
-extern bool mt_test_native_handle_codec_is_guarded(void);
+extern bool mt_test_native_handle_codec_round_trips(void);
 extern bool mt_test_negative_count_is_rejected(void);
 extern bool mt_test_large_stats_are_exact(void);
 extern bool mt_test_decode_growth_overflow_is_rejected(void);
@@ -32,10 +32,11 @@ static void expect(bool condition, const char *claim)
 
 static void test_native_handle_decode_and_encode_contract(void)
 { mt_clear();
-  expect(mt_test_native_handle_codec_is_guarded(),
-         "a foreign native blob must decode as MT_HANDLE and refuse encoding");
+  expect(mt_test_native_handle_codec_round_trips(),
+         "a foreign native blob must decode as MT_HANDLE and encode back as "
+         "the same blob, while a handle holding no term refuses encoding");
   expect(mt_error() == MT_UNSUPPORTED,
-         "the native-handle encode guard must report MT_UNSUPPORTED");
+         "the printed-only handle's refusal must report MT_UNSUPPORTED");
 }
 
 int main(void)

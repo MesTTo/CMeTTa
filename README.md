@@ -212,7 +212,7 @@ mt_expr("f", mt_expr("g", 1), 2.5)     /* (f (g 1) 2.5) */
 | `MT_EXPR` | an expression; the empty one is unit |
 | `MT_SPACE` | an executable space reference |
 | `MT_OBJECT` | a live C value by reference |
-| `MT_HANDLE` | native engine display, refused on resubmission because the C codec cannot reconstruct its identity |
+| `MT_HANDLE` | an engine value with no MeTTa structure, such as a partial application, held by reference: it prints as the engine prints it and goes back as the identical value |
 
 C splits the codec's Number tag into four kinds, and reading promotes only where lossless: `mt_float` accepts an Int within 2^53 and refuses one beyond it, while `mt_int` refuses a Float instead of rounding.
 

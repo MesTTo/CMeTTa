@@ -282,6 +282,16 @@ typedef enum mt_kind {
   MT_HANDLE    /* `h`: a native engine value held by reference       */
 } mt_kind;
 
+/* An MT_HANDLE is an engine value with no MeTTa structure: a native blob, or
+   a compound such as the partial application the engine prints as
+   (partial + (1)). The atom holds the engine term by reference, so mt_show()
+   prints it as the engine does and passing it back to any door puts the
+   identical value back, which still applies, matches and compares as itself;
+   mt_write_dup() refuses it, having no source spelling. A handle cannot
+   outlive the runtime that answered it: after mt_close() passing it back is
+   refused by name [tested: tests/test_cmetta.c,
+   test_an_engine_value_crosses_back_whole; commit=WORKTREE]. */
+
 MT_API const char *mt_kind_str(mt_kind kind);
 
 /* Logical text, names and source use UTF-8. Constructors retain bytes without

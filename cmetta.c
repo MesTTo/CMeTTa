@@ -22,8 +22,11 @@
  *   - no Prolog exception crosses into a caller: every query runs under
  *     PL_Q_CATCH_EXCEPTION, and the ball is rendered by the bridge into the
  *     thread-local error text
- *   - an engine term with no MeTTa reading is REFUSED by name rather than
- *     stringified into something that cannot go home again
+ *   - an engine term with no MeTTa structure, a blob or a compound such as a
+ *     partial application, is held by reference as an MT_HANDLE: it prints
+ *     as the engine prints it and goes back as the identical term, never as
+ *     text that cannot go home again [tested: tests/test_cmetta.c,
+ *     test_an_engine_value_crosses_back_whole; commit=WORKTREE]
  *   - an ampersand-prefixed atom becomes MT_SPACE only when the engine
  *     says it is a space [tested: test_a_user_space_decodes_as_a_space;
  *     commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
@@ -2605,6 +2608,48 @@ static bool decode_is_expr(term_t t)
 { return PL_get_nil(t) || PL_is_list(t);
 }
 
+/* An engine value with no MeTTa structure, held by reference: the engine
+   term is recorded, so encoding the handle puts back the identical term, a
+   blob or a compound such as the partial application partial(+,[1]), which
+   the engine prints as (partial + (1)) and which no expression rebuilds. The
+   record belongs to the runtime generation that made it, and is erased on
+   the handle's last release only while that runtime is still open; after
+   mt_close() the heap it lived in is gone with the runtime.
+   [tested: tests/test_cmetta.c, test_an_engine_value_crosses_back_whole;
+   commit=WORKTREE] */
+typedef struct handle_ref
+{ record_t record;
+  uint64_t generation;
+} handle_ref;
+
+static void handle_release(void *owner)
+{ handle_ref *h = owner;
+  if ( g_open && h->generation == g_runtime.generation ) PL_erase(h->record);
+  mt_free(h);
+}
+
+static mt_atom *handle_of(term_t t)
+{ size_t len;
+  char *text = term_text(t, CVT_WRITE, &len);
+  handle_ref *h = text ? mt_alloc(sizeof *h) : NULL;
+  mt_atom *a = NULL;
+  if ( h && (h->record = PL_record(t)) )
+  { h->generation = g_runtime.generation;
+    if ( (a = atom_text(MT_HANDLE, text, len)) )
+    { a->owner = h;
+      a->release = handle_release;
+      h = NULL;
+    }
+  }
+  if ( h )
+  { if ( h->record ) PL_erase(h->record);
+    mt_free(h);
+  }
+  mt_free(text);
+  if ( !a && mt_ok() ) err_set(MT_NOMEM, "out of memory holding an engine value");
+  return a;
+}
+
 /* Every engine term with no children. */
 static mt_atom *decode_leaf(term_t t, term_t names)
 { if ( PL_is_variable(t) )
@@ -2643,10 +2688,7 @@ static mt_atom *decode_leaf(term_t t, term_t names)
     PL_blob_t *type;
     if ( PL_get_blob(t, &blob, &blob_len, &type) &&
          !(type->flags & PL_BLOB_TEXT) )
-    { size_t len;
-      char *text;
-      mt_atom *a;
-      if ( type == &mt_object_blob )
+    { if ( type == &mt_object_blob )
       { mt_box_t *box = blob;
         if ( !box || blob_len != sizeof(*box) )
         { err_set(MT_UNSUPPORTED,
@@ -2657,16 +2699,10 @@ static mt_atom *decode_leaf(term_t t, term_t names)
         MT_INC(&box->refs);
         return object_from_box(box);
       }
-      /* Somebody else's blob: a native engine value. It crosses by reference
-         and prints as itself, which is the `h` tag's whole contract. */
-      text = term_text(t, CVT_WRITE, &len);
-      if ( !text )
-      { err_set(MT_NOMEM, "out of memory naming a native value");
-        return NULL;
-      }
-      a = atom_text(MT_HANDLE, text, len);
-      mt_free(text);
-      return a;
+      /* Somebody else's blob: a native engine value. It crosses by
+         reference, prints as itself, and goes back as itself, which is the
+         `h` tag's whole contract. */
+      return handle_of(t);
     }
   }
 
@@ -2690,16 +2726,11 @@ static mt_atom *decode_leaf(term_t t, term_t names)
     return a;
   }
 
-  { size_t len;
-    char *text = term_text(t, CVT_WRITE, &len);
-    err_set(MT_UNSUPPORTED,
-            "the engine answered %s, which is a Prolog term with no MeTTa "
-            "reading; this binding refuses it rather than turning it into a "
-            "symbol that cannot go home again",
-            text ? text : "a term this binding could not even print");
-    mt_free(text);
-    return NULL;
-  }
+  /* A term with no MeTTa structure, a partial application or a closure. It
+     used to be refused, which failed every answer of a run that held one,
+     while the engine prints it and the Python seat reads it; held by
+     reference it prints as the engine prints it and goes home unchanged. */
+  return handle_of(t);
 }
 
 /* One expression being built: the children taken so far, and how far along
@@ -2973,6 +3004,15 @@ static bool encode_leaf(const mt_atom *a, term_t out, encode_ctx *ctx)
       (void)PL_put_blob(out, a->u.box, sizeof(*a->u.box), &mt_object_blob);
       return true;
     case MT_HANDLE:
+      if ( a->release == handle_release )
+      { const handle_ref *h = a->owner;
+        if ( h->generation == g_runtime.generation )
+          return PL_recorded(h->record, out);
+        err_set(MT_UNSUPPORTED,
+                "%s was held by a runtime that has since closed; the value "
+                "did not survive it", a->u.t.text);
+        return false;
+      }
       err_set(MT_UNSUPPORTED,
               "a native engine value cannot be sent back by its printed form: "
               "%s names it but is not it. Keep the answer's own atom and pass "
@@ -5359,18 +5399,18 @@ static PL_blob_t test_handle_blob =
 };
 
 /* Construct somebody else's real SWI blob inside the fault library, decode it
-   through the MT_HANDLE branch, then prove its printed name cannot be encoded
-   as though it were the engine value. No public constructor is invented for a
-   native value C cannot itself own.
+   through the MT_HANDLE branch, and prove the handle goes back as the very
+   same blob, while a handle holding no engine term, which only this library
+   can make, still refuses to be sent back by its printed form. No public
+   constructor is invented for a native value C cannot itself own.
    [tested: tests/test_internal_contracts.c,
-   test_native_handle_decode_and_encode_contract;
-   commit=1156a16d24228f183466264ba51f9086ce435266] */
-bool mt_test_native_handle_codec_is_guarded(void)
+   test_native_handle_decode_and_encode_contract; commit=WORKTREE] */
+bool mt_test_native_handle_codec_round_trips(void)
 { static const unsigned payload = UINT32_C(0xc0decafe);
   fid_t frame = frame_open("testing a native engine handle");
   term_t encoded, destination;
-  mt_atom *decoded = NULL;
-  bool guarded = false;
+  mt_atom *decoded = NULL, *printed_only = NULL;
+  bool whole = false;
 
   if ( !frame ) return false;
   encoded = PL_new_term_ref();
@@ -5383,14 +5423,18 @@ bool mt_test_native_handle_codec_is_guarded(void)
   if ( !decoded || decoded->kind != MT_HANDLE ||
        strcmp(decoded->u.t.text, "<cmetta-test-handle>") != 0 )
     goto done;
+  if ( !put_atom(decoded, destination) || PL_compare(encoded, destination) != 0 )
+    goto done;
+  printed_only = mt_test_handle_atom("<cmetta-test-handle>");
   mt_clear();
-  guarded = !put_atom(decoded, destination) &&
-            mt_error() == MT_UNSUPPORTED && mt_errmsg() &&
-            strstr(mt_errmsg(), "cannot be sent back by its printed form");
+  whole = printed_only && !put_atom(printed_only, destination) &&
+          mt_error() == MT_UNSUPPORTED && mt_errmsg() &&
+          strstr(mt_errmsg(), "cannot be sent back by its printed form");
 done:
+  mt_drop(printed_only);
   mt_drop(decoded);
   frame_close(frame);
-  return guarded;
+  return whole;
 }
 
 bool mt_test_improper_apply_is_rejected(void)

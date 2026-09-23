@@ -61,7 +61,10 @@ variadic macro accepts up to sixteen children. `MT_SHORTHAND` enables
 `S V T N R B E` builders.
 
 Kinds are MT_SYMBOL, MT_VARIABLE, MT_EXPR, MT_TEXT, MT_BOOL, MT_INT, MT_FLOAT,
-MT_BIGINT, MT_RATIONAL, MT_SPACE, MT_OBJECT and MT_HANDLE. `mt_kind_of(NULL)`
+MT_BIGINT, MT_RATIONAL, MT_SPACE, MT_OBJECT and MT_HANDLE. An MT_HANDLE holds an
+engine value with no MeTTa structure, a blob or a partial application, by
+reference: it prints as the engine prints it and passes back unchanged.
+`mt_kind_of(NULL)`
 returns MT_NONE. `mt_int` requires an exact int64 value; `mt_float` refuses
 lossy integer conversion. `mt_unum` preserves uint64 and `mt_bigint`
 canonicalizes decimal spelling, folding values that fit to MT_INT.

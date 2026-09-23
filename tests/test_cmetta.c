@@ -1717,6 +1717,42 @@ static void test_the_standard_order_is_the_engines(metta *m)
   CHECK(mt_ok());
 }
 
+static void test_an_engine_value_crosses_back_whole(metta *m)
+{ mt_atom *partial, *again, *held;
+  mt_space *kb;
+  size_t rows = 0;
+
+  CASE("a partial application answers as a handle that prints as the engine prints it");
+  mt_clear();
+  partial = mt_one(mt_eval(m, E("id", E("+", 1))));
+  CHECK(partial != NULL && mt_ok());
+  CHECK(mt_kind_of(partial) == MT_HANDLE);
+  CHECK(partial && strcmp(mt_show(partial), "(partial + (1))") == 0);
+
+  CASE("the handle goes back as the identical value, so it still applies");
+  CHECK(mt_one_int(mt_eval(m, E(mt_keep(partial), 2))) == 3);
+  again = mt_one(mt_eval(m, E("id", E("+", 1))));
+  CHECK(mt_eq(partial, again));
+  mt_drop(again);
+
+  CASE("stored and matched back, it is still the value");
+  kb = mt_space_open(m, "&cmetta-handles");
+  CHECK(kb && mt_add(kb, E("holds", mt_keep(partial))));
+  held = mt_first(mt_match(kb, E("holds", V("f"))));
+  CHECK(held && mt_kind_of(mt_at(held, 1)) == MT_HANDLE);
+  CHECK(held && mt_one_int(mt_eval(m, E(mt_keep(mt_at(held, 1)), 40))) == 41);
+  mt_drop(held);
+  CHECK(mt_wipe(kb));
+  mt_space_close(kb);
+
+  CASE("a run whose answer is a partial answers every group");
+  mt_clear();
+  mt_rows (row, mt_run(m, "!(id (+ 1)) !(+ 1 1)")) rows++;
+  CHECK(rows == 2 && mt_ok());
+  mt_drop(partial);
+  mt_clear();
+}
+
 static void test_a_refusal_carries_the_engines_remedy_and_ground(metta *m)
 { CASE("a refusal says what to do about it, in the engine's own words");
   mt_clear();
@@ -2096,6 +2132,7 @@ int main(void)
   test_an_answer_keeps_variable_identity(m);
   test_alpha_equivalence_is_a_renaming(m);
   test_the_standard_order_is_the_engines(m);
+  test_an_engine_value_crosses_back_whole(m);
   test_a_refusal_carries_the_engines_remedy_and_ground(m);
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_the_counters_measure_engine_work(m);
