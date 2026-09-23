@@ -451,6 +451,16 @@ MT_API const mt_atom *const *mt_children(const mt_atom *atom);
    cannot hold the walk's own stack. */
 MT_API bool mt_eq(const mt_atom *a, const mt_atom *b);
 
+/* Equality up to a consistent renaming of variables: MeTTa's =alpha, the
+   engine's variant check, and the Python seat's Atom.alpha_eq. The renaming is
+   a bijection, so (f $x $y) is alpha-equal to (f $a $b) but not to (f $a $a),
+   and each anonymous `_` is a variable of its own. Every other leaf compares
+   as mt_eq compares it. Needs no engine; false for NULL. This is how to ask
+   whether an answer is the atom you expected when the answer's variables
+   carry engine names [tested: tests/test_cmetta.c,
+   test_alpha_equivalence_is_a_renaming; commit=WORKTREE]. */
+MT_API bool mt_alpha_eq(const mt_atom *a, const mt_atom *b);
+
 /* Structural FNV-1a hash matching mt_eq(): equal atoms always hash alike,
    signed zeros remain distinct, all NaN payloads agree, counted text includes
    embedded NUL, and C objects hash by identity. This is a non-cryptographic,

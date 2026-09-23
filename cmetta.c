@@ -1105,6 +1105,114 @@ bool mt_eq(const mt_atom *a, const mt_atom *b)
   return equal;
 }
 
+/* One variable as alpha equivalence sees it: its name, or for the anonymous
+   `_` a number unique to that occurrence, because the engine reads each `_`
+   as a variable of its own. */
+typedef struct alpha_key
+{ const char *name;   /* NULL for an anonymous occurrence */
+  size_t      len;
+  size_t      anonymous;
+} alpha_key;
+
+typedef struct alpha_pair
+{ alpha_key a, b;
+} alpha_pair;
+
+typedef MT_STACK(alpha_pair) alpha_pairs;
+
+static alpha_key alpha_key_of(const mt_atom *v, size_t *anonymous)
+{ alpha_key key = { NULL, 0, 0 };
+  if ( v->u.t.len == 1 && v->u.t.text[0] == '_' )
+    key.anonymous = (*anonymous)++;
+  else
+  { key.name = v->u.t.text;
+    key.len = v->u.t.len;
+  }
+  return key;
+}
+
+static bool alpha_key_eq(alpha_key x, alpha_key y)
+{ if ( !x.name || !y.name ) return !x.name && !y.name &&
+                                  x.anonymous == y.anonymous;
+  return x.len == y.len && memcmp(x.name, y.name, x.len) == 0;
+}
+
+/* Whether variable x of one side and y of the other can be one variable under
+   the renaming built so far, extending it when neither has a partner yet. The
+   renaming is a bijection: a partner on either side must be the other.
+   Time: one comparison per pair already recorded. */
+static bool alpha_bind(alpha_pairs *pairs, alpha_key x, alpha_key y)
+{ size_t i;
+  alpha_pair pair;
+  for (i = 0; i < pairs->n; i++)
+  { bool xa = alpha_key_eq(pairs->items[i].a, x);
+    bool yb = alpha_key_eq(pairs->items[i].b, y);
+    if ( xa || yb ) return xa && yb;
+  }
+  pair.a = x;
+  pair.b = y;
+  return stack_push(pairs, pair);
+}
+
+/* Equality up to a consistent renaming of variables, MeTTa's =alpha and the
+   engine's variant check. mt_eq's walk with one change at the leaves: two
+   variables are compared through the renaming rather than by name.
+   Time: O(n + n*v) for n nodes and v distinct variables; space O(d + v) for
+   depth d. */
+bool mt_alpha_eq(const mt_atom *a, const mt_atom *b)
+{ pair_frame fixed[MT_WALK_FRAMES];
+  alpha_pair fixed_pairs[MT_WALK_FRAMES];
+  pair_stack frames;
+  alpha_pairs pairs;
+  pair_frame *f;
+  size_t anonymous_a = 0, anonymous_b = 0;
+  bool equal = true;
+  const mt_atom *x = a, *y = b;
+
+  if ( !a || !b ) return false;
+  stack_init(&frames, fixed);
+  stack_init(&pairs, fixed_pairs);
+  for (;;)
+  { if ( x->kind != y->kind )
+    { equal = false;
+      break;
+    }
+    if ( x->kind == MT_VARIABLE )
+    { alpha_key kx = alpha_key_of(x, &anonymous_a);
+      alpha_key ky = alpha_key_of(y, &anonymous_b);
+      if ( !alpha_bind(&pairs, kx, ky) )
+      { equal = false;
+        break;
+      }
+    } else if ( !eq_shallow(x, y) )
+    { equal = false;
+      break;
+    } else if ( x->kind == MT_EXPR && x->u.e.n > 0 &&
+                !pair_push(&frames, x, y, x->u.e.n) )
+    { err_set(MT_NOMEM,
+              "out of memory comparing two nested expressions; the answer "
+              "below this point was not computed");
+      equal = false;
+      break;
+    }
+    /* The next pair of children still to compare, or the end. */
+    x = y = NULL;
+    while ( (f = stack_top(&frames)) != NULL )
+    { if ( f->at < f->n )
+      { x = f->a->u.e.kids[f->at];
+        y = f->b->u.e.kids[f->at];
+        f->at++;
+        break;
+      }
+      stack_pop(&frames);
+    }
+    if ( !x ) break;
+  }
+  stack_free(&pairs);
+  stack_free(&frames);
+  return equal;
+}
+
 /* RFC 9923 defines FNV-1a as xor-then-multiply per input octet and recommends
    it for general non-cryptographic use. This hash is deliberately an
    in-process table hash rather than a persistent wire value, so native byte

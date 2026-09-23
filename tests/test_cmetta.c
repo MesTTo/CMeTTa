@@ -1535,6 +1535,95 @@ static void test_an_answer_keeps_variable_identity(metta *m)
   mt_space_close(kb);
 }
 
+/* xorshift64, so a failing generated case names a seed that reproduces it
+   [source: Marsaglia, "Xorshift RNGs", Journal of Statistical Software 8(14),
+   2003]. */
+static uint64_t alpha_rng = UINT64_C(0x9e3779b97f4a7c15);
+static unsigned alpha_draw(unsigned bound)
+{ alpha_rng ^= alpha_rng << 13;
+  alpha_rng ^= alpha_rng >> 7;
+  alpha_rng ^= alpha_rng << 17;
+  return (unsigned)(alpha_rng % bound);
+}
+
+/* A small random term over two symbols, two numbers and the variables $x,
+   $y, $z and the anonymous $_, so variants and near-variants are common. */
+static mt_atom *alpha_term(unsigned depth, const char *const names[4])
+{ unsigned pick = alpha_draw(depth ? 9 : 7);
+  switch ( pick )
+  { case 0: return S("a");
+    case 1: return S("b");
+    case 2: return N(1);
+    case 3: case 4: case 5: case 6: return V(names[pick - 3]);
+    default:
+    { mt_atom *kids[3];
+      unsigned n = alpha_draw(4), i;
+      for (i = 0; i < n; i++) kids[i] = alpha_term(depth - 1, names);
+      return mt_exprv(n, kids);
+    }
+  }
+}
+
+static void test_alpha_equivalence_is_a_renaming(metta *m)
+{ static const char *const plain[4] = { "x", "y", "z", "_" };
+  static const char *const renamed[4] = { "q", "r", "p", "_" };
+  static const char *const merged[4] = { "x", "x", "z", "_" };
+  unsigned i, agreed = 0, variants = 0;
+
+  CASE("alpha equivalence renames variables consistently and one-to-one");
+  { mt_atom *xy = E("f", V("x"), V("y")), *ab = E("f", V("a"), V("b")),
+            *aa = E("f", V("a"), V("a")), *xx = E("f", V("x"), V("x")),
+            *anon = E("f", V("_"), V("_")),
+            *nested = E("g", E("h", V("x")), V("x")),
+            *nested2 = E("g", E("h", V("y")), V("y")),
+            *split = E("g", E("h", V("y")), V("z")),
+            *ints = E("f", 1, 2), *mixed = E("f", 1, 2.0);
+    CHECK(mt_alpha_eq(xy, ab));
+    CHECK(!mt_alpha_eq(xy, aa));
+    CHECK(!mt_alpha_eq(aa, xy));
+    CHECK(mt_alpha_eq(xx, aa));
+    CHECK(mt_alpha_eq(anon, ab));
+    CHECK(!mt_alpha_eq(anon, aa));
+    CHECK(mt_alpha_eq(nested, nested2));
+    CHECK(!mt_alpha_eq(nested, split));
+    CHECK(!mt_alpha_eq(ints, mixed));
+    CHECK(mt_alpha_eq(ints, ints));
+    CHECK(!mt_alpha_eq(xy, NULL) && !mt_alpha_eq(NULL, NULL));
+    mt_drop(xy); mt_drop(ab); mt_drop(aa); mt_drop(xx); mt_drop(anon);
+    mt_drop(nested); mt_drop(nested2); mt_drop(split); mt_drop(ints);
+    mt_drop(mixed);
+  }
+
+  CASE("alpha equivalence agrees with the engine's =alpha on generated pairs");
+  mt_clear();
+  for (i = 0; i < 400; i++)
+  { uint64_t seed = alpha_rng;
+    mt_atom *a, *b;
+    bool here, there;
+    /* The same draws twice over two name tables give a term and a renaming
+       of it; a third table merges two variables; a fresh draw is unrelated. */
+    a = alpha_term(3, plain);
+    switch ( i % 3 )
+    { case 0: alpha_rng = seed; b = alpha_term(3, renamed); break;
+      case 1: alpha_rng = seed; b = alpha_term(3, merged); break;
+      default: b = alpha_term(3, plain); break;
+    }
+    here = mt_alpha_eq(a, b);
+    there = mt_one_truth(mt_eval(m, E("=alpha", mt_keep(a), mt_keep(b))));
+    if ( here != there )
+      fprintf(stderr, "alpha disagreement at seed %llu: %s vs %s, C %d, "
+              "engine %d\n", (unsigned long long)seed, mt_show(a),
+              mt_show(b), here, there);
+    agreed += here == there;
+    variants += here;
+    mt_drop(a);
+    mt_drop(b);
+  }
+  CHECK(agreed == 400);
+  CHECK(variants > 40 && variants < 360);   /* both answers were exercised */
+  CHECK(mt_ok());
+}
+
 static void test_a_refusal_carries_the_engines_remedy_and_ground(metta *m)
 { CASE("a refusal says what to do about it, in the engine's own words");
   mt_clear();
@@ -1912,6 +2001,7 @@ int main(void)
   test_a_wide_integer_keeps_its_digits(m);
   test_variable_identity_survives_the_round_trip();
   test_an_answer_keeps_variable_identity(m);
+  test_alpha_equivalence_is_a_renaming(m);
   test_a_refusal_carries_the_engines_remedy_and_ground(m);
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_the_counters_measure_engine_work(m);

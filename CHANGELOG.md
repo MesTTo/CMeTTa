@@ -5,6 +5,13 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Add `mt_alpha_eq`, MeTTa's `=alpha` over C atoms: equality up to a
+  one-to-one renaming of variables, with each `_` a variable of its own. The
+  Python seat's atoms answer `alpha_eq` and C had only `mt_eq`, which compares
+  variable names, so a program could not ask whether an answer carrying engine
+  variable names was the atom it expected. It needs no engine, and 400
+  generated pairs agree with the engine's `=alpha`.
+
 - Keep variable identity in every answer. An engine variable with no source
   name decoded as SWI writes one, `_`, the anonymous name, so `mt_atoms`,
   `mt_match`, `mt_eval` and `mt_bound` answered `(fact $u $u $w)` as

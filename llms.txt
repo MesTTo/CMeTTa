@@ -67,7 +67,8 @@ lossy integer conversion. `mt_unum` preserves uint64 and `mt_bigint`
 canonicalizes decimal spelling, folding values that fit to MT_INT.
 
 `mt_eq` and `mt_hash` compare structure. Hashes include process-local object
-identity and must not be persistent IDs. `mt_unify` and `mt_unifyv` borrow
+identity and must not be persistent IDs. `mt_alpha_eq` is MeTTa's `=alpha`:
+equality up to a one-to-one renaming of variables, each `_` its own variable. `mt_unify` and `mt_unifyv` borrow
 their inputs and return owned bindings; a mismatch is NULL without an error.
 Use `mt_binding`, `mt_binding_var`, `mt_binding_value`, `mt_bindings_len`
 and `mt_substitute`, then `mt_bindings_free`.
