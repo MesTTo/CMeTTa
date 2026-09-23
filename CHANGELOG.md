@@ -5,6 +5,25 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Carry a rational of any width, and compare numbers of any width. An engine
+  rational whose numerator or denominator passed int64 was refused as an
+  unsupported value, so `(math-rational 1 (pow-math 2 200))` answered nothing
+  in C while the Python seat reads it as an exact `Fraction`. It now arrives as
+  `MT_BIGRATIONAL`, a kind added after `MT_HANDLE` so every 1.0.0 kind keeps
+  its value, carrying the engine's canonical `N/D` as decimal text the way
+  `MT_BIGINT` carries a wide integer; `mt_name` answers it, it goes back as
+  the identical rational, and `mt_bigrational("N/D")` builds one from any
+  spelling, reducing it to lowest terms as `mt_rational` does and answering an
+  Int, BigInt or Rational when the value is one, so it equals the engine's
+  `rdiv` over 200 seeded ratios and the int64 boundaries. `mt_compare` held
+  magnitudes in a fixed 80-limb array and answered 0, with an out-of-memory
+  error, for any pair whose cross product passed 2,560 bits, so it called
+  `2^2600` equal to `1`; its magnitudes are now sized from the numbers, a
+  stack array covering every pair of doubles, ints and narrow ratios, and the
+  engine's `msort` order holds for BigInts of 800 digits and for wide ratios.
+  `mt_float` of a BigInt or BigRational is refused as `MT_UNSUPPORTED`, as an
+  Int above 2^53 is, where a BigInt was a misuse.
+
 - Tell `true` and `false` apart from other symbols by length first. Every
   symbol an answer carries was compared against both words with `strcmp()`,
   whose cost followed the alignment the linker gave the two literals, so a

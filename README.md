@@ -207,15 +207,16 @@ mt_expr("f", mt_expr("g", 1), 2.5)     /* (f (g 1) 2.5) */
 | `MT_INT` | an exact integer fitting `int64_t` |
 | `MT_FLOAT` | a float; `2` and `2.0` are different atoms |
 | `MT_BIGINT` | an exact integer wider than `int64_t`, read as digits |
-| `MT_RATIONAL` | an exact ratio |
+| `MT_RATIONAL` | an exact ratio whose halves fit `int64_t` |
 | `MT_BOOL` | `True` or `False`, not symbols |
 | `MT_VARIABLE` | a variable whose name is its identity within the term |
 | `MT_EXPR` | an expression; the empty one is unit |
 | `MT_SPACE` | an executable space reference |
 | `MT_OBJECT` | a live C value by reference |
 | `MT_HANDLE` | an engine value held by reference: a native blob, such as a host language's object, from any door, and a term a provider carried. It prints as the engine prints it and goes back as the identical value. Every other engine term arrives as an expression in the wire grammar the Python and Node seats read: a compound as `(F args...)`, an improper list as `(cons Head Tail)`, a partial application as `(partial F Args)`, each going back as that expression. A provider's add, remove and match are the one exception, because a store has to give back what it was given: there a term that grammar would change arrives carried |
+| `MT_BIGRATIONAL` | an exact ratio with a half wider than `int64_t`, read as its canonical `N/D` digits; `mt_bigrational("N/D")` builds one from any spelling, and answers the narrower kind when the value fits one |
 
-C splits the codec's Number tag into four kinds, and reading promotes only where lossless: `mt_float` accepts an Int within 2^53 and refuses one beyond it, while `mt_int` refuses a Float instead of rounding.
+C splits the codec's Number tag into five kinds, and reading promotes only where lossless: `mt_float` accepts an Int within 2^53 and refuses one beyond it, a BigInt and a BigRational, while `mt_int` refuses a Float instead of rounding. The two wide kinds carry decimal text, which GMP's `mpz_set_str` and `mpq_set_str` read directly; `mt_compare` orders numbers of every width exactly.
 
 `mt_eq` compares structure and `mt_hash` supplies its fast, non-cryptographic 64-bit hash, with equal hashes for equal atoms including distinct NaN payloads and atoms sharing C-object identity.
 

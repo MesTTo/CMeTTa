@@ -105,7 +105,10 @@
  *   4. A MeTTa Number splits into MT_INT and MT_FLOAT, because C has two
  *      types where the wire codec has one tag and MeTTa tells 2 from 2.0
  *      apart. Values outside int64 and rationals get their own kinds rather
- *      than being rounded into one that fits.
+ *      than being rounded into one that fits: an integer too wide for int64
+ *      is MT_BIGINT and a ratio with a half too wide is MT_BIGRATIONAL, each
+ *      carried as canonical decimal text, the form SWI's own janus binding
+ *      crosses a rational in and GMP's mpq_set_str() reads.
  *
  *   5. READING PROMOTES WHERE IT IS LOSSLESS AND REFUSES WHERE IT IS NOT.
  *      mt_float() of an Int answers that integer, because the conversion
@@ -265,7 +268,9 @@ MT_API MT_MUST_USE void *mt_resize(void *pointer, size_t size);
 
 typedef struct mt_atom mt_atom;
 
-/* The nine wire tags of CODEC.md, with the one tag C splits four ways. */
+/* The nine wire tags of CODEC.md, with the one tag C splits five ways. A
+   kind added after 1.0.0 goes at the end, so every earlier kind keeps the
+   value a program compiled against 1.0.0 switches on. */
 typedef enum mt_kind {
   MT_NONE = -1,/* not an atom; what mt_kind_of(NULL) answers       */
   MT_SYMBOL,   /* `s`: a name that denotes itself                    */
@@ -279,7 +284,8 @@ typedef enum mt_kind {
   MT_EXPR,     /* `e`: an expression; the empty one is unit          */
   MT_SPACE,    /* `p`: an executable space reference                 */
   MT_OBJECT,   /* `o`: a live C value crossing by reference          */
-  MT_HANDLE    /* `h`: a native engine value held by reference       */
+  MT_HANDLE,   /* `h`: a native engine value held by reference       */
+  MT_BIGRATIONAL /* `n`: an exact ratio with a half too wide for int64_t */
 } mt_kind;
 
 /* An engine value reaches C in the wire grammar every seat reads, so an
@@ -372,6 +378,19 @@ MT_API MT_MUST_USE mt_atom *mt_bigint(const char *decimal);
    test_a_ratio_is_canonical_in_both_halves; commit=c530ccb8fb7d0a5b2aa53df6e9f981ada9f81be8]. */
 MT_API MT_MUST_USE mt_atom *mt_rational(int64_t numerator, int64_t denominator);
 
+/* An exact ratio of any width as decimal text, "N/D" with an optional leading
+   minus on N, the form mt_name() answers for a BigRational and GMP's
+   mpq_get_str() writes. It is canonicalized as mt_rational() canonicalizes, so
+   the kind follows the value: a whole ratio is an Int or BigInt, one whose
+   halves both fit int64_t is a Rational, and only the rest is a BigRational,
+   so mt_bigrational("2/4") is mt_rational(1, 2) and mt_eq() says so. A zero
+   denominator and any other spelling are refused; NULL then
+   [tested: tests/test_native_parity.c, test_wide_ratios_agree_with_the_engine;
+   commit=WORKTREE].
+   Time: Theta(D^2) limb operations for D digits, the decimal conversion and
+   Stein's gcd both quadratic in the width. */
+MT_API MT_MUST_USE mt_atom *mt_bigrational(const char *ratio);
+
 /* A space reference by its portable engine name, which begins with '&'. */
 MT_API MT_MUST_USE mt_atom *mt_spaceref(const char *name);
 
@@ -450,7 +469,8 @@ MT_API void mt_drop(const mt_atom *atom);
 MT_API mt_kind mt_kind_of(const mt_atom *atom);
 
 /* The name of a SYMBOL, VARIABLE or SPACE, the text of a TEXT, the digits of
-   a BIGINT, the engine's written form of a HANDLE. NULL for every other kind.
+   a BIGINT, the canonical N/D of a BIGRATIONAL, the engine's written form of
+   a HANDLE. NULL for every other kind.
    Borrowed. A handle's written form presents it and does not identify it;
    see MT_HANDLE. */
 MT_API const char *mt_name(const mt_atom *atom);
@@ -462,8 +482,8 @@ MT_API int64_t mt_int(const mt_atom *atom);
 
 /* A double. Promotes losslessly (decision 5): a Float is itself, an Int of
    magnitude below 2^53 is exact, a Rational is its quotient. An Int above
-   2^53 and a BigInt are REFUSED rather than rounded. 0.0 and a recorded
-   failure otherwise. */
+   2^53, a BigInt and a BigRational are REFUSED rather than rounded; read
+   those with mt_name. 0.0 and a recorded failure otherwise. */
 MT_API double mt_float(const mt_atom *atom);
 
 MT_API bool mt_truth(const mt_atom *atom);
@@ -471,8 +491,8 @@ MT_API bool mt_truth(const mt_atom *atom);
    out-parameters. An INT reads as itself over 1, which is rule 5's promotion
    and exact; it has to, because mt_rational() answers an Int for a canonical
    denominator of 1 and its own accessor cannot refuse what it built. `den` is
-   0 for anything else, which is a value no ratio has, and the failure is
-   recorded. */
+   0 for anything else, a BigRational included since its halves do not fit,
+   which is a value no ratio has, and the failure is recorded. */
 typedef struct mt_ratio {
   int64_t num;
   int64_t den;

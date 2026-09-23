@@ -7,6 +7,10 @@
  *   Engine-owned &self and &metta refuse wipe without damaging catalog,
  *   typing, or arithmetic state; an ordinary named space still wipes
  *   [tested: test_engine_owned_base_spaces_refuse_wipe; commit=6229e43cb68cc3685360810d462d992874992f6c].
+ *   mt_compare orders numbers of any width as the engine's msort does, a
+ *   BigRational and an 800-digit BigInt among them, past the 2560 bits a
+ *   fixed-width compare once refused [tested:
+ *   test_the_standard_order_is_the_engines; commit=WORKTREE].
  * Open Obligations:
  *   To Do: None
  *   Hacks: None
@@ -1625,6 +1629,18 @@ static void test_alpha_equivalence_is_a_renaming(metta *m)
   CHECK(mt_ok());
 }
 
+/* An 800-digit integer, about 2,658 bits: a one then zeros, or nines, with
+   the sign bit of `which` negating it. */
+static mt_atom *very_wide(unsigned which)
+{ char text[802];
+  size_t at = 0;
+  if ( which & 2 ) text[at++] = '-';
+  text[at++] = which & 1 ? '9' : '1';
+  memset(text + at, which & 1 ? '9' : '0', 799);
+  text[at + 799] = '\0';
+  return mt_bigint(text);
+}
+
 /* A random atom of every kind the standard order ranks, drawn so that equal
    values of different numeric kinds and shared prefixes are common. */
 static mt_atom *order_atom(unsigned depth)
@@ -1633,11 +1649,18 @@ static mt_atom *order_atom(unsigned depth)
   static const char *const wide[] = { "99999999999999999999", "-99999999999999999999",
                                       "18446744073709551616", "9223372036854775808" };
   static const double floats[] = { 0.0, -0.0, 0.5, 2.0, -1.5, 1e19, 1e20,
-                                   9007199254740996.0, 0.3333333333333333 };
-  switch ( alpha_draw(depth ? 11 : 10) )
+                                   9007199254740996.0, 0.3333333333333333,
+                                   6.223015277861142e-61 };
+  /* 2^-200 is exactly the last float above, so a tie between kinds is drawn. */
+  static const char *const ratios[] = {
+    "1/1606938044258990275541962092341162602522202993782792835301376",
+    "-1/1606938044258990275541962092341162602522202993782792835301376",
+    "1606938044258990275541962092341162602522202993782792835301377/2",
+    "9223372036854775808/3" };
+  switch ( alpha_draw(depth ? 13 : 12) )
   { case 0: return N((int64_t)alpha_draw(5) - 2);
     case 1: return N(alpha_draw(2) ? INT64_MAX : INT64_MIN);
-    case 2: return R(floats[alpha_draw(9)]);
+    case 2: return R(floats[alpha_draw(10)]);
     case 3: return R(NAN);
     case 4: return mt_bigint(wide[alpha_draw(4)]);
     case 5: return mt_rational((int64_t)alpha_draw(7) - 3, (int64_t)alpha_draw(3) + 2);
@@ -1645,6 +1668,8 @@ static mt_atom *order_atom(unsigned depth)
     case 7: return S(symbols[alpha_draw(5)]);
     case 8: return B(alpha_draw(2) != 0);
     case 9: return mt_unit();
+    case 10: return mt_bigrational(ratios[alpha_draw(4)]);
+    case 11: return very_wide(alpha_draw(4));
     default:
     { mt_atom *kids[3];
       unsigned n = alpha_draw(3) + 1, i;
@@ -1671,6 +1696,20 @@ static void test_the_standard_order_is_the_engines(metta *m)
     mt_drop(two); mt_drop(two_f); mt_drop(half); mt_drop(half_f); mt_drop(big);
     mt_drop(e19); mt_drop(e20); mt_drop(exact); mt_drop(above); mt_drop(nan);
     mt_drop(neg0); mt_drop(pos0); mt_drop(zero);
+  }
+
+  CASE("numbers of any width compare exactly");
+  { mt_atom *wide = very_wide(1), *one = N(1), *below = very_wide(3),
+            *tiny = mt_bigrational("1/1606938044258990275541962092341162602522202993782792835301376"),
+            *tiny_f = R(ldexp(1.0, -200)),
+            *huge = mt_bigrational("1606938044258990275541962092341162602522202993782792835301376/1");
+    mt_clear();
+    CHECK(mt_compare(wide, one) > 0 && mt_compare(one, wide) < 0);
+    CHECK(mt_compare(below, wide) < 0 && mt_compare(below, below) == 0);
+    CHECK(mt_compare(tiny_f, tiny) < 0 && mt_compare(tiny, tiny_f) > 0);  /* equal: the float first */
+    CHECK(mt_compare(tiny, huge) < 0 && mt_compare(huge, wide) < 0);
+    CHECK(mt_ok());
+    mt_drop(wide); mt_drop(one); mt_drop(below); mt_drop(tiny); mt_drop(tiny_f); mt_drop(huge);
   }
 
   CASE("the classes rank as the engine ranks them, and qsort takes mt_order");

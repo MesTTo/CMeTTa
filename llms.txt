@@ -61,7 +61,11 @@ variadic macro accepts up to sixteen children. `MT_SHORTHAND` enables
 `S V T N R B E` builders.
 
 Kinds are MT_SYMBOL, MT_VARIABLE, MT_EXPR, MT_TEXT, MT_BOOL, MT_INT, MT_FLOAT,
-MT_BIGINT, MT_RATIONAL, MT_SPACE, MT_OBJECT and MT_HANDLE. An MT_HANDLE holds an
+MT_BIGINT, MT_RATIONAL, MT_BIGRATIONAL, MT_SPACE, MT_OBJECT and MT_HANDLE. A
+BigInt and a BigRational are the integer and the ratio too wide for int64_t,
+carried as canonical decimal text, "N/D" for a ratio, which mt_name answers and
+mt_bigint and mt_bigrational build; each constructor answers the narrow kind
+when the value fits one. An MT_HANDLE holds an
 engine value by reference, a native blob such as a host object from any door
 and a term a provider carried: it prints as the engine prints it and passes
 back as the identical value. Two blob handles are equal exactly when they hold

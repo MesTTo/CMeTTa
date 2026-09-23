@@ -7,10 +7,16 @@
  * Owns resources: releases every atom, list, substitution and runtime.
  * Guarantees: source plans preserve all five C callback effects, join overloads,
  *   and do not execute the goal [tested: test_source_effect_plans; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5].
+ * Guarantees: mt_bigrational reduces a ratio of any width to the value the
+ *   engine's rdiv gives, across the int64 boundaries and 200 seeded ratios
+ *   whose halves share a random factor, refuses every other spelling, and the
+ *   result crosses into the engine and back whole
+ *   [tested: test_wide_ratios_agree_with_the_engine; commit=WORKTREE].
  * Open Obligations: None.
  */
 #include <cmetta.h>
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "allocation_tracker.h"
@@ -20,6 +26,103 @@ static void round_trip(metta *m, mt_atom *atom)
 { mt_atom *returned = mt_one(mt_eval(m, mt_expr("quote", mt_keep(atom))));
   assert(returned && mt_eq(atom, returned) && mt_hash(atom) == mt_hash(returned));
   mt_drop(returned); mt_drop(atom);
+}
+
+/* A seeded xorshift64* stream, so a failing draw reproduces
+   [source: S. Vigna, "An experimental exploration of Marsaglia's xorshift
+   generators, scrambled", ACM TOMS 42(4), 2016]. */
+static uint64_t g_stream = 0x9e3779b97f4a7c15u;
+
+static unsigned draw(unsigned n)
+{ g_stream ^= g_stream >> 12;
+  g_stream ^= g_stream << 25;
+  g_stream ^= g_stream >> 27;
+  return (unsigned)((g_stream * 2685821657736338717u) >> 33) % n;
+}
+
+/* An integer of 1 to 60 decimal digits, negative when asked. */
+static mt_atom *random_integer(int negative)
+{ char text[64];
+  unsigned n = draw(60) + 1, i = 0;
+  if ( negative ) text[i++] = '-';
+  text[i++] = (char)('1' + draw(9));
+  while ( i < n + (unsigned)negative ) text[i++] = (char)('0' + draw(10));
+  text[i] = '\0';
+  return mt_bigint(text);
+}
+
+/* The digits of an Int or BigInt, into `buf` for an Int. */
+static const char *digits_of(const mt_atom *a, char *buf, size_t size)
+{ if ( mt_kind_of(a) != MT_INT ) return mt_name(a);
+  snprintf(buf, size, "%lld", (long long)mt_int(a));
+  return buf;
+}
+
+/* "N/D" through mt_bigrational against the engine's (math-rational N D),
+   then through the engine and back. Both halves are TAKEN. */
+static void agrees_with_rdiv(metta *m, const char *text, mt_atom *numerator,
+                             mt_atom *denominator)
+{ mt_atom *engine = mt_one(mt_eval(m, mt_expr("math-rational", numerator, denominator)));
+  mt_atom *mine = mt_bigrational(text);
+  if ( !engine || !mine || !mt_eq(engine, mine) )
+    fprintf(stderr, "%s: engine %s, mt_bigrational %s\n", text,
+            engine ? mt_show(engine) : "nothing", mine ? mt_show(mine) : mt_errmsg());
+  assert(engine && mine && mt_eq(engine, mine) && mt_hash(engine) == mt_hash(mine));
+  mt_drop(engine);
+  round_trip(m, mine);
+}
+
+static void test_wide_ratios_agree_with_the_engine(metta *m)
+{ static const char *const boundary[] = {
+    "9223372036854775807/1", "9223372036854775808/1", "-9223372036854775808/1",
+    "-9223372036854775809/1", "9223372036854775807/9223372036854775806",
+    "9223372036854775808/9223372036854775807",
+    "-9223372036854775808/9223372036854775807", "18446744073709551616/2",
+    "6/4", "-6/4", "0/5", "-0/3", "0007/0014",
+    "1/1606938044258990275541962092341162602522202993782792835301376" };
+  static const char *const malformed[] = {
+    "", "/", "1/", "/2", "1//2", "+1/2", "1/-2", "1.5/2", " 1/2", "1/2 ",
+    "--1/2", "-/2", "12", "1/0", "-0/00" };
+  /* Two halves of 120 digits each, the products of 60-digit draws, a sign,
+     a slash and the terminator. */
+  char text[2 * 120 + 3], left[24], right[24];
+  size_t i;
+  unsigned round;
+
+  CASE("mt_bigrational reduces a ratio of any width as the engine's rdiv does");
+  assert(mt_one_truth(mt_eval(m, mt_expr("import!", "&self", mt_expr("library", "lib_math")))));
+  for (i = 0; i < sizeof boundary / sizeof *boundary; i++)
+  { const char *slash = strchr(boundary[i], '/');
+    snprintf(left, sizeof left, "%.*s", (int)(slash - boundary[i]), boundary[i]);
+    agrees_with_rdiv(m, boundary[i], mt_bigint(left), mt_bigint(slash + 1));
+  }
+  for (round = 0; round < 200; round++)
+  { mt_atom *a = random_integer((int)draw(2)), *b = random_integer(0), *g = random_integer(0);
+    mt_atom *numerator = mt_one(mt_eval(m, mt_expr("*", a, mt_keep(g))));
+    mt_atom *denominator = mt_one(mt_eval(m, mt_expr("*", b, g)));
+    assert(numerator && denominator);
+    snprintf(text, sizeof text, "%s/%s", digits_of(numerator, left, sizeof left),
+             digits_of(denominator, right, sizeof right));
+    agrees_with_rdiv(m, text, numerator, denominator);
+  }
+
+  CASE("every other spelling is refused as a misuse");
+  for (i = 0; i < sizeof malformed / sizeof *malformed; i++)
+  { mt_clear();
+    assert(!mt_bigrational(malformed[i]) && mt_error() == MT_MISUSE);
+  }
+  mt_clear();
+
+  CASE("a BigRational reads as its canonical text and nothing narrower");
+  { mt_atom *wide = mt_bigrational("-2/3213876088517980551083924184682325205044405987565585670602752");
+    assert(mt_kind_of(wide) == MT_BIGRATIONAL &&
+           strcmp(mt_name(wide), "-1/1606938044258990275541962092341162602522202993782792835301376") == 0);
+    assert(mt_float(wide) == 0.0 && mt_error() == MT_UNSUPPORTED);
+    mt_clear();
+    assert(mt_ratio_of(wide).den == 0 && mt_error() == MT_MISUSE);
+    mt_clear();
+    mt_drop(wide);
+  }
 }
 
 static mt_status identity(mt_call *call, void *user)
@@ -167,6 +270,7 @@ int main(void)
   test_unicode_terms_and_names(m);
   test_native_atoms_match_engine_terms(m);
   test_source_effect_plans(m);
+  test_wide_ratios_agree_with_the_engine(m);
   mt_close(m);
   assert(!allocation.blocks && !allocation.bytes);
   mt_allocator_set(previous);

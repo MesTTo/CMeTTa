@@ -32,6 +32,15 @@
  *   - a cyclic answer is refused by name rather than walked forever
  *     [tested: tests/test_internal_contracts.c,
  *     test_a_cyclic_answer_is_refused_by_name; commit=65b02ca599b0db696faf221f4f39e94210013fc1]
+ *   - a rational of any width crosses exactly: halves that fit int64_t are
+ *     an MT_RATIONAL and any wider one an MT_BIGRATIONAL carrying the
+ *     engine's canonical N/D, which mt_bigrational() builds from any
+ *     spelling of the same value [tested: tests/test_native_parity.c,
+ *     test_wide_ratios_agree_with_the_engine; commit=WORKTREE]
+ *   - mt_compare orders numbers of every width exactly, as the engine's
+ *     msort does, allocating only for a BigInt or BigRational
+ *     [tested: tests/test_cmetta.c, test_the_standard_order_is_the_engines;
+ *     commit=WORKTREE]
  *   - an ampersand-prefixed atom becomes MT_SPACE only when the engine
  *     says it is a space [tested: test_a_user_space_decodes_as_a_space;
  *     commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
@@ -105,6 +114,7 @@
 #include <assert.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <float.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
@@ -380,6 +390,7 @@ const char *mt_kind_str(mt_kind kind)
     case MT_SPACE:    return "Space";
     case MT_OBJECT:   return "Grounded";
     case MT_HANDLE:   return "Grounded";
+    case MT_BIGRATIONAL: return "BigRational";
   }
   return "unknown kind";
 }
@@ -640,6 +651,7 @@ void mt_drop(const mt_atom *atom)
       case MT_TEXT:
       case MT_SPACE:
       case MT_BIGINT:
+      case MT_BIGRATIONAL:
       case MT_HANDLE:
         if ( !a->borrowed ) mt_free(a->u.t.text);
         break;
@@ -757,6 +769,245 @@ mt_atom *mt_bigint(const char *decimal)
   return atom;
 }
 
+/* ------------------------------------------------------------------ *
+ * Exact magnitudes
+ * ------------------------------------------------------------------ */
+
+/* An unsigned integer of any width, as little-endian base-2^32 limbs over
+   storage its caller sized from the value it will hold, so no width is
+   refused and nothing here allocates. It is how a BigRational is reduced to
+   lowest terms and how any two numbers compare exactly. Zero is n == 0. */
+typedef struct exact_magnitude
+{ uint32_t *limb;
+  size_t    n;                   /* limbs in use */
+} exact_magnitude;
+
+/* The limbs D decimal digits need: 10^9 < 2^32, so a limb holds nine digits,
+   and one more for the limb a carry or a shift writes past the top. */
+static size_t limbs_for_digits(size_t digits)
+{ return digits / 9 + 2;
+}
+
+static void magnitude_trim(exact_magnitude *m)
+{ while ( m->n && m->limb[m->n - 1] == 0 ) m->n--;
+}
+
+static void magnitude_of_u64(exact_magnitude *m, uint64_t v)
+{ m->limb[0] = (uint32_t)v;
+  m->limb[1] = (uint32_t)(v >> 32);
+  m->n = 2;
+  magnitude_trim(m);
+}
+
+/* Whether m, with its sign, fits int64_t, and the value when it does. */
+static bool magnitude_to_i64(const exact_magnitude *m, bool negative, int64_t *out)
+{ uint64_t v;
+  if ( m->n > 2 ) return false;
+  v = (m->n > 0 ? m->limb[0] : 0) | (uint64_t)(m->n > 1 ? m->limb[1] : 0) << 32;
+  if ( v > (uint64_t)INT64_MAX + negative ) return false;
+  *out = !negative ? (int64_t)v : v > (uint64_t)INT64_MAX ? INT64_MIN : -(int64_t)v;
+  return true;
+}
+
+/* m = m * factor + add. */
+static void magnitude_mul_add(exact_magnitude *m, uint32_t factor, uint32_t add)
+{ uint64_t carry = add;
+  size_t i;
+  for (i = 0; i < m->n; i++)
+  { uint64_t v = (uint64_t)m->limb[i] * factor + carry;
+    m->limb[i] = (uint32_t)v;
+    carry = v >> 32;
+  }
+  if ( carry ) m->limb[m->n++] = (uint32_t)carry;
+}
+
+/* The value of `len` decimal digits, nine to a step.
+   Time: Theta(len^2) digit operations, len / 9 passes over at most
+   len / 9 limbs. */
+static void magnitude_of_digits(exact_magnitude *m, const char *digit, size_t len)
+{ size_t i = 0, k;
+  m->n = 0;
+  while ( i < len )
+  { uint32_t chunk = 0, scale = 1;
+    for (k = 0; k < 9 && i < len; k++, i++)
+    { chunk = chunk * 10 + (uint32_t)(digit[i] - '0');
+      scale *= 10;
+    }
+    magnitude_mul_add(m, scale, chunk);
+  }
+}
+
+static void magnitude_shift_left(exact_magnitude *m, size_t bits)
+{ size_t words = bits / 32, i;
+  unsigned rest = (unsigned)(bits % 32);
+  if ( m->n == 0 ) return;
+  m->limb[m->n + words] = 0;
+  for (i = m->n; i-- > 0; )
+  { uint64_t v = (uint64_t)m->limb[i] << rest;
+    m->limb[i + words + 1] |= (uint32_t)(v >> 32);
+    m->limb[i + words] = (uint32_t)v;
+  }
+  for (i = 0; i < words; i++) m->limb[i] = 0;
+  m->n += words + 1;
+  magnitude_trim(m);
+}
+
+static void magnitude_shift_right(exact_magnitude *m, size_t bits)
+{ size_t words = bits / 32, i;
+  unsigned rest = (unsigned)(bits % 32);
+  if ( words >= m->n )
+  { m->n = 0;
+    return;
+  }
+  for (i = 0; i + words < m->n; i++)
+  { uint64_t v = m->limb[i + words];
+    if ( i + words + 1 < m->n ) v |= (uint64_t)m->limb[i + words + 1] << 32;
+    m->limb[i] = (uint32_t)(v >> rest);
+  }
+  m->n -= words;
+  magnitude_trim(m);
+}
+
+/* The zero bits below a nonzero m's lowest one. */
+static size_t magnitude_trailing_zeros(const exact_magnitude *m)
+{ size_t i = 0, bits;
+  uint32_t w;
+  while ( m->limb[i] == 0 ) i++;
+  for (bits = i * 32, w = m->limb[i]; !(w & 1); w >>= 1) bits++;
+  return bits;
+}
+
+static int magnitude_cmp(const exact_magnitude *a, const exact_magnitude *b)
+{ size_t i;
+  if ( a->n != b->n ) return a->n < b->n ? -1 : 1;
+  for (i = a->n; i-- > 0; )
+    if ( a->limb[i] != b->limb[i] ) return a->limb[i] < b->limb[i] ? -1 : 1;
+  return 0;
+}
+
+/* a -= b, for a >= b. */
+static void magnitude_sub(exact_magnitude *a, const exact_magnitude *b)
+{ uint64_t borrow = 0;
+  size_t i;
+  for (i = 0; i < a->n && (i < b->n || borrow); i++)
+  { uint64_t take = (i < b->n ? b->limb[i] : 0) + borrow;
+    uint32_t have = a->limb[i];
+    a->limb[i] = have - (uint32_t)take;
+    borrow = take > have;
+  }
+  magnitude_trim(a);
+}
+
+/* out = a * b, schoolbook, out sized for a->n + b->n limbs.
+   Time: Theta(|a| * |b|) limb products. */
+static void magnitude_mul(exact_magnitude *out, const exact_magnitude *a,
+                          const exact_magnitude *b)
+{ size_t i, j;
+  memset(out->limb, 0, (a->n + b->n) * sizeof out->limb[0]);
+  for (i = 0; i < a->n; i++)
+  { uint64_t carry = 0;
+    for (j = 0; j < b->n; j++)
+    { uint64_t v = (uint64_t)a->limb[i] * b->limb[j] + out->limb[i + j] + carry;
+      out->limb[i + j] = (uint32_t)v;
+      carry = v >> 32;
+    }
+    out->limb[i + b->n] = (uint32_t)carry;
+  }
+  out->n = a->n + b->n;
+  magnitude_trim(out);
+}
+
+/* gcd(a, b) into a, for nonzero a and b, both destroyed: Stein's binary
+   algorithm, since it needs only shifts and subtraction [source: D. E.
+   Knuth, The Art of Computer Programming vol. 2, 3rd ed., section 4.5.2,
+   Algorithm B]. The swap exchanges the two storages, and the result fits
+   either, being no larger than the smaller operand.
+   Time: O(W^2) limb operations for W-limb operands, every subtraction
+   clearing at least one bit. */
+static void magnitude_gcd(exact_magnitude *a, exact_magnitude *b)
+{ size_t za = magnitude_trailing_zeros(a), zb = magnitude_trailing_zeros(b);
+  magnitude_shift_right(a, za);
+  magnitude_shift_right(b, zb);
+  for (;;)
+  { int order = magnitude_cmp(a, b);
+    if ( order == 0 ) break;
+    if ( order > 0 )
+    { exact_magnitude t = *a;
+      *a = *b;
+      *b = t;
+    }
+    magnitude_sub(b, a);
+    magnitude_shift_right(b, magnitude_trailing_zeros(b));
+  }
+  magnitude_shift_left(a, za < zb ? za : zb);
+}
+
+/* q = n / d for an odd d dividing n exactly, n destroyed. Each step takes the
+   quotient limb that clears n's lowest remaining limb, one multiplication by
+   d's inverse modulo 2^32, so no trial quotient is ever corrected [source:
+   T. Jebelean, "An algorithm for exact division", Journal of Symbolic
+   Computation 15(2):169-180, 1993; GMP's mpn_divexact_1 is the one-limb
+   case]. What is left of n stays nonnegative, being (q - q mod 2^(32 i)) * d
+   after i steps, so no borrow runs off its top.
+   Time: Theta(|q| * |d|) limb products. */
+static void magnitude_divexact(exact_magnitude *q, exact_magnitude *n,
+                               const exact_magnitude *d)
+{ uint32_t inverse = d->limb[0];
+  size_t i, j;
+  /* An odd x is its own inverse modulo 8, and each Newton step doubles the
+     correct low bits: 3, 6, 12, 24, 48. */
+  for (i = 0; i < 4; i++) inverse *= 2 - d->limb[0] * inverse;
+  q->n = n->n - d->n + 1;
+  for (i = 0; i < q->n; i++)
+  { uint32_t digit = n->limb[i] * inverse;
+    uint64_t carry = 0, borrow = 0;
+    q->limb[i] = digit;
+    for (j = 0; i + j < n->n && (j < d->n || carry || borrow); j++)
+    { uint64_t product = (j < d->n ? (uint64_t)digit * d->limb[j] : 0) + carry;
+      uint64_t take = (product & 0xffffffffu) + borrow;
+      uint32_t have = n->limb[i + j];
+      carry = product >> 32;
+      n->limb[i + j] = have - (uint32_t)take;
+      borrow = take > have;
+    }
+  }
+  magnitude_trim(q);
+}
+
+static uint32_t magnitude_div_small(exact_magnitude *m, uint32_t divisor)
+{ uint64_t rest = 0;
+  size_t i;
+  for (i = m->n; i-- > 0; )
+  { uint64_t v = rest << 32 | m->limb[i];
+    m->limb[i] = (uint32_t)(v / divisor);
+    rest = v % divisor;
+  }
+  magnitude_trim(m);
+  return (uint32_t)rest;
+}
+
+/* m's decimal digits into `out`, which holds 10 * m->n + 1 bytes since
+   2^32 < 10^10; m is destroyed. Answers the digit count.
+   Time: Theta(W^2) for W limbs, a short division per nine digits. */
+static size_t magnitude_decimal(exact_magnitude *m, char *out)
+{ size_t len = 0, i;
+  if ( m->n == 0 ) out[len++] = '0';
+  while ( m->n )
+  { uint32_t chunk = magnitude_div_small(m, 1000000000u);
+    for (i = 0; i < 9 && (m->n || chunk); i++)
+    { out[len++] = (char)('0' + chunk % 10);
+      chunk /= 10;
+    }
+  }
+  for (i = 0; i < len / 2; i++)
+  { char t = out[i];
+    out[i] = out[len - 1 - i];
+    out[len - 1 - i] = t;
+  }
+  out[len] = '\0';
+  return len;
+}
+
 /* Magnitude as an unsigned, so INT64_MIN does not overflow on the way. */
 static uint64_t magnitude(int64_t value)
 { return value < 0 ? (uint64_t)-(value + 1) + 1 : (uint64_t)value;
@@ -822,6 +1073,91 @@ mt_atom *mt_rational(int64_t numerator, int64_t denominator)
   a->u.r.num = numerator;
   a->u.r.den = denominator;
   return a;
+}
+
+/* "N/D" in the canonical form mt_rational() keeps, the kind following the
+   value: a whole ratio goes through mt_bigint(), a pair that fits through
+   mt_rational(), and only the rest is text. The halves are reduced by their
+   gcd, which is odd once the powers of two both share are shifted out, as
+   magnitude_divexact() needs. One allocation holds the six magnitudes and the
+   written result. */
+mt_atom *mt_bigrational(const char *ratio)
+{ const char *num, *den;
+  size_t num_len, den_len, cap_n, cap_d, zeros, len = 0;
+  exact_magnitude n, d, g, h, qn, qd;
+  uint32_t *pool;
+  char *text;
+  bool negative;
+  int64_t sn, sd;
+  mt_atom *out = NULL;
+
+  if ( !ratio )
+  { err_set(MT_MISUSE, "mt_bigrational needs N/D digits, not NULL");
+    return NULL;
+  }
+  negative = *ratio == '-';
+  num = ratio + negative;
+  num_len = strspn(num, "0123456789");
+  den = num + num_len + (num[num_len] == '/');
+  den_len = strspn(den, "0123456789");
+  if ( num_len == 0 || num[num_len] != '/' || den_len == 0 || den[den_len] )
+  { err_set(MT_MISUSE,
+            "%s is not a ratio: decimal digits with an optional leading "
+            "minus, a slash, then decimal digits", ratio);
+    return NULL;
+  }
+  cap_n = limbs_for_digits(num_len);
+  cap_d = limbs_for_digits(den_len);
+  if ( !(pool = mt_alloc(3 * (cap_n + cap_d) * sizeof *pool +
+                         10 * (cap_n + cap_d) + 3)) )
+  { err_set(MT_NOMEM, "out of memory reducing a %zu-digit ratio", num_len + den_len);
+    return NULL;
+  }
+  n.limb = pool;               d.limb = n.limb + cap_n;
+  g.limb = d.limb + cap_d;     h.limb = g.limb + cap_n;
+  qn.limb = h.limb + cap_d;    qd.limb = qn.limb + cap_n;
+  text = (char *)(qd.limb + cap_d);
+  magnitude_of_digits(&n, num, num_len);
+  magnitude_of_digits(&d, den, den_len);
+  if ( d.n == 0 )
+  { err_set(MT_MISUSE, "%s has a zero denominator", ratio);
+    goto done;
+  }
+  if ( n.n == 0 )
+  { out = mt_num(0);
+    goto done;
+  }
+  memcpy(g.limb, n.limb, n.n * sizeof *n.limb);
+  g.n = n.n;
+  memcpy(h.limb, d.limb, d.n * sizeof *d.limb);
+  h.n = d.n;
+  magnitude_gcd(&g, &h);
+  zeros = magnitude_trailing_zeros(&g);
+  magnitude_shift_right(&n, zeros);
+  magnitude_shift_right(&d, zeros);
+  magnitude_shift_right(&g, zeros);
+  if ( !(g.n == 1 && g.limb[0] == 1) )
+  { magnitude_divexact(&qn, &n, &g);
+    magnitude_divexact(&qd, &d, &g);
+    n = qn;
+    d = qd;
+  }
+  if ( magnitude_to_i64(&n, negative, &sn) && magnitude_to_i64(&d, false, &sd) )
+  { out = mt_rational(sn, sd);
+    goto done;
+  }
+  if ( negative ) text[len++] = '-';
+  len += magnitude_decimal(&n, text + len);
+  if ( d.n == 1 && d.limb[0] == 1 )
+  { out = mt_bigint(text);
+    goto done;
+  }
+  text[len++] = '/';
+  len += magnitude_decimal(&d, text + len);
+  out = atom_text(MT_BIGRATIONAL, text, len);
+done:
+  mt_free(pool);
+  return out;
 }
 
 mt_atom *mt_spaceref(const char *name)
@@ -927,6 +1263,7 @@ const char *mt_name(const mt_atom *atom)
     case MT_TEXT:
     case MT_SPACE:
     case MT_BIGINT:
+    case MT_BIGRATIONAL:
     case MT_HANDLE:
       return atom->u.t.text;
     default:
@@ -975,6 +1312,13 @@ double mt_float(const mt_atom *atom)
       return (double)atom->u.i;
     case MT_RATIONAL:
       return (double)atom->u.r.num / (double)atom->u.r.den;
+    case MT_BIGINT:
+    case MT_BIGRATIONAL:
+      err_set(MT_UNSUPPORTED,
+              "%s does not fit a double exactly, and rounding it here would "
+              "answer a different number; read its digits with mt_name",
+              atom->u.t.text);
+      return 0.0;
     default:
       err_set(MT_MISUSE, "mt_float wants a Number; this is %s",
               mt_kind_str(atom->kind));
@@ -1004,8 +1348,10 @@ mt_ratio mt_ratio_of(const mt_atom *atom)
     return out;
   }
   if ( !atom || atom->kind != MT_RATIONAL )
-  { err_set(MT_MISUSE, "mt_ratio_of wants a Rational or an Int; this is %s",
-            atom ? mt_kind_str(atom->kind) : "NULL");
+  { err_set(MT_MISUSE, "mt_ratio_of wants a Rational or an Int; this is %s%s",
+            atom ? mt_kind_str(atom->kind) : "NULL",
+            atom && (atom->kind == MT_BIGINT || atom->kind == MT_BIGRATIONAL)
+              ? ", whose halves do not fit int64_t; read it with mt_name" : "");
     return out;
   }
   out.num = atom->u.r.num;
@@ -1094,6 +1440,7 @@ static bool eq_shallow(const mt_atom *a, const mt_atom *b)
     case MT_TEXT:
     case MT_SPACE:
     case MT_BIGINT:
+    case MT_BIGRATIONAL:
       return a->u.t.len == b->u.t.len &&
              memcmp(a->u.t.text, b->u.t.text, a->u.t.len) == 0;
     case MT_HANDLE:
@@ -1333,15 +1680,7 @@ bool mt_alpha_eq(const mt_atom *a, const mt_atom *b)
    comparison stays exact: a float is its integer ratio M * 2^E, the way
    CPython's fractions.Fraction compares against a float
    [source: https://github.com/python/cpython/blob/v3.13.0/Lib/fractions.py,
-   Fraction._richcmp]. Magnitudes are little-endian base-2^32 limbs, long
-   enough for any finite double's integer ratio (2^1074) times an int64. */
-enum { EXACT_LIMBS = 80 };
-
-typedef struct exact_magnitude
-{ uint32_t limb[EXACT_LIMBS];
-  size_t   n;                    /* limbs in use; zero is n == 0 */
-} exact_magnitude;
-
+   Fraction._richcmp]. */
 typedef struct exact_number
 { int             sign;          /* -1, 0 or 1 */
   bool            nan;           /* sorts before every other number */
@@ -1350,123 +1689,83 @@ typedef struct exact_number
   exact_magnitude num, den;
 } exact_number;
 
-static void magnitude_trim(exact_magnitude *m)
-{ while ( m->n && m->limb[m->n - 1] == 0 ) m->n--;
-}
+/* The limbs either side of a double's ratio needs: frexp() puts the mantissa
+   at DBL_MANT_DIG bits, so the numerator stays below 2^DBL_MAX_EXP and the
+   denominator reaches 2^(2 DBL_MANT_DIG - DBL_MIN_EXP - 1) at the smallest
+   subnormal, plus the limb a shift writes past the top. */
+enum { DOUBLE_LIMBS = (2 * DBL_MANT_DIG - DBL_MIN_EXP + 1) / 32 + 2 };
 
-static void magnitude_of_u64(exact_magnitude *m, uint64_t v)
-{ m->limb[0] = (uint32_t)v;
-  m->limb[1] = (uint32_t)(v >> 32);
-  m->n = 2;
-  magnitude_trim(m);
-}
-
-/* m = m * factor + add, for one decimal digit at a time. */
-static bool magnitude_mul_add(exact_magnitude *m, uint32_t factor, uint32_t add)
-{ uint64_t carry = add;
-  size_t i;
-  for (i = 0; i < m->n; i++)
-  { uint64_t v = (uint64_t)m->limb[i] * factor + carry;
-    m->limb[i] = (uint32_t)v;
-    carry = v >> 32;
+/* The limbs a number's two sides need together, from its kind and width
+   alone, so one allocation sized before the walk holds every step: an
+   int64 half takes two, a decimal half limbs_for_digits() of its digits. */
+static size_t exact_limbs(const mt_atom *a)
+{ switch ( a->kind )
+  { case MT_FLOAT: return 2 * DOUBLE_LIMBS;
+    case MT_BIGINT:
+    case MT_BIGRATIONAL: return limbs_for_digits(a->u.t.len) + 2;
+    default: return 4;
   }
-  if ( carry )
-  { if ( m->n == EXACT_LIMBS ) return false;
-    m->limb[m->n++] = (uint32_t)carry;
-  }
-  return true;
 }
 
-static bool magnitude_shift_left(exact_magnitude *m, unsigned bits)
-{ size_t words = bits / 32, i;
-  unsigned rest = bits % 32;
-  if ( m->n == 0 ) return true;
-  if ( m->n + words + 1 > EXACT_LIMBS ) return false;
-  m->limb[m->n + words] = 0;
-  for (i = m->n; i-- > 0; )
-  { uint64_t v = (uint64_t)m->limb[i] << rest;
-    m->limb[i + words + 1] |= (uint32_t)(v >> 32);
-    m->limb[i + words] = (uint32_t)v;
-  }
-  for (i = 0; i < words; i++) m->limb[i] = 0;
-  m->n += words + 1;
-  magnitude_trim(m);
-  return true;
-}
-
-static int magnitude_cmp(const exact_magnitude *a, const exact_magnitude *b)
-{ size_t i;
-  if ( a->n != b->n ) return a->n < b->n ? -1 : 1;
-  for (i = a->n; i-- > 0; )
-    if ( a->limb[i] != b->limb[i] ) return a->limb[i] < b->limb[i] ? -1 : 1;
-  return 0;
-}
-
-/* out = a * b, schoolbook. Time O(|a| * |b|) limb products. */
-static bool magnitude_mul(exact_magnitude *out, const exact_magnitude *a,
-                          const exact_magnitude *b)
-{ size_t i, j;
-  if ( a->n + b->n > EXACT_LIMBS ) return false;
-  memset(out->limb, 0, (a->n + b->n) * sizeof out->limb[0]);
-  for (i = 0; i < a->n; i++)
-  { uint64_t carry = 0;
-    for (j = 0; j < b->n; j++)
-    { uint64_t v = (uint64_t)a->limb[i] * b->limb[j] + out->limb[i + j] + carry;
-      out->limb[i + j] = (uint32_t)v;
-      carry = v >> 32;
-    }
-    out->limb[i + b->n] = (uint32_t)carry;
-  }
-  out->n = a->n + b->n;
-  magnitude_trim(out);
-  return true;
-}
-
-/* A number atom as an exact ratio; false for a kind that is not a number or
-   a value past the fixed width, which no finite double reaches. */
-static bool exact_of(const mt_atom *a, exact_number *x)
+/* A number atom as an exact ratio over `pool`, which holds exact_limbs(a);
+   answers the pool past what it used. False flags are all a NaN or an
+   infinity sets. */
+static uint32_t *exact_of(const mt_atom *a, exact_number *x, uint32_t *pool)
 { memset(x, 0, sizeof *x);
-  magnitude_of_u64(&x->den, 1);
+  x->num.limb = pool;
   switch ( a->kind )
   { case MT_INT:
       x->sign = (a->u.i > 0) - (a->u.i < 0);
       magnitude_of_u64(&x->num, a->u.i < 0 ? (uint64_t)0 - (uint64_t)a->u.i
                                            : (uint64_t)a->u.i);
-      return true;
+      x->den.limb = pool + 2;
+      magnitude_of_u64(&x->den, 1);
+      return pool + 4;
     case MT_RATIONAL:
       x->sign = (a->u.r.num > 0) - (a->u.r.num < 0);
       magnitude_of_u64(&x->num, a->u.r.num < 0 ? (uint64_t)0 - (uint64_t)a->u.r.num
                                                : (uint64_t)a->u.r.num);
+      x->den.limb = pool + 2;
       magnitude_of_u64(&x->den, (uint64_t)a->u.r.den);
-      return true;
+      return pool + 4;
     case MT_BIGINT:
-    { const char *digit = a->u.t.text;
-      x->sign = 1;
-      if ( *digit == '-' ) { x->sign = -1; digit++; }
-      for (; *digit; digit++)
-        if ( !magnitude_mul_add(&x->num, 10, (uint32_t)(*digit - '0')) ) return false;
-      if ( x->num.n == 0 ) x->sign = 0;
-      return true;
+    case MT_BIGRATIONAL:
+    { const char *digit = a->u.t.text + (a->u.t.text[0] == '-');
+      const char *slash = a->kind == MT_BIGRATIONAL ? strchr(digit, '/') : NULL;
+      size_t len = slash ? (size_t)(slash - digit) : strlen(digit);
+      x->sign = a->u.t.text[0] == '-' ? -1 : 1;
+      magnitude_of_digits(&x->num, digit, len);
+      x->den.limb = pool + limbs_for_digits(len);
+      if ( !slash )
+      { magnitude_of_u64(&x->den, 1);
+        return x->den.limb + 2;
+      }
+      len = strlen(slash + 1);
+      magnitude_of_digits(&x->den, slash + 1, len);
+      return x->den.limb + limbs_for_digits(len);
     }
     case MT_FLOAT:
     { double f = a->u.f;
       int exponent;
       x->is_float = true;
-      if ( isnan(f) ) { x->nan = true; return true; }
+      x->den.limb = pool + DOUBLE_LIMBS;
+      magnitude_of_u64(&x->den, 1);
+      if ( isnan(f) ) x->nan = true;
+      else if ( isinf(f) ) x->infinite = true;
       x->sign = f > 0 ? 1 : f < 0 ? -1 : 0;
-      if ( isinf(f) ) { x->infinite = true; return true; }
-      if ( f == 0 ) return true;
-      /* |f| = mantissa * 2^(exponent - 53), the mantissa an exact 53-bit
-         integer, so the ratio below is the float's value exactly. */
-      { double mantissa = ldexp(frexp(fabs(f), &exponent), 53);
+      if ( !x->nan && !x->infinite && f != 0 )
+      { /* |f| = mantissa * 2^(exponent - 53), the mantissa an exact 53-bit
+           integer, so the ratio is the float's value exactly. */
+        double mantissa = ldexp(frexp(fabs(f), &exponent), DBL_MANT_DIG);
         magnitude_of_u64(&x->num, (uint64_t)mantissa);
-        exponent -= 53;
-        if ( exponent >= 0 ) return magnitude_shift_left(&x->num, (unsigned)exponent);
-        return magnitude_shift_left(&x->den, (unsigned)-exponent);
+        exponent -= DBL_MANT_DIG;
+        if ( exponent >= 0 ) magnitude_shift_left(&x->num, (size_t)exponent);
+        else magnitude_shift_left(&x->den, (size_t)-exponent);
       }
+      return pool + 2 * DOUBLE_LIMBS;
     }
     default:
-      return false;
+      return pool;
   }
 }
 
@@ -1477,26 +1776,39 @@ static bool exact_of(const mt_atom *a, exact_number *x)
 static int compare_numbers(const mt_atom *a, const mt_atom *b)
 { exact_number x, y;
   exact_magnitude left, right;
+  /* The four sides, then two products of two sides each. Every pair of
+     doubles, ints and narrow ratios fits the local array, so only a BigInt
+     or BigRational ever allocates. */
+  size_t need = 2 * (exact_limbs(a) + exact_limbs(b));
+  uint32_t local[8 * DOUBLE_LIMBS], *pool = local, *next;
   int order;
-  if ( !exact_of(a, &x) || !exact_of(b, &y) )
-    return err_set(MT_NOMEM, "a number too wide to compare exactly"), 0;
+
+  if ( need > sizeof local / sizeof local[0] &&
+       !(pool = mt_alloc(need * sizeof *pool)) )
+    return err_set(MT_NOMEM, "out of memory comparing two wide numbers"), 0;
+  next = exact_of(b, &y, exact_of(a, &x, pool));
   if ( x.nan || y.nan )
-    return x.nan && y.nan ? 0 : x.nan ? -1 : 1;
-  if ( x.sign != y.sign ) return x.sign < y.sign ? -1 : 1;
-  if ( x.infinite || y.infinite )
-    order = x.infinite && y.infinite ? 0 : x.infinite ? 1 : -1;
-  else if ( !magnitude_mul(&left, &x.num, &y.den) ||
-            !magnitude_mul(&right, &y.num, &x.den) )
-    return err_set(MT_NOMEM, "a number too wide to compare exactly"), 0;
+    order = x.nan && y.nan ? 0 : x.nan ? -1 : 1;
+  else if ( x.sign != y.sign )
+    order = x.sign < y.sign ? -1 : 1;
   else
-    order = magnitude_cmp(&left, &right);
-  if ( x.sign < 0 ) order = -order;
-  if ( order ) return order;
-  if ( x.is_float != y.is_float ) return x.is_float ? -1 : 1;
-  if ( x.is_float && x.sign == 0 )       /* -0.0 before 0.0 */
-    return (signbit(a->u.f) != 0) == (signbit(b->u.f) != 0) ? 0
-         : signbit(a->u.f) ? -1 : 1;
-  return 0;
+  { if ( x.infinite || y.infinite )
+      order = x.infinite && y.infinite ? 0 : x.infinite ? 1 : -1;
+    else
+    { left.limb = next;
+      right.limb = next + x.num.n + y.den.n;
+      magnitude_mul(&left, &x.num, &y.den);
+      magnitude_mul(&right, &y.num, &x.den);
+      order = magnitude_cmp(&left, &right);
+    }
+    if ( x.sign < 0 ) order = -order;
+    if ( !order && x.is_float != y.is_float ) order = x.is_float ? -1 : 1;
+    else if ( !order && x.is_float && x.sign == 0 )       /* -0.0 before 0.0 */
+      order = (signbit(a->u.f) != 0) == (signbit(b->u.f) != 0) ? 0
+            : signbit(a->u.f) ? -1 : 1;
+  }
+  if ( pool != local ) mt_free(pool);
+  return order;
 }
 
 /* The standard order's classes, as the engine's msort ranks them: variables,
@@ -1507,7 +1819,8 @@ static int compare_numbers(const mt_atom *a, const mt_atom *b)
 static int order_class(const mt_atom *a)
 { switch ( a->kind )
   { case MT_VARIABLE: return 0;
-    case MT_INT: case MT_FLOAT: case MT_BIGINT: case MT_RATIONAL: return 1;
+    case MT_INT: case MT_FLOAT: case MT_BIGINT: case MT_RATIONAL:
+    case MT_BIGRATIONAL: return 1;
     case MT_TEXT: return 2;
     case MT_OBJECT: case MT_HANDLE: return 3;
     case MT_EXPR: return a->u.e.n == 0 ? 4 : 6;
@@ -1653,6 +1966,7 @@ static uint64_t hash_shallow(uint64_t hash, const mt_atom *atom)
     case MT_TEXT:
     case MT_SPACE:
     case MT_BIGINT:
+    case MT_BIGRATIONAL:
       hash = hash_bytes(hash, &atom->u.t.len, sizeof(atom->u.t.len));
       return hash_bytes(hash, atom->u.t.text, atom->u.t.len);
     case MT_HANDLE:
@@ -2794,6 +3108,33 @@ MT_COLD static const char *variable_name(term_t names, term_t var)
   return entry.name;
 }
 
+/* A ratio with a half past int64_t, as the "N/D" an MT_BIGRATIONAL carries.
+   The engine's rationals are canonical already, lowest terms with the sign
+   on the numerator, so the halves' own digits are the canonical text
+   mt_bigrational() would build. Cold, as variable_name() is: drawn into
+   decode_leaf() through decode_number(), it cost every leaf of every answer
+   saved registers [measured 2026-09-24, callgrind over 600 term-out
+   crossings: decode_leaf +43,200 instructions]. */
+MT_COLD static mt_atom *wide_ratio(term_t numerator, term_t denominator)
+{ size_t nlen = 0, dlen = 0;
+  char *n = term_text(numerator, CVT_INTEGER, &nlen);
+  char *d = term_text(denominator, CVT_INTEGER, &dlen);
+  char *text = n && d ? mt_alloc(nlen + dlen + 2) : NULL;
+  mt_atom *a = NULL;
+  if ( !text )
+    err_set(MT_NOMEM, "out of memory reading a wide rational");
+  else
+  { memcpy(text, n, nlen);
+    text[nlen] = '/';
+    memcpy(text + nlen + 1, d, dlen + 1);
+    a = atom_text(MT_BIGRATIONAL, text, nlen + 1 + dlen);
+  }
+  mt_free(n);
+  mt_free(d);
+  mt_free(text);
+  return a;
+}
+
 static mt_atom *decode_number(term_t t, int type)
 { int64_t i;
   double d;
@@ -2823,15 +3164,11 @@ static mt_atom *decode_number(term_t t, int type)
     mt_atom *a = NULL;
     int64_t num, den;
     if ( !f ) return NULL;
-    av = PL_new_term_refs(3);
-    if ( av && PL_unify(av, t) &&
-         call_bridge(BRIDGE_RATIONAL_PARTS, av) == MT_OK &&
-         PL_get_int64(av + 1, &num) && PL_get_int64(av + 2, &den) )
-      a = mt_rational(num, den);
-    else
-      err_set(MT_UNSUPPORTED,
-              "a rational whose halves do not fit int64_t; C has no type for "
-              "it and rounding it would be a different number");
+    if ( !(av = PL_new_term_refs(3)) || !PL_unify(av, t) )
+      err_set(MT_NOMEM, "out of memory decoding a rational");
+    else if ( call_bridge(BRIDGE_RATIONAL_PARTS, av) == MT_OK )
+      a = PL_get_int64(av + 1, &num) && PL_get_int64(av + 2, &den)
+        ? mt_rational(num, den) : wide_ratio(av + 1, av + 2);
     PL_discard_foreign_frame(f);
     return a;
   }
@@ -3708,6 +4045,22 @@ static bool encode_leaf(const mt_atom *a, term_t out, encode_ctx *ctx)
       int n = snprintf(buf, sizeof(buf), "%lldr%lld",
                        (long long)a->u.r.num, (long long)a->u.r.den);
       return n > 0 && PL_put_term_from_chars(out, REP_UTF8, (size_t)n, buf);
+    }
+    case MT_BIGRATIONAL:
+      /* SWI reads N/D as a division and NrD as the rational, so the slash
+         becomes an r on the way in, as janus's py_unify_fraction() does
+         [source: swipl-devel packages/swipy/janus/janus.c, tag V10.1.14]. */
+    { char *text = mt_alloc(a->u.t.len + 1);
+      bool put;
+      if ( !text )
+      { err_set(MT_NOMEM, "out of memory writing a %zu-digit ratio", a->u.t.len);
+        return false;
+      }
+      memcpy(text, a->u.t.text, a->u.t.len + 1);
+      *strchr(text, '/') = 'r';
+      put = PL_put_term_from_chars(out, REP_UTF8, a->u.t.len, text);
+      mt_free(text);
+      return put;
     }
     case MT_OBJECT:
       /* PL_put_blob's result reports whether SWI created a blob atom; it is
