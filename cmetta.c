@@ -1010,6 +1010,22 @@ const mt_atom *mt_at(const mt_atom *atom, size_t index)
   return atom->u.e.kids[index];
 }
 
+/* What an MT_HANDLE decoded from the engine holds: a record of the engine
+   term, the runtime generation it belongs to, and for a blob the blob atom
+   itself, which is the value's identity; a compound is identified by its
+   quoted text. See handle_of(). */
+typedef struct handle_ref
+{ record_t record;
+  uint64_t generation;
+  atom_t   blob;          /* 0 for a compound */
+} handle_ref;
+
+static void handle_release(void *owner);
+
+static atom_t handle_blob(const mt_atom *a)
+{ return a->release == handle_release ? ((const handle_ref *)a->owner)->blob : 0;
+}
+
 /* Two atoms of the same kind, compared WITHOUT their children: for an
    expression this is the arity, which is what tells the walk below whether
    there is any point descending. */
@@ -1020,7 +1036,11 @@ static bool eq_shallow(const mt_atom *a, const mt_atom *b)
     case MT_TEXT:
     case MT_SPACE:
     case MT_BIGINT:
+      return a->u.t.len == b->u.t.len &&
+             memcmp(a->u.t.text, b->u.t.text, a->u.t.len) == 0;
     case MT_HANDLE:
+      /* Two blobs may print alike; the blob atom is which value it is. */
+      if ( handle_blob(a) || handle_blob(b) ) return handle_blob(a) == handle_blob(b);
       return a->u.t.len == b->u.t.len &&
              memcmp(a->u.t.text, b->u.t.text, a->u.t.len) == 0;
     case MT_INT:      return a->u.i == b->u.i;
@@ -1439,7 +1459,11 @@ static int compare_leaves(const mt_atom *a, const mt_atom *b)
       if ( a->kind != b->kind ) return a->kind == MT_OBJECT ? -1 : 1;
       if ( a->kind == MT_OBJECT )
         return a->u.box == b->u.box ? 0 : (uintptr_t)a->u.box < (uintptr_t)b->u.box ? -1 : 1;
-      return compare_bytes(a->u.t.text, a->u.t.len, b->u.t.text, b->u.t.len);
+      { int order = compare_bytes(a->u.t.text, a->u.t.len, b->u.t.text, b->u.t.len);
+        atom_t x = handle_blob(a), y = handle_blob(b);
+        if ( order || x == y ) return order;
+        return x < y ? -1 : 1;          /* two blobs that print alike */
+      }
     case 4:
       return 0;
     default:        /* variables, strings and symbols by their bytes */
@@ -1528,7 +1552,14 @@ static uint64_t hash_shallow(uint64_t hash, const mt_atom *atom)
     case MT_TEXT:
     case MT_SPACE:
     case MT_BIGINT:
+      hash = hash_bytes(hash, &atom->u.t.len, sizeof(atom->u.t.len));
+      return hash_bytes(hash, atom->u.t.text, atom->u.t.len);
     case MT_HANDLE:
+      /* By the identity mt_eq reads: the blob atom, else the quoted text. */
+      if ( handle_blob(atom) )
+      { atom_t blob = handle_blob(atom);
+        return hash_bytes(hash, &blob, sizeof(blob));
+      }
       hash = hash_bytes(hash, &atom->u.t.len, sizeof(atom->u.t.len));
       return hash_bytes(hash, atom->u.t.text, atom->u.t.len);
     case MT_INT:
@@ -2617,11 +2648,6 @@ static bool decode_is_expr(term_t t)
    mt_close() the heap it lived in is gone with the runtime.
    [tested: tests/test_cmetta.c, test_an_engine_value_crosses_back_whole;
    commit=0733adc4f214bdcb37dce6f378ff75611b79b126] */
-typedef struct handle_ref
-{ record_t record;
-  uint64_t generation;
-} handle_ref;
-
 static void handle_release(void *owner)
 { handle_ref *h = owner;
   if ( g_open && h->generation == g_runtime.generation ) PL_erase(h->record);
@@ -2630,11 +2656,16 @@ static void handle_release(void *owner)
 
 static mt_atom *handle_of(term_t t)
 { size_t len;
-  char *text = term_text(t, CVT_WRITE, &len);
+  atom_t blob = 0;
+  bool is_blob = PL_get_atom(t, &blob);
+  /* A compound's identity is its quoted text, which reads unambiguously; a
+     blob's is the blob atom, and its text only presents it. */
+  char *text = term_text(t, is_blob ? CVT_WRITE : CVT_WRITEQ, &len);
   handle_ref *h = text ? mt_alloc(sizeof *h) : NULL;
   mt_atom *a = NULL;
   if ( h && (h->record = PL_record(t)) )
   { h->generation = g_runtime.generation;
+    h->blob = is_blob ? blob : 0;
     if ( (a = atom_text(MT_HANDLE, text, len)) )
     { a->owner = h;
       a->release = handle_release;
@@ -5398,32 +5429,41 @@ static PL_blob_t test_handle_blob =
   .write = test_handle_write
 };
 
-/* Construct somebody else's real SWI blob inside the fault library, decode it
-   through the MT_HANDLE branch, and prove the handle goes back as the very
-   same blob, while a handle holding no engine term, which only this library
-   can make, still refuses to be sent back by its printed form. No public
+/* Construct somebody else's real SWI blobs inside the fault library, decode
+   them through the MT_HANDLE branch, and prove a handle goes back as the very
+   same blob, that one blob decoded twice is one value while two that print
+   alike are two, and that a handle holding no engine term, which only this
+   library can make, still refuses to be sent back by its printed form. No public
    constructor is invented for a native value C cannot itself own.
    [tested: tests/test_internal_contracts.c,
    test_native_handle_decode_and_encode_contract; commit=0733adc4f214bdcb37dce6f378ff75611b79b126] */
 bool mt_test_native_handle_codec_round_trips(void)
-{ static const unsigned payload = UINT32_C(0xc0decafe);
+{ static const unsigned payload = UINT32_C(0xc0decafe), other = UINT32_C(0xfeedface);
   fid_t frame = frame_open("testing a native engine handle");
-  term_t encoded, destination;
-  mt_atom *decoded = NULL, *printed_only = NULL;
+  term_t encoded, destination, alike;
+  mt_atom *decoded = NULL, *again = NULL, *different = NULL, *printed_only = NULL;
   bool whole = false;
 
   if ( !frame ) return false;
   encoded = PL_new_term_ref();
   destination = PL_new_term_ref();
-  if ( !encoded || !destination ||
-       !PL_put_blob(encoded, (void *)&payload, sizeof(payload),
-                    &test_handle_blob) )
+  alike = PL_new_term_ref();
+  if ( !encoded || !destination || !alike ||
+       !PL_put_blob(encoded, (void *)&payload, sizeof(payload), &test_handle_blob) ||
+       !PL_put_blob(alike, (void *)&other, sizeof(other), &test_handle_blob) )
     goto done;
   decoded = decode(encoded, 0);
   if ( !decoded || decoded->kind != MT_HANDLE ||
        strcmp(decoded->u.t.text, "<cmetta-test-handle>") != 0 )
     goto done;
   if ( !put_atom(decoded, destination) || PL_compare(encoded, destination) != 0 )
+    goto done;
+  /* One blob decoded twice is one value; two blobs that print alike are two. */
+  again = decode(encoded, 0);
+  different = decode(alike, 0);
+  if ( !again || !different || !mt_eq(decoded, again) ||
+       mt_hash(decoded) != mt_hash(again) || mt_eq(decoded, different) ||
+       mt_compare(decoded, different) == 0 )
     goto done;
   printed_only = mt_test_handle_atom("<cmetta-test-handle>");
   mt_clear();
@@ -5432,6 +5472,8 @@ bool mt_test_native_handle_codec_round_trips(void)
           strstr(mt_errmsg(), "cannot be sent back by its printed form");
 done:
   mt_drop(printed_only);
+  mt_drop(different);
+  mt_drop(again);
   mt_drop(decoded);
   frame_close(frame);
   return whole;

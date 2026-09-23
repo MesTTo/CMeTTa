@@ -5,6 +5,12 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Identify a native-blob handle by its blob atom and a compound handle by its
+  quoted text. Handles compared by their printed text, so two different
+  blobs whose writer prints the same text were `mt_eq`, hashed alike and
+  sorted as equal; the blob atom each handle now holds settles which value it
+  is.
+
 - Hold every engine value with no MeTTa structure as an `MT_HANDLE` that
   goes back whole. A partial application such as `partial(+,[1])` used to be
   refused, and the refusal failed every answer of the cursor or run holding
