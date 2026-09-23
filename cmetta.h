@@ -35,7 +35,7 @@
  *     counter, so two answers never share a variable and an equation read
  *     back through C still computes where it is copied [tested:
  *     tests/test_cmetta.c, test_an_answer_keeps_variable_identity;
- *     commit=WORKTREE]
+ *     commit=cce10b38ae45bb4c7b9f61aad51f4570aa217547]
  *   - building and reading atoms starts no engine
  *     [tested: tests/test_cmetta.c, test_atoms_need_no_engine; commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
  *   - outside a closed transaction, mt_eval() computes one answer per step, so a caller that stops
