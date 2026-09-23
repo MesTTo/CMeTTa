@@ -2876,7 +2876,7 @@ static mt_atom *written(term_t t)
    in is gone with the runtime [tested: tests/test_internal_contracts.c,
    test_native_handle_decode_and_encode_contract,
    test_a_handle_released_during_close_leaves_its_record; tests/test_reopen.c,
-   test_a_handle_does_not_outlive_its_runtime; commit=WORKTREE]. */
+   test_a_handle_does_not_outlive_its_runtime; commit=e14d01465d3e233d5cb5ccd1fc9c685c20c70000]. */
 /* A handle may be dropped on any thread, including while mt_close() tears
    the runtime down on another, and erasing a record into a heap PL_cleanup()
    is freeing would corrupt it. So an eraser announces itself and then looks
@@ -2887,7 +2887,7 @@ static mt_atom *written(term_t t)
    around PL_erase, which is a few instructions [tested:
    tests/test_threads.c, test_drop_handles_while_closing;
    tests/test_internal_contracts.c,
-   test_a_handle_released_during_close_leaves_its_record; commit=WORKTREE]. */
+   test_a_handle_released_during_close_leaves_its_record; commit=e14d01465d3e233d5cb5ccd1fc9c685c20c70000]. */
 static MT_ATOMIC unsigned g_record_erasers;
 static MT_ATOMIC bool     g_closing;
 

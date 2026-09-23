@@ -10,7 +10,7 @@
  *   [tested: test_threads.c; commit=b339084bb5625996fc88a31608d48ad31c575d1f],
  *   and after four threads dropped 4,000 handles while the main thread closed
  *   the runtime [tested: test_threads.c, test_drop_handles_while_closing;
- *   commit=WORKTREE].
+ *   commit=e14d01465d3e233d5cb5ccd1fc9c685c20c70000].
  * Owns resources: two pthreads and their joined lifetimes; one runtime closed
  *   after both workers have detached.
  * Guarded by: C atomics coordinate rendezvous; each worker owns its result.
