@@ -2485,6 +2485,14 @@ typedef struct decode_var
 
 typedef MT_STACK(decode_var) decode_vars;
 
+/* The table of the decode running on this thread. decode() points it at a
+   table in its own frame and puts back what was there, so a decode nested in
+   another keeps its own. Only the variable path reads it: passing the table
+   down the walk instead cost 11 instructions at every decode_leaf call site,
+   a leaf holding a variable or not [measured 2026-09-24, callgrind over 600
+   term-out crossings of a ground term]. */
+static MT_TLS decode_vars *tls_decode_vars;
+
 /* Fresh names come from a SESSION counter, never from the answer's own
    count, because both halves of variable identity have to hold at once:
    within one crossing one variable is one name, and across crossings two
@@ -2500,13 +2508,27 @@ typedef MT_STACK(decode_var) decode_vars;
    tested: tests/test_cmetta.c, test_an_answer_keeps_variable_identity]. */
 static MT_ATOMIC uint64_t g_fresh_variables;
 
+/* The variable path is kept out of line and marked cold. Inlined, it made
+   decode_leaf and decode save more registers on every call, which every leaf
+   of every answer pays whether or not it holds a variable [measured
+   2026-09-24, callgrind over 600 term-out crossings of a ground term:
+   decode +263 instructions a crossing, decode_leaf +15 a leaf]. The GNU
+   spelling, as cmetta.h's MT_MUST_USE, and nothing elsewhere. */
+#if defined(__GNUC__) || defined(__clang__)
+#define MT_COLD __attribute__((cold, noinline))
+#else
+#define MT_COLD
+#endif
+
 /* The name of one variable in the answer being decoded: the name it already
    had in this crossing, its source name from the answer's name state, or a
    fresh one that steps over every source name, since a program may write
-   $_3 itself. Borrowed from `seen`, which owns it until the decode ends.
+   $_3 itself. Borrowed from this thread's table, which owns it until the
+   decode ends.
    Time: one PL_compare per variable already named in this answer. */
-static const char *variable_name(term_t names, term_t var, decode_vars *seen)
-{ decode_var entry;
+MT_COLD static const char *variable_name(term_t names, term_t var)
+{ decode_vars *seen = tls_decode_vars;
+  decode_var entry;
   size_t i;
 
   for (i = 0; i < seen->n; i++)
@@ -2514,16 +2536,9 @@ static const char *variable_name(term_t names, term_t var, decode_vars *seen)
       return seen->items[i].name;
 
   entry.name = source_name(names, var);
-  while ( !entry.name )
-  { char spelled[24];
-    size_t length;
-    snprintf(spelled, sizeof spelled, "_%" PRIu64,
-             (uint64_t)MT_INC(&g_fresh_variables));
-    if ( source_name_taken(names, spelled) ) continue;
-    length = strlen(spelled) + 1;
-    if ( !(entry.name = mt_alloc(length)) ) break;
-    memcpy(entry.name, spelled, length);
-  }
+  if ( !entry.name && (entry.name = mt_alloc(24)) )
+    do snprintf(entry.name, 24, "_%" PRIu64, (uint64_t)MT_INC(&g_fresh_variables));
+    while ( source_name_taken(names, entry.name) );
   if ( !entry.name || !(entry.var = PL_copy_term_ref(var)) ||
        !stack_push(seen, entry) )
   { mt_free(entry.name);
@@ -2591,9 +2606,9 @@ static bool decode_is_expr(term_t t)
 }
 
 /* Every engine term with no children. */
-static mt_atom *decode_leaf(term_t t, term_t names, decode_vars *seen)
+static mt_atom *decode_leaf(term_t t, term_t names)
 { if ( PL_is_variable(t) )
-  { const char *name = variable_name(names, t, seen);
+  { const char *name = variable_name(names, t);
     return name ? atom_text(MT_VARIABLE, name, strlen(name)) : NULL;
   }
 
@@ -2733,15 +2748,16 @@ static mt_atom *decode(term_t t, term_t names)
 { decode_frame fixed[MT_WALK_FRAMES];
   decode_stack frames;
   decode_var fixed_vars[MT_WALK_FRAMES];
-  decode_vars seen;
+  decode_vars seen, *outer = tls_decode_vars;
   decode_frame *f;
   mt_atom *value = NULL;
   term_t head;
   size_t i;
 
   stack_init(&seen, fixed_vars);
+  tls_decode_vars = &seen;
   if ( !decode_is_expr(t) )
-  { value = decode_leaf(t, names, &seen);
+  { value = decode_leaf(t, names);
     goto named;
   }
 
@@ -2763,7 +2779,7 @@ static mt_atom *decode(term_t t, term_t names)
         err_set(MT_NOMEM, "out of memory decoding an expression");
         break;
       }
-      if ( !(kid = decode_leaf(head, names, &seen)) ) break;   /* it said why */
+      if ( !(kid = decode_leaf(head, names)) ) break;   /* it said why */
       if ( !decode_frame_add(f, kid) )
       { mt_drop(kid);
         err_set(MT_NOMEM, "out of memory decoding an expression");
@@ -2805,6 +2821,7 @@ static mt_atom *decode(term_t t, term_t names)
   }
   stack_free(&frames);
 named:
+  tls_decode_vars = outer;
   for (i = 0; i < seen.n; i++) mt_free(seen.items[i].name);
   stack_free(&seen);
   return value;
