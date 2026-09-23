@@ -11,7 +11,7 @@
  *   engine's rdiv gives, across the int64 boundaries and 200 seeded ratios
  *   whose halves share a random factor, refuses every other spelling, and the
  *   result crosses into the engine and back whole
- *   [tested: test_wide_ratios_agree_with_the_engine; commit=WORKTREE].
+ *   [tested: test_wide_ratios_agree_with_the_engine; commit=23bce3e95153812edb34f405e5f13788119ef7d1].
  * Open Obligations: None.
  */
 #include <cmetta.h>

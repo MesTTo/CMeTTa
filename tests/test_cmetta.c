@@ -10,7 +10,7 @@
  *   mt_compare orders numbers of any width as the engine's msort does, a
  *   BigRational and an 800-digit BigInt among them, past the 2560 bits a
  *   fixed-width compare once refused [tested:
- *   test_the_standard_order_is_the_engines; commit=WORKTREE].
+ *   test_the_standard_order_is_the_engines; commit=23bce3e95153812edb34f405e5f13788119ef7d1].
  * Open Obligations:
  *   To Do: None
  *   Hacks: None

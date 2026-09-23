@@ -36,15 +36,15 @@
  *     an MT_RATIONAL and any wider one an MT_BIGRATIONAL carrying the
  *     engine's canonical N/D, which mt_bigrational() builds from any
  *     spelling of the same value [tested: tests/test_native_parity.c,
- *     test_wide_ratios_agree_with_the_engine; commit=WORKTREE]
+ *     test_wide_ratios_agree_with_the_engine; commit=23bce3e95153812edb34f405e5f13788119ef7d1]
  *   - a handle dropped on a thread with no Prolog engine has its record
  *     erased by the next thread that enters the engine, or by mt_close(),
  *     never on the dropping thread [tested: tests/test_threads.c,
- *     test_handles_dropped_without_an_engine; commit=WORKTREE]
+ *     test_handles_dropped_without_an_engine; commit=25def055d836058f71c3a2db2c54d56cadf6b18d]
  *   - mt_compare orders numbers of every width exactly, as the engine's
  *     msort does, allocating only for a BigInt or BigRational
  *     [tested: tests/test_cmetta.c, test_the_standard_order_is_the_engines;
- *     commit=WORKTREE]
+ *     commit=23bce3e95153812edb34f405e5f13788119ef7d1]
  *   - an ampersand-prefixed atom becomes MT_SPACE only when the engine
  *     says it is a space [tested: test_a_user_space_decodes_as_a_space;
  *     commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
@@ -446,7 +446,7 @@ const char *mt_effect_str(mt_effect effect)
    frame_open inlined and 0 instructions of its own, then out of line and
    67,200]
    [tested: tests/test_threads.c, test_handles_dropped_without_an_engine;
-   commit=WORKTREE]. */
+   commit=25def055d836058f71c3a2db2c54d56cadf6b18d]. */
 struct handle_ref;
 static struct handle_ref *MT_ATOMIC g_unerased;
 MT_COLD static void erase_unerased(void);

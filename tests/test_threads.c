@@ -14,7 +14,7 @@
  *   no engine dropped twice the atom-GC margin in handles, erasing none of
  *   their records itself, and the main thread's next door erased them all
  *   [tested: test_threads.c, test_handles_dropped_without_an_engine;
- *   commit=WORKTREE].
+ *   commit=25def055d836058f71c3a2db2c54d56cadf6b18d].
  * Owns resources: two pthreads and their joined lifetimes; one runtime closed
  *   after both workers have detached.
  * Guarded by: C atomics coordinate rendezvous; each worker owns its result.

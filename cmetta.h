@@ -141,9 +141,11 @@
  *   enters the engine, or mt_close(), erases it, since erasing where no
  *   engine is can make SWI signal atom collection through an engine that is
  *   not there [tested: tests/test_threads.c,
- *   test_handles_dropped_without_an_engine; commit=WORKTREE]. Registration tables are not guarded:
- *   register and withdraw while evaluation workers are quiescent. A custom
- *   allocator must support the threads that allocate and release its blocks.
+ *   test_handles_dropped_without_an_engine;
+ *   commit=25def055d836058f71c3a2db2c54d56cadf6b18d]. Registration tables are
+ *   not guarded: register and withdraw while evaluation workers are
+ *   quiescent. A custom allocator must support the threads that allocate and
+ *   release its blocks.
  *
  * Open Obligations:
  *   To Do: None
@@ -391,7 +393,7 @@ MT_API MT_MUST_USE mt_atom *mt_rational(int64_t numerator, int64_t denominator);
    so mt_bigrational("2/4") is mt_rational(1, 2) and mt_eq() says so. A zero
    denominator and any other spelling are refused; NULL then
    [tested: tests/test_native_parity.c, test_wide_ratios_agree_with_the_engine;
-   commit=WORKTREE].
+   commit=23bce3e95153812edb34f405e5f13788119ef7d1].
    Time: Theta(D^2) limb operations for D digits, the decimal conversion and
    Stein's gcd both quadratic in the width. */
 MT_API MT_MUST_USE mt_atom *mt_bigrational(const char *ratio);
