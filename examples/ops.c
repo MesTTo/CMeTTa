@@ -1,7 +1,8 @@
 /* Purpose: publish C functions to MeTTa three ways, so a program written in
  *   the language can call code written here.
- * Guarantees: prints what each door answered and exits 0, or names the
- *   failure on stderr and exits 1.
+ * Guarantees: checks every result before reporting success, including the
+ *   exact published word_count name [tested: make test; commit=WORKTREE].
+ * Owns resources: one runtime and one object reference, released on exit.
  * Open Obligations:
  *   To Do: None
  *   Hacks: None
@@ -30,8 +31,7 @@ static mt_status op_hypot(mt_call *call, void *user)
   return mt_answer(call, R(hypot(a, b)));
 }
 
-/* 2. A name C spells with underscores. It publishes as `word-count`, because
-      each host reaches the meaning through its own casing convention. */
+/* 2. The published name is exactly word_count. */
 static mt_status op_word_count(mt_call *call, void *user)
 { const char *text = mt_name(mt_arg(call, 0));
   int64_t words = 0;
@@ -72,41 +72,55 @@ static mt_status op_deposit(mt_call *call, void *user)
 int main(void)
 { metta *m = mt_open(NULL);
   static account acct = {0};
-  mt_atom *handle;
+  mt_atom *handle = NULL;
+  int result = 1;
+  double hypotenuse, deposited;
+  int64_t words;
 
   if ( !m ) return fprintf(stderr, "boot: %s\n", mt_errmsg()), 1;
 
   /* Each publication names its effect class. It is required, not advisory:
      the engine reasons about caching and reordering from it. Designated
      initializers mean the call site says which field is which. */
-  mt_def(m, (mt_op){ .name = "hypot", .arity = 2,
-                           .effect = MT_PURE, .fn = op_hypot });
-  mt_def(m, (mt_op){ .name = "word_count", .arity = 1,
-                           .effect = MT_PURE, .fn = op_word_count });
-  mt_def(m, (mt_op){ .name = "deposit", .arity = 2,
-                           .effect = MT_WRITES, .fn = op_deposit });
+  if ( !mt_def(m, (mt_op){ .name = "hypot", .arity = 2,
+                           .effect = MT_PURE, .fn = op_hypot }) ||
+       !mt_def(m, (mt_op){ .name = "word_count", .arity = 1,
+                           .effect = MT_PURE, .fn = op_word_count }) ||
+       !mt_def(m, (mt_op){ .name = "deposit", .arity = 2,
+                           .effect = MT_WRITES, .fn = op_deposit }) ) goto done;
 
-  printf("hypot 3 4          -> %g\n",
-         mt_one_float(mt_run(m, "!(hypot 3.0 4.0)")));
-  printf("word-count         -> %lld\n",
-         (long long)mt_one_int(mt_run(m, "!(word-count \"the quick brown fox\")")));
+  hypotenuse = mt_one_float(mt_run(m, "!(hypot 3.0 4.0)"));
+  words = mt_one_int(mt_run(m, "!(word_count \"the quick brown fox\")"));
+  if ( !mt_ok() || hypotenuse != 5.0 || words != 4 ) goto done;
+  printf("hypot 3 4          -> %g\n", hypotenuse);
+  printf("word_count         -> %lld\n", (long long)words);
 
   /* The account never becomes text. MeTTa holds the reference and hands it
      back to deposit unchanged, so the C struct is what actually changes. */
   handle = mt_object(&acct, "account", NULL);
-  printf("deposit 25         -> %g\n",
-         mt_one_float(mt_eval(m, E("deposit", mt_keep(handle), 25.0))));
-  printf("deposit 17.5       -> %g\n",
-         mt_one_float(mt_eval(m, E("deposit", mt_keep(handle), 17.5))));
+  if ( !handle ) goto done;
+  deposited = mt_one_float(mt_eval(m, E("deposit", mt_keep(handle), 25.0)));
+  if ( !mt_ok() || deposited != 25.0 ) goto done;
+  printf("deposit 25         -> %g\n", deposited);
+  deposited = mt_one_float(mt_eval(m, E("deposit", mt_keep(handle), 17.5)));
+  if ( !mt_ok() || deposited != 42.5 || acct.total != 42.5 ) goto done;
+  printf("deposit 17.5       -> %g\n", deposited);
   printf("the C struct holds -> %.2f\n", acct.total);
-  mt_drop(handle);
 
   /* A refusal from C reaches the caller as an engine error, not a wrong
      answer. */
   mt_clear();
   mt_answers_free(mt_run(m, "!(hypot \"three\" 4.0)"));
-  if ( !mt_ok() ) printf("refused, as it should be: %s\n", mt_errmsg());
+  if ( mt_error() != MT_ERROR || !mt_errmsg() ||
+       !strstr(mt_errmsg(), "hypot wants two numbers") ) goto done;
+  printf("refused, as it should be: %s\n", mt_errmsg());
+  mt_clear();
+  result = 0;
 
+done:
+  if ( result ) fprintf(stderr, "ops: %s\n",
+                        mt_errmsg() ? mt_errmsg() : "unexpected result");
+  mt_drop(handle);
   mt_close(m);
-  return 0;
+  return result || !mt_ok();
 }

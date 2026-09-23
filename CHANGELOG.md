@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fix the callbacks example calling `word-count` after publishing `word_count`.
+  Check all callback results and the expected refusal so incorrect output fails
+  the existing example gate.
+
 ## 1.0.0
 
 - Add closed transactions and speculation, committed event subscriptions,
