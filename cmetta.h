@@ -29,6 +29,13 @@
  *     tests/test_ownership.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
  *   - an atom is immutable and refcounted, so a term built once may be run
  *     many times and shared between threads without copying
+ *   - an answer keeps the engine's variable identity: every occurrence of one
+ *     engine variable decodes to one name, its source name where the answer's
+ *     name state carries one and otherwise a fresh `_N` from a process-wide
+ *     counter, so two answers never share a variable and an equation read
+ *     back through C still computes where it is copied [tested:
+ *     tests/test_cmetta.c, test_an_answer_keeps_variable_identity;
+ *     commit=WORKTREE]
  *   - building and reading atoms starts no engine
  *     [tested: tests/test_cmetta.c, test_atoms_need_no_engine; commit=4d20b8d80b2a8eb6fde434e561f30250a35fd3b3]
  *   - outside a closed transaction, mt_eval() computes one answer per step, so a caller that stops

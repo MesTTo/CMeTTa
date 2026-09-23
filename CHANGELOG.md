@@ -5,6 +5,17 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Keep variable identity in every answer. An engine variable with no source
+  name decoded as SWI writes one, `_`, the anonymous name, so `mt_atoms`,
+  `mt_match`, `mt_eval` and `mt_bound` answered `(fact $u $u $w)` as
+  `(fact $_ $_ $_)` and a lowered equation read back as three unrelated
+  variables; copying one into another space stored an equation whose body no
+  longer mentioned its argument. Each answer now names its variables from a
+  process-wide counter, one name per variable and never one name across two
+  answers, stepping over source names, as the Python seat's wire encoder does.
+  `test_an_answer_keeps_variable_identity` fails ten ways against the previous
+  library.
+
 - Decide every benchmark row by instructions:u and Cachegrind's estimated
   cycles; CPU time is recorded per operation as advice. task-clock could only
   decide below one runnable process per core, and the box the gate runs on is

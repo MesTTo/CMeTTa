@@ -121,6 +121,9 @@ terminal status. `mt_each` closes on break or exhaustion. Use explicit
 `mt_rows` exposes `mt_row` with atom, text, group and cursor. Group identifies
 the source directive. `mt_bound(row, "x")` borrows a match binding.
 Multiplicity is preserved; result order within a group is not promised.
+Answer variables keep their identity: one engine variable is one name, its
+source name where the answer carries one, otherwise a fresh `_N` from a
+process-wide counter, so two answers never share a variable.
 
 `mt_one` requires exactly one answer; `mt_first` takes the first and closes
 the rest; `mt_all` returns an owned `mt_list`. All consume the cursor.

@@ -2033,25 +2033,112 @@ static bool is_space(term_t t)
   return rc == TRUE;
 }
 
-/* The source name of a variable, from the engine's Name=Var pairs. */
-static char *variable_name(term_t names, term_t var)
+/* One Name=Var pair of the engine's name list. Both Name=Var and Name-Var are
+   read: the engine's name state uses one and a reader's variable_names uses
+   the other. */
+static bool name_pair(term_t pair, term_t name, term_t var)
+{ return ( PL_is_functor(pair, g_runtime.equal_functor) ||
+           PL_is_functor(pair, g_runtime.pair_functor) ) &&
+         PL_get_arg(1, pair, name) && PL_get_arg(2, pair, var);
+}
+
+/* The source name the engine's name list gives `var`, owned, or NULL.
+   Time: one PL_compare per pair. */
+static char *source_name(term_t names, term_t var)
 { term_t head, tail;
-  if ( !names ) return term_text(var, CVT_WRITE, NULL);
+  if ( !names ) return NULL;
 
   head = PL_new_term_ref();
   tail = PL_copy_term_ref(names);
   while ( PL_get_list(tail, head, tail) )
   { term_t nm = PL_new_term_ref();
     term_t vr = PL_new_term_ref();
-    /* Both Name=Var and Name-Var are read: the engine's name state uses one
-       and a reader's variable_names uses the other. */
-    if ( (PL_is_functor(head, g_runtime.equal_functor) ||
-          PL_is_functor(head, g_runtime.pair_functor)) &&
-         PL_get_arg(1, head, nm) && PL_get_arg(2, head, vr) &&
-         PL_compare(vr, var) == 0 )
+    if ( name_pair(head, nm, vr) && PL_compare(vr, var) == 0 )
       return term_text(nm, CVT_ATOM | CVT_STRING, NULL);
   }
-  return term_text(var, CVT_WRITE, NULL);
+  return NULL;
+}
+
+/* Whether `spelled` is already a source name in the list. Time: one strcmp
+   per pair. */
+static bool source_name_taken(term_t names, const char *spelled)
+{ term_t head, tail;
+  if ( !names ) return false;
+
+  head = PL_new_term_ref();
+  tail = PL_copy_term_ref(names);
+  while ( PL_get_list(tail, head, tail) )
+  { term_t nm = PL_new_term_ref();
+    term_t vr = PL_new_term_ref();
+    char *name;
+    bool taken;
+    if ( !name_pair(head, nm, vr) ||
+         !(name = term_text(nm, CVT_ATOM | CVT_STRING, NULL)) )
+      continue;
+    taken = strcmp(name, spelled) == 0;
+    mt_free(name);
+    if ( taken ) return true;
+  }
+  return false;
+}
+
+/* The variables one crossing has named so far. A decoded answer keeps the
+   engine's variable identity inside it: every occurrence of one variable is
+   one name, and two variables are two names, which is what mt_eq() and
+   mt_unify() read a variable's name as. */
+typedef struct decode_var
+{ term_t var;       /* a reference of its own, compared with PL_compare */
+  char  *name;      /* owned */
+} decode_var;
+
+typedef MT_STACK(decode_var) decode_vars;
+
+/* Fresh names come from a SESSION counter, never from the answer's own
+   count, because both halves of variable identity have to hold at once:
+   within one crossing one variable is one name, and across crossings two
+   variables are never one name, so two answers put into one expression do
+   not fuse. Numbering each answer from _0 breaks the second half, which the
+   Python seat measured as `(p (f $x))` and `(p (g $y))` answering `(f $_0)`
+   and `(g $_0)`; its wire.pl mints from gensym for that reason
+   [source: extensions/python/metta/_binding/wire.pl, metta_py_fresh_name/2;
+   commit=b0b20fc5b37a428e4ce6472b56d1db28dfcc978f]. Before this, an unnamed variable read as SWI writes
+   one here, `_`, the anonymous name, so (fact $u $u $w) came back as
+   (fact $_ $_ $_) and a lowered equation read back as three unrelated
+   variables [measured 2026-09-24: mt_atoms, mt_match and mt_eval answers;
+   tested: tests/test_cmetta.c, test_an_answer_keeps_variable_identity]. */
+static MT_ATOMIC uint64_t g_fresh_variables;
+
+/* The name of one variable in the answer being decoded: the name it already
+   had in this crossing, its source name from the answer's name state, or a
+   fresh one that steps over every source name, since a program may write
+   $_3 itself. Borrowed from `seen`, which owns it until the decode ends.
+   Time: one PL_compare per variable already named in this answer. */
+static const char *variable_name(term_t names, term_t var, decode_vars *seen)
+{ decode_var entry;
+  size_t i;
+
+  for (i = 0; i < seen->n; i++)
+    if ( PL_compare(seen->items[i].var, var) == 0 )
+      return seen->items[i].name;
+
+  entry.name = source_name(names, var);
+  while ( !entry.name )
+  { char spelled[24];
+    size_t length;
+    snprintf(spelled, sizeof spelled, "_%" PRIu64,
+             (uint64_t)MT_INC(&g_fresh_variables));
+    if ( source_name_taken(names, spelled) ) continue;
+    length = strlen(spelled) + 1;
+    if ( !(entry.name = mt_alloc(length)) ) break;
+    memcpy(entry.name, spelled, length);
+  }
+  if ( !entry.name || !(entry.var = PL_copy_term_ref(var)) ||
+       !stack_push(seen, entry) )
+  { mt_free(entry.name);
+    err_set(MT_NOMEM, "out of memory naming a variable");
+    return NULL;
+  }
+  return entry.name;
 }
 
 static mt_atom *decode_number(term_t t)
@@ -2112,17 +2199,10 @@ static bool decode_is_expr(term_t t)
 }
 
 /* Every engine term with no children. */
-static mt_atom *decode_leaf(term_t t, term_t names)
+static mt_atom *decode_leaf(term_t t, term_t names, decode_vars *seen)
 { if ( PL_is_variable(t) )
-  { char *name = variable_name(names, t);
-    mt_atom *a;
-    if ( !name )
-    { err_set(MT_NOMEM, "out of memory naming a variable");
-      return NULL;
-    }
-    a = atom_text(MT_VARIABLE, name, strlen(name));
-    mt_free(name);
-    return a;
+  { const char *name = variable_name(names, t, seen);
+    return name ? atom_text(MT_VARIABLE, name, strlen(name)) : NULL;
   }
 
   if ( PL_is_integer(t) || PL_is_float(t) || PL_is_rational(t) )
@@ -2260,11 +2340,18 @@ static inline bool decode_frame_add(decode_frame *f, mt_atom *kid)
 static mt_atom *decode(term_t t, term_t names)
 { decode_frame fixed[MT_WALK_FRAMES];
   decode_stack frames;
+  decode_var fixed_vars[MT_WALK_FRAMES];
+  decode_vars seen;
   decode_frame *f;
   mt_atom *value = NULL;
   term_t head;
+  size_t i;
 
-  if ( !decode_is_expr(t) ) return decode_leaf(t, names);
+  stack_init(&seen, fixed_vars);
+  if ( !decode_is_expr(t) )
+  { value = decode_leaf(t, names, &seen);
+    goto named;
+  }
 
   stack_init(&frames, fixed);
   head = PL_new_term_ref();
@@ -2284,7 +2371,7 @@ static mt_atom *decode(term_t t, term_t names)
         err_set(MT_NOMEM, "out of memory decoding an expression");
         break;
       }
-      if ( !(kid = decode_leaf(head, names)) ) break;   /* it said why */
+      if ( !(kid = decode_leaf(head, names, &seen)) ) break;   /* it said why */
       if ( !decode_frame_add(f, kid) )
       { mt_drop(kid);
         err_set(MT_NOMEM, "out of memory decoding an expression");
@@ -2320,12 +2407,14 @@ static mt_atom *decode(term_t t, term_t names)
 
   /* Whatever is still open was abandoned by a failure above. */
   while ( (f = stack_top(&frames)) != NULL )
-  { size_t i;
-    for (i = 0; i < f->n; i++) mt_drop(f->kids[i]);
+  { for (i = 0; i < f->n; i++) mt_drop(f->kids[i]);
     mt_free(f->kids);
     stack_pop(&frames);
   }
   stack_free(&frames);
+named:
+  for (i = 0; i < seen.n; i++) mt_free(seen.items[i].name);
+  stack_free(&seen);
   return value;
 }
 

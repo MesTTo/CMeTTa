@@ -288,6 +288,12 @@ typedef struct mt_row {
 
 `mt_bound` reads a retained match pattern's named binding at any depth in one term walk without an engine call, corresponding to Python's `row.y` and its `Answers`/`Rows` split.
 
+An answer keeps the engine's variable identity. Every occurrence of one engine
+variable is one name: the source name where the answer carries one, otherwise
+a fresh `_N` from a counter shared by the whole process, so `(fact $u $u $w)`
+reads back as `(fact $_3 $_3 $_4)` and two answers never share a variable.
+An equation read back through C therefore still computes where it is copied.
+
 ```c
 mt_rows (row, mt_match(kb, E("edge", "a", V("y"))))
     printf("y = %s\n", mt_show(mt_bound(row, "y")));
@@ -557,7 +563,7 @@ A lowered equation is an atom the engine reads, type-checks, specialises, and ma
 
 ```c
 mt_each (a, mt_match(mt_self(m), E("=", E("poly", V("x")), V("body"))))
-    puts(mt_show(a));            /* (= (poly $_0) (+ (* 3 $_1) 1)) */
+    puts(mt_show(a));            /* (= (poly $_0) (+ (* 3 $_0) 1)) */
 ```
 
 The same query finds no equation for an `mt_def` callback, whose opaque body requires its declared effect class.

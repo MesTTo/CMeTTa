@@ -1478,6 +1478,63 @@ static void test_variable_identity_survives_the_round_trip(void)
   mt_drop(different);
 }
 
+/* Two children of one answer: whether they are one variable, by the name C
+   reads a variable's identity from. */
+static bool one_variable(const mt_atom *a, const mt_atom *b)
+{ return mt_kind_of(a) == MT_VARIABLE && mt_kind_of(b) == MT_VARIABLE &&
+         strcmp(mt_name(a), "_") != 0 && mt_eq(a, b);
+}
+
+static void test_an_answer_keeps_variable_identity(metta *m)
+{ mt_space *kb, *copy;
+  mt_atom *first, *second;
+
+  CASE("a stored atom reads back with one name per variable");
+  mt_clear();
+  kb = mt_space_open(m, "&cmetta-vars");
+  CHECK(kb != NULL);
+  CHECK(mt_add(kb, E("fact", V("u"), V("u"), V("w"))));
+  mt_each (a, mt_atoms(kb))
+  { CHECK(one_variable(mt_at(a, 1), mt_at(a, 2)));
+    CHECK(!mt_eq(mt_at(a, 1), mt_at(a, 3)));
+    CHECK(mt_kind_of(mt_at(a, 3)) == MT_VARIABLE &&
+          strcmp(mt_name(mt_at(a, 3)), "_") != 0);
+  }
+  mt_each (a, mt_match(kb, E("fact", V("p"), V("q"), V("r"))))
+  { CHECK(one_variable(mt_at(a, 1), mt_at(a, 2)));
+    CHECK(!mt_eq(mt_at(a, 1), mt_at(a, 3)));
+  }
+
+  CASE("two crossings never share a fresh name");
+  first = mt_one(mt_eval(m, E("pair", V("z"), V("z"))));
+  second = mt_one(mt_eval(m, E("pair", V("z"), V("z"))));
+  CHECK(first && second);
+  if ( first && second )
+  { CHECK(one_variable(mt_at(first, 1), mt_at(first, 2)));
+    CHECK(one_variable(mt_at(second, 1), mt_at(second, 2)));
+    CHECK(!mt_eq(mt_at(first, 1), mt_at(second, 1)));
+  }
+  mt_drop(first);
+  mt_drop(second);
+
+  CASE("an equation read back through C still computes where it is copied");
+  /* Before variables kept their identity, (= (sq $x) (* $x $x)) read back as
+     three unrelated variables, and copying it into another space stored an
+     equation whose body no longer mentioned its argument. */
+  CHECK(mt_add(kb, E("=", E("sq", V("x")), E("*", V("x"), V("x")))));
+  copy = mt_space_open(m, "&cmetta-vars-copy");
+  CHECK(copy != NULL);
+  mt_each (eq, mt_match(kb, E("=", E("sq", V("arg")), V("body"))))
+    CHECK(mt_add(copy, mt_keep(eq)));
+  CHECK(mt_one_int(mt_eval(copy, E("sq", 7))) == 49);
+  CHECK(mt_ok());
+
+  CHECK(mt_wipe(kb));
+  CHECK(mt_wipe(copy));
+  mt_space_close(copy);
+  mt_space_close(kb);
+}
+
 static void test_a_refusal_carries_the_engines_remedy_and_ground(metta *m)
 { CASE("a refusal says what to do about it, in the engine's own words");
   mt_clear();
@@ -1854,6 +1911,7 @@ int main(void)
   test_a_refused_stack_limit_clears_the_engine_exception(m);
   test_a_wide_integer_keeps_its_digits(m);
   test_variable_identity_survives_the_round_trip();
+  test_an_answer_keeps_variable_identity(m);
   test_a_refusal_carries_the_engines_remedy_and_ground(m);
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_the_counters_measure_engine_work(m);
