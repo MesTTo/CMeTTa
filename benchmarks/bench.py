@@ -1,8 +1,9 @@
 """Purpose: hold what a C host pays for this binding to committed counters.
 
 Every case here runs benchmarks/cases, the C driver beside this file, once per
-sample under `perf stat`, and compares three counters against
-benchmarks/baseline.json through metta's own BenchmarkBaseline. The harness is
+sample under `perf stat` and once more under Cachegrind, and compares three
+counters against benchmarks/baseline.json through metta's own
+BenchmarkBaseline. The harness is
 imported, never copied: DEVELOPING.md's rule is that a sibling package takes
 BenchmarkBaseline, benchmark_case, count_atoms and measure_instructions from
 metta.testing.
@@ -11,12 +12,16 @@ THE COUNTER RULE FOR THIS SEAT. Inference counters are BLIND across the C
 boundary, because foreign code retires no inferences at all. This tree has the
 failure on record: a C wire encoder measured 526x faster on the inference
 counter while CPU time said it was 1.8x SLOWER. So every case that crosses into
-C is decided by `perf stat -e instructions:u` and CPU time PAIRED, never by
-inferences. Inferences are pinned as well, because each case's count measured
-exactly reproducible, and they answer a different question: what the ENGINE did
-per operation. A case comment says which counter decides it.
+C is decided by `perf stat -e instructions:u` and Cachegrind's estimated cycles
+PAIRED, never by inferences: the second sees what the first cannot, a change
+that keeps every instruction and wrecks the memory behaviour behind them.
+Inferences are pinned as well, because each case's count measured exactly
+reproducible, and they answer a different question: what the ENGINE did per
+operation. A case comment says which counter decides it.
 
-Wall clock decides nothing here and is not recorded.
+Time decides nothing here. task-clock is recorded per operation beside the
+pins, as advice, because a time reading prices the queue as well as the work
+and the box these gates run on is never quiet; wall clock is not recorded.
 
 Owns resources: subprocess.run reaps warmup children. prepare_boot removes
 the boot's governed QLF caches; ordinary boot and import recreate their artifacts.
@@ -27,8 +32,8 @@ Guarantees:
     and fails if its governed count differs from the recorded fixture
     [tested: test_c_boot_normalises_the_governed_cache_set,
     test_c_inventory_failure_is_fatal_and_runtime_still_compares; commit=8ca8a387fc61d0918484b19a1a3baf85b6523043]
-  - both boot counters decline a different declared checkout length or depth,
-    including updates; runtime rows still compare [tested:
+  - every boot counter declines a different declared checkout length or
+    depth, including updates; runtime rows still compare [tested:
     test_boot_path_refuses_both_counters_and_preserves_pins,
     test_comparable_counters_still_gate; commit=8ca8a387fc61d0918484b19a1a3baf85b6523043]
   - a box that would not count is told apart from a tree that moved: this
@@ -40,8 +45,12 @@ Guarantees:
     warmed [source: extensions/cmetta/benchmarks/cases.c, one runtime per
     process]
   - setup and boot sit outside the counted region for every case but `boot`,
-    through perf's control descriptors, so a per-operation row prices the
-    operation rather than the engine start in front of it
+    through perf's control descriptors and, under Cachegrind, the driver's
+    client requests around the same operation, so a per-operation row prices
+    the operation rather than the engine start in front of it
+  - the simulated runs start only once every perf sample is taken, so none of
+    them loads an artifact set boot's purge is rewriting; they then go at once,
+    since no other process can move a simulated count
   - a regression in one case never hides another: every selected case is
     measured and every failure is reported before the nonzero exit, the shape
     benchmarks/check_instructions.py already established after
@@ -66,6 +75,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -83,33 +93,32 @@ from _workspace import on_path  # noqa: E402  -- the path entry above
 on_path()
 
 from metta_benchmarking import (  # noqa: E402  -- on_path() above is what makes this import resolvable
-    CPU_SECONDS,
+    ESTIMATED_CYCLES,
     INSTRUCTIONS,
-    LOAD_PER_CORE_CEILING,
     BenchmarkBaseline,
-    load_per_core,
+    estimated_cycles,
     measure_counters,
+    measure_simulated,
     measured_main,
     prepare_governed_artifacts,
     refusal_is_fatal,
-    time_is_measurable,
 )
 
 DRIVER = SEAT / "benchmarks" / "cases"
 BASELINE = SEAT / "benchmarks" / "baseline.json"
 #: task-clock is CPU time, not wall time, and comes from the same perf run as
-#: instructions:u so the pair describes one execution rather than two.
+#: instructions:u so the advice beside a pin describes the run that set it.
 EVENTS = ("instructions:u", "task-clock")
 #: What this document says about itself, replacing the default seat's sentence
 #: that inferences decide. They cannot decide here, and a committed file that
 #: said they did would be wrong about every row under it.
 POLICIES = {
     "counter_policy": (
-        "instructions:u and CPU time, each the minimum of three, DECIDE every "
-        "row, paired: foreign code retires no inferences, so the engine's "
+        "instructions:u and estimated cycles, each the minimum of three, DECIDE "
+        "every row, paired: foreign code retires no inferences, so the engine's "
         "counter is blind to this binding's own work and is pinned only as a "
-        "third reading of what the ENGINE did. Wall clock decides nothing and "
-        "is not recorded."
+        "third reading of what the ENGINE did. Time decides nothing: task-clock "
+        "is recorded per operation as advice, and wall clock is not recorded."
     ),
     "instruction_policy": (
         "perf instructions:u minimum of three under setarch -R and a built "
@@ -118,12 +127,15 @@ POLICIES = {
         "through perf's control descriptors, and `boot` is the whole process "
         "on purpose"
     ),
-    "cpu_policy": (
-        "perf task-clock minimum of three, seconds, banded on both sides by "
-        "each row's own declared percent. It exists to catch what an "
+    "estimated_cycles_policy": (
+        "Cachegrind's simulated cost of the same window, minimum of three, "
+        "banded on both sides by each row's own declared percent: an access "
+        "costs one on a first-level hit, five on a last-level hit and "
+        "thirty-five from memory, over a fixed 32 KiB 8-way first-level pair "
+        "and an 8 MiB 16-way last level. It exists to catch what an "
         "instruction count cannot see, a change that keeps every instruction "
-        "and wrecks the time they take, so its band is an order of magnitude "
-        "looser than the instruction band and is not a precision figure."
+        "and wrecks the memory behaviour behind them, and it is simulated "
+        "because no other process on the box can move a simulated count."
     ),
 }
 
@@ -135,66 +147,73 @@ class Case:
     name: str
     unit: str
     operations: int
-    #: Measured as the whole process rather than inside perf's control window,
+    #: Measured as the whole process rather than inside the control window,
     #: which only `boot` needs and only because it IS the process. The C
     #: driver refuses the pairing the other way round, so the two sides cannot
     #: disagree about which case this is.
     whole_process: bool = False
 
 
-#: The sizes are chosen so each counted region is roughly 200ms of CPU, which
-#: is where task-clock stops being dominated by its own resolution: a
-#: sub-millisecond region measured 86% spread on this box under load where a
-#: 58ms one measured 5.4% [measured 2026-08-28]. Every case measured LINEAR in
-#: its size at 2,000 and 20,000 operations, so the size is a lever on precision
-#: and not on what the row means: term-in read 71,188 instructions per
-#: operation at 2,000 and 71,173 at 20,000, space-pair 101,308 and 102,256, and
-#: both inference counts came out exactly ten times apart [measured 2026-08-28].
+#: The sizes are what a simulated run can afford: each counted region retires
+#: 170 to 650 million instructions, so a run under Cachegrind takes four to six
+#: seconds, most of it the uninstrumented boot in front of the window, while
+#: the instruction band still dwarfs perf's own window edges, about 16,000
+#: instructions of handshake [measured 2026-09-23: windowed Cachegrind runs of
+#: every case at these sizes; the MORK seat's mork-window-floor calibration row].
+#: They are a tenth of the sizes task-clock needed when it decided, since a
+#: region under a millisecond measured 86% spread in time on this box.
+#: Every case measured LINEAR in its size at 2,000 and 20,000 operations, so
+#: the size is a lever on cost and not on what the row means: term-in read
+#: 71,188 instructions per operation at 2,000 and 71,173 at 20,000, space-pair
+#: 101,308 and 102,256, and both inference counts came out exactly ten times
+#: apart [measured 2026-08-28].
 CASES = (
     # boot. What a C host pays before it can ask anything: the dynamic loader,
     # PL_initialise, and consulting the engine. DECIDED BY instructions:u AND
-    # CPU TIME. The inference pin sees only the consult, which is 1.5M of a
-    # 1.97G-instruction process, so it can neither confirm nor deny the rest;
-    # it is here because a change in what the engine loads is worth catching.
-    # This is the one case measured as a WHOLE PROCESS: a control window opened
-    # inside main() would start after the loader had already run.
+    # ESTIMATED CYCLES. The inference pin sees only the consult, about 585,000
+    # inferences of a 1.6G-instruction process, so it can neither confirm nor
+    # deny the rest; it is here because a change in what the engine loads is
+    # worth catching. This is the one case measured as a WHOLE PROCESS: a
+    # control window opened inside main() would start after the loader had
+    # already run.
     Case("boot", "boots", 1, whole_process=True),
-    # cursor-step. One mt_next, which is one metta_c_next plus the
-    # decode of its answer into a C atom and the render of its text. DECIDED BY
-    # instructions:u AND CPU TIME, and this case is the counter rule in one
-    # number: the engine retires 10 inferences per answer while the process
-    # retires about 17,400 instructions, so what the inference counter can see
+    # cursor-step. One mt_next, which is one metta_c_next plus the decode of
+    # its answer into a C atom and the render of its text. DECIDED BY
+    # instructions:u AND ESTIMATED CYCLES, and this case is the counter rule in
+    # one number: the engine retires 12 inferences per answer while the process
+    # retires about 18,000 instructions, so what the inference counter can see
     # is a rounding error on what the step costs. Its pin still earns its place
     # -- it catches a change in the engine's per-answer reduction -- but it
     # cannot referee the C half at all.
-    Case("cursor-step", "steps", 200_000),
+    Case("cursor-step", "steps", 20_000),
     # term-in. A term crossing FROM C INTO the engine: mt_show_dup encodes a C
     # atom into a Prolog term and asks the engine to write it, the only public
     # door that crosses this way without also storing or evaluating something.
-    # DECIDED BY instructions:u AND CPU TIME; the encode is pure C and retires
-    # nothing, so the inference pin here prices only the writer on the far side.
-    Case("term-in", "crossings", 60_000),
+    # DECIDED BY instructions:u AND ESTIMATED CYCLES; the encode is pure C and
+    # retires nothing, so the inference pin here prices only the writer on the
+    # far side.
+    Case("term-in", "crossings", 6_000),
     # term-out. The mirror: mt_parse runs the engine's reader and decodes
     # the resulting Prolog term into a C atom. Same term, same text door,
     # opposite crossing, and the pair is what makes the two rows comparable.
-    # DECIDED BY instructions:u AND CPU TIME, for the same reason.
-    Case("term-out", "crossings", 60_000),
+    # DECIDED BY instructions:u AND ESTIMATED CYCLES, for the same reason.
+    Case("term-out", "crossings", 6_000),
     # space-pair. Store one fact and retrieve it by its key, which is what a C
-    # host does with a space. DECIDED BY instructions:u AND CPU TIME. The
-    # inference pin is the most informative one in the suite, because both
+    # host does with a space. DECIDED BY instructions:u AND ESTIMATED CYCLES.
+    # The inference pin is the most informative one in the suite, because both
     # doors are engine work: the add asserts and the match runs the engine's
     # own matcher, so a matcher change lands here first.
-    Case("space-pair", "pairs", 20_000),
+    Case("space-pair", "pairs", 2_000),
     # error-ball. An engine exception crossing back to C as words: the engine
     # raises, call_bridge copies the ball off the stacks with PL_record, and
     # render_ball asks metta_c_error_text/2 for its text. DECIDED BY
-    # instructions:u AND CPU TIME. A failed assertion is the raiser because
-    # MeTTa keeps most failures AS values, so nothing else reaches this path
-    # [source: extensions/cmetta/tests/test_cmetta.c,
+    # instructions:u AND ESTIMATED CYCLES. A failed assertion is the raiser
+    # because MeTTa keeps most failures AS values, so nothing else reaches this
+    # path [source: extensions/cmetta/tests/test_cmetta.c,
     # test_an_engine_error_reaches_c_as_words]. The engine also reports each
     # failure on stderr, and that report is inside the region on purpose: a C
     # host pays for it.
-    Case("error-ball", "raises", 2_000),
+    Case("error-ball", "raises", 200),
 )
 
 BY_NAME = {case.name: case for case in CASES}
@@ -298,7 +317,7 @@ def seats_differing_from_head() -> list[str]:
     return moved
 
 
-def counter_configuration() -> dict[str, bool | list[str]]:
+def counter_configuration() -> dict[str, bool | list[str] | str]:
     """The artifacts that move THIS seat's counters, for the baseline stamp.
 
     Deterministic counters only compare within one configuration. The engine's
@@ -327,13 +346,31 @@ def counter_configuration() -> dict[str, bool | list[str]]:
     seats [node, python] against 1,516,661 with [mork, node, python], same tree,
     same command]. Reading the seats rather than the artifacts keeps the key
     true for a seat that is present and unbuildable, and for one added later.
+
+    The SIMULATOR is the fifth. Estimated cycles are Cachegrind's counts, and
+    another valgrind decodes instructions and models caches in its own way, so
+    it moves every one of those pins with no change here; its version is
+    stamped for the reason the seats are, and a box without it stamps `absent`,
+    which refuses by name rather than failing inside the first simulated run.
     """
     return {
         "c_reader": (ROOT / "engine" / "reader.so").is_file(),
         "c_writer": (ROOT / "engine" / "writer.so").is_file(),
         "c_json": (ROOT / "engine" / "json_codec.so").is_file(),
         "seats": loaded_seats(),
+        "valgrind": simulator_version(),
     }
+
+
+def simulator_version() -> str:
+    """The valgrind that simulates the estimated-cycle rows, as it names itself."""
+    try:
+        answer = subprocess.run(
+            ["valgrind", "--version"], capture_output=True, text=True, timeout=60, check=False
+        )
+    except FileNotFoundError:
+        return "absent"
+    return answer.stdout.strip() or "absent"
 
 
 def command_for(case: Case) -> list[str]:
@@ -351,6 +388,20 @@ def inferences_from(output: str) -> int:
             return int(line.split()[1])
     msg = f"the driver printed no inference count: {output!r}"
     raise RuntimeError(msg)
+
+
+def simulate(case: Case, rounds: int) -> tuple[int, ...]:
+    """Estimated cycles, one per simulated run of the case."""
+    runs = measure_simulated(
+        command_for(case),
+        rounds=rounds,
+        controlled=not case.whole_process,
+        timeout=600.0,
+    )
+    return tuple(
+        estimated_cycles({event: counts[index] for event, counts in runs.events.items()})
+        for index in range(rounds)
+    )
 
 
 def sample(case: Case, rounds: int) -> tuple[tuple[int, ...], tuple[float, ...], tuple[int, ...]]:
@@ -379,30 +430,25 @@ def observe_all(
     """Observe every case on every counter, returning failures and refusals.
 
     Each counter is compared SEPARATELY rather than in one try block. Stopping
-    at the first would let an instruction regression hide a CPU regression on
-    the same row, and the two only decide together: they are here precisely
-    because each sees what the other cannot. It is the masking
+    at the first would let an instruction regression hide an estimated-cycle
+    regression on the same row, and the two only decide together: they are
+    here precisely because each sees what the other cannot. It is the masking
     benchmarks/check_instructions.py was fixed for one level up, where it was
     one case hiding another.
 
-    The CPU comparison is the one that can stop being a measurement. Its pins
-    were taken at loadavg 9 to 30 on a 32-core box and this file's own
-    measurement_conditions says so, along with what happens above that: a
-    task-clock triple spread 38% to 64% at loadavg 30 while instructions:u over
-    the same runs spread 0.00002% to 0.129%. So above one runnable process per
-    core a CPU row is not compared, it is REPORTED with the load beside it --
-    the same reading the parity lane gives a row it could not measure, and the
-    same one the C seat's own note asks for when it says all six CPU pins want
-    re-confirming on a quiet box. The instruction and inference comparisons are
-    untouched by the load and still decide.
+    The perf samples come first, case by case, because boot's purge rewrites
+    the artifact set every case loads. The simulated runs of every case that
+    got that far then go at once: nothing another process does can move a
+    simulated count, and each run costs twenty to fifty times its native one.
+    task-clock is recorded per operation beside the pins and never compared.
     """
     failures: list[str] = []
     refused: list[str] = []
-    cpu_decides = time_is_measurable()
-    # Both boot counters depend on the declared checkout shape. Equal-length
+    # Every boot counter depends on the declared checkout shape. Equal-length
     # depth controls and a fresh-atom control name inventory sensitivity, not
     # a linear inference cost per component. The baseline owns that evidence.
     path_refusal = baseline.checkout_path_refusal(ROOT)
+    sampled: dict[str, tuple[tuple[int, ...], tuple[float, ...], tuple[int, ...]]] = {}
     for case in cases:
         if case.whole_process:
             try:
@@ -413,11 +459,22 @@ def observe_all(
                     failures[-1] += f"\n{error.stderr.strip()}"
                 print(failures[-1])
                 continue
-        instructions, cpu, inferences = sample(case, rounds)
+        sampled[case.name] = sample(case, rounds)
+    measured = [case for case in cases if case.name in sampled]
+    with ThreadPoolExecutor(max_workers=max(1, len(measured))) as pool:
+        simulated = dict(zip(
+            (case.name for case in measured),
+            pool.map(lambda case: simulate(case, rounds), measured),
+            strict=True,
+        ))
+    for case in measured:
+        instructions, cpu, inferences = sampled[case.name]
+        cycles = simulated[case.name]
         outside: list[str] = []
-        for metric, observe in (
+        declined = case.whole_process and path_refusal is not None
+        for counter, observe in (
             (
-                None,
+                "inferences",
                 partial(
                     baseline.observe_counter,
                     case.name,
@@ -427,42 +484,36 @@ def observe_all(
                 ),
             ),
             (
-                INSTRUCTIONS,
-                partial(
-                    baseline.observe_measurement,
-                    case.name,
-                    INSTRUCTIONS,
-                    instructions,
-                ),
+                "instructions",
+                partial(baseline.observe_measurement, case.name, INSTRUCTIONS, instructions),
             ),
             (
-                CPU_SECONDS,
-                partial(baseline.observe_measurement, case.name, CPU_SECONDS, cpu),
+                "estimated cycles",
+                partial(baseline.observe_measurement, case.name, ESTIMATED_CYCLES, cycles),
             ),
         ):
-            if metric is not CPU_SECONDS and case.whole_process and path_refusal is not None:
-                counter = "inferences" if metric is None else "instructions"
+            if declined:
                 refused.append(f"{case.name}: {counter} not compared; {path_refusal}")
                 continue
             try:
                 observe()
             except (AssertionError, KeyError) as error:
-                if metric is CPU_SECONDS and not cpu_decides:
-                    refused.append(f"{case.name}: {error}")
-                else:
-                    outside.append(f"{case.name}: {error}")
+                outside.append(f"{case.name}: {error}")
+        if not declined:
+            baseline.observe_cpu(case.name, min(cpu) / case.operations)
         report = (
             f"{case.name}: instructions={list(instructions)} "
-            f"cpu={list(cpu)} inferences={list(inferences)}"
+            f"estimated_cycles={list(cycles)} cpu={list(cpu)} "
+            f"inferences={list(inferences)}"
         )
         #Both band directions land on the same tag, and so does a missing row,
-        #so it names the outcome rather than one side of it. A CPU row the box
-        #would not measure is NOT that: it says so in its own word, because a
+        #so it names the outcome rather than one side of it. A row declined for
+        #its checkout shape is NOT that: it says so in its own words, because a
         #reader scanning for what moved has to be able to tell a row that read
         #wrong from a row that was not read.
         if outside:
             print(f"{report} OUTSIDE BAND")
-        elif refused and refused[-1].startswith(f"{case.name}: "):
+        elif declined:
             print(f"{report} NOT MEASURED IN THIS CONFIGURATION")
         else:
             print(report)
@@ -553,17 +604,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         baseline, [BY_NAME[name] for name in arguments.cases], arguments.rounds
     )
     baseline.finish()
-    #Printed either way, so "the CPU check stopped happening" is never silent;
-    #what refusal_is_fatal decides is whether it is also red. On a runner it is:
-    #a row nobody measured is a tripwire nobody read.
+    #Printed either way, so a declined comparison is never silent; what
+    #refusal_is_fatal decides is whether it is also red. On a runner it is: a
+    #row nobody measured is a tripwire nobody read.
     for message in refused:
         print(f"NOT MEASURED IN THIS CONFIGURATION {message}", file=sys.stderr)
     if refused:
         print(
-            f"{len(refused)} row(s) not compared for the reasons above; load is "
-            f"{load_per_core():.2f} runnable processes per core against the "
-            f"{LOAD_PER_CORE_CEILING:.2f} the CPU pins were taken under. "
-            "Runtime counter comparisons remain active",
+            f"{len(refused)} comparison(s) declined for the reasons above; "
+            "every runtime row's comparisons ran",
             file=sys.stderr,
         )
         if refusal_is_fatal():

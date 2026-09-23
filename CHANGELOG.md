@@ -5,6 +5,14 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Decide every benchmark row by instructions:u and Cachegrind's estimated
+  cycles; CPU time is recorded per operation as advice. task-clock could only
+  decide below one runnable process per core, and the box the gate runs on is
+  never quiet, so its comparisons were declined in nearly every run. The driver
+  marks its window with Cachegrind's client requests beside perf's control
+  descriptors, the case sizes drop tenfold so a simulated run takes seconds,
+  and `bench.sh` now needs valgrind, whose version the counter stamp records.
+
 - Relink the library and every program built on it when the compiler, its
   flags, the SWI host or the engine path change. A `.toolchain-stamp` holds the
   command line each output bakes in and is rewritten only when it differs, the

@@ -8,14 +8,19 @@
  *   - with --controlled, perf's control descriptors arrive in
  *     METTA_PERF_CONTROL_FD, METTA_PERF_ACK_FD and METTA_PERF_CLOSE_FDS, the
  *     protocol metta.benchmarking._run_perf speaks and benchmarks/pure.py's
- *     _controlled answers on the Python side
+ *     _controlled answers on the Python side; under Cachegrind none arrive,
+ *     and the window is the CACHEGRIND_START_INSTRUMENTATION and
+ *     CACHEGRIND_STOP_INSTRUMENTATION client requests around the operation,
+ *     which metta_benchmarking.measure_simulated reads with
+ *     --instr-at-start=no
  *
  * Guarantees:
  *   - the handshake is bounded and a window that never opened exits 125, so
  *     the driver reads it as "this run says nothing" rather than as a moved
  *     row [tested: extensions/cmetta/bench.sh; commit=11afdcdbad5bbbe37168b5d8528c23a21c42b4b6]
- *   - setup and teardown sit OUTSIDE the counted region, so a per-operation
- *     case measures the operation and not the engine boot in front of it.
+ *   - setup and teardown sit OUTSIDE the counted region, under perf and under
+ *     Cachegrind alike, so a per-operation case measures the operation and
+ *     not the engine boot in front of it.
  *     perf's own manual gives the reason for the mechanism: --delay=-1 starts
  *     with events disabled, "useful to filter out the startup phase of the
  *     program, which is often very different" [source: perf-stat(1),
@@ -52,6 +57,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/* Cachegrind's client requests mark the window perf's control descriptors
+   mark, and outside valgrind each is a few instructions that do nothing. A
+   build without the header has no window, which measure_simulated refuses by
+   name instead of reading an empty count as a free workload [source: valgrind
+   3.26 Cachegrind manual, --instr-at-start]. */
+#if defined(__has_include)
+#  if __has_include(<valgrind/cachegrind.h>)
+#    include <valgrind/cachegrind.h>
+#    define SIMULATED_WINDOW 1
+#  endif
+#endif
+#ifndef SIMULATED_WINDOW
+#  define CACHEGRIND_START_INSTRUMENTATION ((void)0)
+#  define CACHEGRIND_STOP_INSTRUMENTATION ((void)0)
+#  define RUNNING_ON_VALGRIND 0
+#endif
 
 /* A window that never opened measured NOTHING, which is a different answer
    from a case that ran and moved, and the driver has to tell them apart: read
@@ -129,7 +151,9 @@ static int control_open(void)
   const char *scan;
 
   if ( !control || !acknowledge || !closing )
-  { fprintf(stderr, "cases: --controlled needs perf's control descriptors; "
+  { /* Under Cachegrind the client requests are the whole window. */
+    if ( RUNNING_ON_VALGRIND ) return 0;
+    fprintf(stderr, "cases: --controlled needs perf's control descriptors; "
                     "run this through metta.benchmarking.measure_counters\n");
     return 1;
   }
@@ -483,7 +507,9 @@ int main(int argc, char **argv)
      METTA_PERF_CONTROL_REFUSED, and the driver reads that as "this run says
      nothing" instead of as a moved row. */
   if ( (refused = control_send("enable\n")) != 0 ) { teardown(&w); return refused; }
+  if ( controlled ) CACHEGRIND_START_INSTRUMENTATION;
   status = chosen->run(&w);
+  if ( controlled ) CACHEGRIND_STOP_INSTRUMENTATION;
   if ( (refused = control_send("disable\n")) != 0 ) { teardown(&w); return refused; }
   after = mt_stats_now(w.m);
   spent = mt_stats_since(before, after);
