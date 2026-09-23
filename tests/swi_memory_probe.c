@@ -5,6 +5,8 @@
  * Owns resources: discards each foreign frame and requires successful cleanup.
  */
 #include <SWI-Prolog.h>
+/* The checks below are assert()s, so they stay live whatever NDEBUG a build sets. */
+#undef NDEBUG
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>

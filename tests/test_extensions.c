@@ -5,6 +5,8 @@
  * shared libraries remain mapped until process exit for escaped callbacks.
  */
 #include <cmetta.h>
+/* The checks below are assert()s, so they stay live whatever NDEBUG a build sets. */
+#undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

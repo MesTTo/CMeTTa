@@ -22,6 +22,8 @@
 #include <cmetta.h>
 
 #include <stdio.h>
+/* The checks below are assert()s, so they stay live whatever NDEBUG a build sets. */
+#undef NDEBUG
 #include <assert.h>
 #include <string.h>
 

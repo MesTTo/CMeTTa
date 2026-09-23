@@ -5,6 +5,8 @@
  * Owns resources: all allocations are counted through runtime shutdown.
  */
 #include <cmetta.h>
+/* The checks below are assert()s, so they stay live whatever NDEBUG a build sets. */
+#undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
