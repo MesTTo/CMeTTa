@@ -477,7 +477,7 @@ MT_API bool mt_alpha_eq(const mt_atom *a, const mt_atom *b);
        qsort(all.items, all.len, sizeof *all.items, mt_order);
 
    [tested: tests/test_cmetta.c, test_the_standard_order_is_the_engines;
-   commit=WORKTREE] */
+   commit=d1e3a98101670ae0c56e1f7b23a690916cf5e06e] */
 MT_API int mt_compare(const mt_atom *a, const mt_atom *b);
 MT_API int mt_order(const void *a, const void *b);
 
