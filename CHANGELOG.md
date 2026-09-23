@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Release captured provider ownership at transaction completion. The SQLite
+  corpus exposed connections retained until blob collection after provider and
+  cursor close; a regression now requires immediate release of the last owner.
+
 - Add `mt_matcher` after the custom-matching corpus exposed a missing C door
   to the engine's grounded-value matching hooks. Candidate iterators retain
   callback data, propagate errors and close when abandoned.

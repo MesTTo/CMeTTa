@@ -5491,8 +5491,19 @@ static foreign_t pl_cmetta_provider_finish(term_t held, term_t operation)
   else if ( strcmp(name, "commit") == 0 ) status = entry->provider.commit(entry->provider.user);
   else if ( strcmp(name, "rollback") == 0 ) status = entry->provider.rollback(entry->provider.user);
   else { mt_free(name); return PL_domain_error("provider_transaction_operation", operation); }
+  bool completed = strcmp(name, "begin") != 0 || status != MT_OK;
   mt_free(name);
-  return provider_status(status, row->row.name, before);
+  foreign_t result = provider_status(status, row->row.name, before);
+  /* A participant completes once. Keeping this private blob until atom GC
+     would retain a closed provider's database after every cursor is gone.
+     The engine never rolls back a participant whose commit was attempted.
+     [tested: tests/test_providers.c; commit=WORKTREE] */
+  if ( completed )
+  { atom_t blob;
+    if ( !PL_get_atom(held, &blob) || !PL_free_blob(blob) )
+      return PL_resource_error("provider_participant_release");
+  }
+  return result;
 }
 
 /* Updates carry atoms directly, including opaque objects and counted text.

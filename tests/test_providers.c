@@ -204,6 +204,7 @@ static int test_providers(void)
   CHECK(mt_provider_close(m, "&c-provider"));
   CHECK(!counts.releases);
   mt_answers_free(answers);
+  CHECK(counts.releases == 1);
   mt_space_close(space);
 
   p = provider(&readonly_counts, false); p.add = NULL;

@@ -1191,7 +1191,9 @@ typedef struct mt_provider {
    another provider already owns, through the engine's own claim on the name.
    Open TAKES user through release on every path. Closing releases the name;
    suspended queries and transaction completion retain the old provider until
-   their last owner releases it. */
+   their last owner releases it. Completed transaction captures release eagerly,
+   so closing the final cursor after close runs release without waiting for GC
+   [tested: tests/test_providers.c; commit=WORKTREE]. */
 MT_API bool mt_provider_open(metta *runtime, const char *space,
                              mt_provider provider);
 MT_API bool mt_provider_close(metta *runtime, const char *space);
