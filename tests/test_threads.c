@@ -10,7 +10,11 @@
  *   [tested: test_threads.c; commit=b339084bb5625996fc88a31608d48ad31c575d1f],
  *   and after four threads dropped 4,000 handles while the main thread closed
  *   the runtime [tested: test_threads.c, test_drop_handles_while_closing;
- *   commit=e14d01465d3e233d5cb5ccd1fc9c685c20c70000].
+ *   commit=e14d01465d3e233d5cb5ccd1fc9c685c20c70000], and after a thread with
+ *   no engine dropped twice the atom-GC margin in handles, erasing none of
+ *   their records itself, and the main thread's next door erased them all
+ *   [tested: test_threads.c, test_handles_dropped_without_an_engine;
+ *   commit=WORKTREE].
  * Owns resources: two pthreads and their joined lifetimes; one runtime closed
  *   after both workers have detached.
  * Guarded by: C atomics coordinate rendezvous; each worker owns its result.
@@ -24,6 +28,7 @@
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define ROUNDS 32
@@ -159,6 +164,59 @@ static void *run_dropper(void *opaque)
   return NULL;
 }
 
+/* Handles dropped on a thread with no Prolog engine, twice the atom-GC
+   margin of them, so the unregister that crosses the margin happens on that
+   thread. Erasing there faulted in SWI's signalGCThread(), which reads the
+   thread's engine [measured 2026-09-24: 3 runs of 3 at 30,000 handles]. The
+   records wait for a thread with an engine instead: the drops erase none,
+   and the main thread's next door erases every one. */
+extern unsigned mt_test_record_erases(void);
+extern int64_t mt_test_agc_margin(void);
+
+static int test_handles_dropped_without_an_engine(metta *runtime)
+{ int64_t margin = mt_test_agc_margin();
+  size_t count = margin > 0 ? 2 * (size_t)margin : 1, i;
+  mt_atom **handles = malloc(count * sizeof *handles);
+  atomic_uint started = 0;
+  dropper d = { handles, 0, count, &started };
+  pthread_t thread;
+  unsigned before, during;
+  int failed = 0;
+
+  if ( !handles || margin < 0 )
+  { fprintf(stderr, "no room for %zu handles, or no agc_margin flag (%lld)\n",
+            count, (long long)margin);
+    free(handles);
+    return 1;
+  }
+  for (i = 0; i < count; i++)
+    if ( mt_kind_of(handles[i] = mt_test_foreign_handle((unsigned)(HANDLES + i))) != MT_HANDLE )
+    { fprintf(stderr, "test blob %zu did not decode as a handle\n", i);
+      return 1;
+    }
+  before = mt_test_record_erases();
+  if ( pthread_create(&thread, NULL, run_dropper, &d) != 0 ||
+       pthread_join(thread, NULL) != 0 )
+    return 1;
+  during = mt_test_record_erases() - before;
+  if ( during != 0 )
+  { fprintf(stderr, "a thread with no engine erased %u records itself\n", during);
+    failed++;
+  }
+  if ( mt_one_int(mt_run(runtime, "!(+ 20 22)")) != 42 )
+  { fprintf(stderr, "the engine failed after the drops: %s\n",
+            mt_errmsg() ? mt_errmsg() : "no message");
+    failed++;
+  }
+  if ( mt_test_record_erases() - before != count )
+  { fprintf(stderr, "the next door erased %u of %zu waiting records\n",
+            mt_test_record_erases() - before, count);
+    failed++;
+  }
+  free(handles);
+  return failed;
+}
+
 static int test_drop_handles_while_closing(metta *runtime)
 { static mt_atom *handles[HANDLES];
   dropper droppers[DROPPERS];
@@ -234,6 +292,7 @@ int main(void)
     failed++;
   }
   if ( !mt_undef(test.runtime, "thread-fail") ) failed++;
+  failed += test_handles_dropped_without_an_engine(test.runtime);
   failed += test_drop_handles_while_closing(test.runtime);
   mt_close(test.runtime);                   /* already closed: a no-op */
 

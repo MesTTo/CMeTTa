@@ -138,7 +138,7 @@ SOVERSION := $(firstword $(subst ., ,$(VERSION)))
 SOFILE    := libcmetta.so.$(VERSION)
 SONAME    := libcmetta.so.$(SOVERSION)
 
-.PHONY: all test bench examples kit surface docs version hardening sanitize runtime-memory \
+.PHONY: all test bench examples kit surface docs version hardening sanitize runtime-memory runtime-engineless-erase \
         install uninstall install-check clean FORCE
 
 kit: $(KIT)
@@ -306,6 +306,18 @@ sanitize:
 $(TEST_TMP)/swi-memory-probe: tests/swi_memory_probe.c .toolchain-stamp
 	@mkdir -p "$(TEST_TMP)"
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
+
+# The same rule for a host defect with no leak to count: SWI erasing records
+# on a thread with no Prolog engine faults once their atoms cross the atom-GC
+# margin. cmetta queues such records for a thread with an engine instead
+# (g_unerased), so only a patched host passes this target.
+# [measured 2026-09-24: make runtime-engineless-erase died of SIGSEGV 3 runs of 3]
+$(TEST_TMP)/swi-engineless-erase-probe: tests/swi_engineless_erase_probe.c .toolchain-stamp
+	@mkdir -p "$(TEST_TMP)"
+	$(CC) $(CFLAGS) -pthread -o $@ $< $(LDFLAGS) $(LDLIBS)
+
+runtime-engineless-erase: $(TEST_TMP)/swi-engineless-erase-probe
+	@"$(TEST_TMP)/swi-engineless-erase-probe"
 
 runtime-memory: $(TEST_TMP)/swi-memory-probe
 	@status=0; for scenario in baseline int64 unicode; do \

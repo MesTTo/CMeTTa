@@ -37,6 +37,10 @@
  *     engine's canonical N/D, which mt_bigrational() builds from any
  *     spelling of the same value [tested: tests/test_native_parity.c,
  *     test_wide_ratios_agree_with_the_engine; commit=WORKTREE]
+ *   - a handle dropped on a thread with no Prolog engine has its record
+ *     erased by the next thread that enters the engine, or by mt_close(),
+ *     never on the dropping thread [tested: tests/test_threads.c,
+ *     test_handles_dropped_without_an_engine; commit=WORKTREE]
  *   - mt_compare orders numbers of every width exactly, as the engine's
  *     msort does, allocating only for a BigInt or BigRational
  *     [tested: tests/test_cmetta.c, test_the_standard_order_is_the_engines;
@@ -167,6 +171,15 @@ static pl_function_t as_pl_function(mt_anyfn fn)
    mt_close(); plain integers would break both silently, so a compiler
    without C11 atomics is refused rather than given a build that races. */
 #error "cmetta needs C11 atomics (<stdatomic.h>): atom reference counts and handle release are shared across threads"
+#endif
+
+/* A path kept out of line and apart from the hot code that calls it, so the
+   caller stays small enough to inline. The GNU spelling, as cmetta.h's
+   MT_MUST_USE, and nothing elsewhere. */
+#if defined(__GNUC__) || defined(__clang__)
+#define MT_COLD __attribute__((cold, noinline))
+#else
+#define MT_COLD
 #endif
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && \
@@ -406,12 +419,46 @@ const char *mt_effect_str(mt_effect effect)
   return NULL;
 }
 
+/* Records whose handle was released on a thread with no Prolog engine. The
+   SWI manual lets such a thread call whatever takes no term_t, as PL_erase()
+   does, but erasing unregisters the record's atoms, and the unregister that
+   crosses the atom-GC margin signals the collector through the calling
+   thread's engine, which that thread lacks: signalGCThread() reads a NULL
+   engine and the process dies [measured 2026-09-24: 30,000 handles dropped
+   on one plain pthread faulted in signalGCThread 3 runs of 3, and the
+   close-time drop test faulted there under the gate; source: swipl-devel
+   src/pl-thread.c signalGCThread() and src/pl-atom.c considerAGC(), tag
+   V10.1.14; man/threads.plx, section foreignthread]. Such a record waits
+   here instead, as PyO3 queues a reference count change made while detached
+   and applies the queue at the next attach [source:
+   https://github.com/PyO3/pyo3/blob/1655cdfcbca94d59470e6c0edd4776c3ce421a5a/src/internal/state.rs,
+   ReferencePool::register_decref and drop_deferred_references]. The next
+   frame a thread opens erases the lot, since only a thread with an engine
+   can open one, and mt_close() erases what is left before cleanup, so the
+   list holds at most the drops between two engine calls. A pusher is an
+   eraser of the handshake beside g_record_erasers, so no push lands after
+   close has counted the erasers down. A push is a compare-and-swap onto the head and a drain
+   takes the whole list with one exchange, so neither locks and no two
+   drains share a record. frame_open() holds only the test for an empty list,
+   one relaxed load, and the drain is out of line: drawn into it, the drain
+   made frame_open too large to inline and cost term-out 112 instructions a
+   crossing [measured 2026-09-24, callgrind over 600 term-out crossings:
+   frame_open inlined and 0 instructions of its own, then out of line and
+   67,200]
+   [tested: tests/test_threads.c, test_handles_dropped_without_an_engine;
+   commit=WORKTREE]. */
+struct handle_ref;
+static struct handle_ref *MT_ATOMIC g_unerased;
+MT_COLD static void erase_unerased(void);
+
 /* A foreign frame, or 0 with the reason recorded. SWI answers 0 when the
    stacks cannot hold another frame and when atom garbage collection is
    running in this thread, which a blob release callback reaches, and a 0
    handed to PL_discard_foreign_frame is undefined behaviour
    [source: SWI-Prolog manual, PL_open_foreign_frame, "Returns (fid_t)0 on
-   failure"]. Every site in this file that opens a frame asks here. */
+   failure"]. Every site in this file that opens a frame asks here, and a
+   frame opens only on a thread with an engine, so it is also where the
+   records released on threads without one are erased. */
 static fid_t frame_open(const char *door)
 { fid_t f = PL_open_foreign_frame();
   if ( !f )
@@ -419,6 +466,8 @@ static fid_t frame_open(const char *door)
             "%s could not open a Prolog foreign frame: the engine's stacks "
             "are full, or this thread is inside atom garbage collection",
             door);
+  else if ( atomic_load_explicit(&g_unerased, memory_order_relaxed) )
+    erase_unerased();
   return f;
 }
 
@@ -1382,6 +1431,7 @@ typedef struct handle_id { uint64_t generation; atom_t blob; } handle_id;
 
 typedef struct handle_ref
 { record_t  record;
+  struct handle_ref *next;  /* in g_unerased, waiting for a thread with an engine */
   handle_id id;
   char     *key;        /* a carried term's variant key, owned; NULL for a blob */
   size_t    key_len;
@@ -3061,13 +3111,7 @@ static MT_ATOMIC uint64_t g_fresh_variables;
    decode_leaf and decode save more registers on every call, which every leaf
    of every answer pays whether or not it holds a variable [measured
    2026-09-24, callgrind over 600 term-out crossings of a ground term:
-   decode +263 instructions a crossing, decode_leaf +15 a leaf]. The GNU
-   spelling, as cmetta.h's MT_MUST_USE, and nothing elsewhere. */
-#if defined(__GNUC__) || defined(__clang__)
-#define MT_COLD __attribute__((cold, noinline))
-#else
-#define MT_COLD
-#endif
+   decode +263 instructions a crossing, decode_leaf +15 a leaf]. */
 
 /* The name of one variable in the answer being decoded: the name it already
    had in this crossing, its source name from the answer's name state, or a
@@ -3228,24 +3272,55 @@ static mt_atom *written(term_t t)
 static MT_ATOMIC unsigned g_record_erasers;
 static MT_ATOMIC bool     g_closing;
 
+
 #ifdef MT_TEST_FAULTS
 static MT_ATOMIC unsigned g_test_record_erases;
 #endif
 
+static void record_erase(record_t record)
+{ PL_erase(record);
+#ifdef MT_TEST_FAULTS
+  MT_INC(&g_test_record_erases);
+#endif
+}
+
+/* Erase and free a taken list, on a thread with an engine. */
+static void erase_list(handle_ref *h)
+{ while ( h )
+  { handle_ref *next = h->next;
+    record_erase(h->record);
+    mt_free(h);
+    h = next;
+  }
+}
+
+/* Erase what waits, under the handshake with mt_close(). */
+MT_COLD static void erase_unerased(void)
+{ MT_SC_ADD(&g_record_erasers, 1u);
+  if ( !MT_SC_LOAD(&g_closing) ) erase_list(atomic_exchange(&g_unerased, NULL));
+  MT_SC_ADD(&g_record_erasers, (unsigned)-1);
+}
+
+/* The handle's names and key go first: once h is on the list, a drain on
+   another thread may free it at any moment. */
 static void handle_release(void *owner)
 { handle_ref *h = owner;
   size_t i;
-  MT_SC_ADD(&g_record_erasers, 1u);
-  if ( !MT_SC_LOAD(&g_closing) && g_open && h->id.generation == g_runtime.generation )
-  { PL_erase(h->record);
-#ifdef MT_TEST_FAULTS
-    MT_INC(&g_test_record_erases);
-#endif
-  }
-  MT_SC_ADD(&g_record_erasers, (unsigned)-1);
   for (i = 0; i < h->n_names; i++) mt_free(h->names[i]);
   mt_free(h->names);
   mt_free(h->key);
+  MT_SC_ADD(&g_record_erasers, 1u);
+  if ( !MT_SC_LOAD(&g_closing) && g_open && h->id.generation == g_runtime.generation )
+  { if ( PL_thread_self() >= 0 )
+      record_erase(h->record);
+    else
+    { handle_ref *head = atomic_load(&g_unerased);
+      do h->next = head;
+      while ( !atomic_compare_exchange_weak(&g_unerased, &head, h) );
+      h = NULL;                          /* the list owns it now */
+    }
+  }
+  MT_SC_ADD(&g_record_erasers, (unsigned)-1);
   mt_free(h);
 }
 
@@ -5134,6 +5209,9 @@ void mt_close(metta *runtime)
   MT_SC_STORE(&g_closing, true);
   while ( MT_SC_LOAD(&g_record_erasers) != 0 )
     ;
+  /* Every pusher has finished and none can start, and this thread has the
+     engine the waiting records need. */
+  erase_list(atomic_exchange(&g_unerased, NULL));
   cleaned = PL_cleanup(0);
   if ( cleaned == PL_CLEANUP_CANCELED )
   { MT_SC_STORE(&g_closing, false);
@@ -6671,6 +6749,22 @@ mt_atom *mt_test_foreign_handle(unsigned seed)
                   ? decode(blob, 0) : NULL;
   frame_close(frame);
   return handle;
+}
+
+/* The records this library has erased, and the engine's atom-GC margin: the
+   drop test sizes itself past the margin, so the unregister that crosses it
+   happens on the thread without an engine, and counts that no erase happened
+   there. */
+unsigned mt_test_record_erases(void)
+{ return MT_SC_LOAD(&g_test_record_erases);
+}
+
+int64_t mt_test_agc_margin(void)
+{ atom_t name = PL_new_atom("agc_margin");
+  int64_t margin = 0;
+  bool known = PL_current_prolog_flag(name, PL_INTEGER, &margin);
+  PL_unregister_atom(name);
+  return known ? margin : -1;
 }
 
 /* A compound over a long list, wrap([1, 2, ..., length]), decodes as the

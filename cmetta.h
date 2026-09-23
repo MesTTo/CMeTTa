@@ -136,7 +136,12 @@
  *
  * Guarded by: nothing, deliberately. An atom is immutable and its refcount is
  *   atomic, so building, sharing and dropping atoms is safe from any thread,
- *   and the error state is thread-local. Registration tables are not guarded:
+ *   and the error state is thread-local. A handle dropped on a thread with no
+ *   Prolog engine keeps its engine record until the next thread with one
+ *   enters the engine, or mt_close(), erases it, since erasing where no
+ *   engine is can make SWI signal atom collection through an engine that is
+ *   not there [tested: tests/test_threads.c,
+ *   test_handles_dropped_without_an_engine; commit=WORKTREE]. Registration tables are not guarded:
  *   register and withdraw while evaluation workers are quiescent. A custom
  *   allocator must support the threads that allocate and release its blocks.
  *

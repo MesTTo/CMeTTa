@@ -5,6 +5,22 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Erase a handle's engine record only on a thread that has a Prolog engine. A
+  handle dropped on a plain C thread erased its record there, and erasing
+  unregisters the record's atoms; the unregister that crossed SWI's atom-GC
+  margin signalled the collector through the calling thread's engine, which a
+  plain thread lacks, and the process died in `signalGCThread`: 30,000 handles
+  dropped on one pthread crashed 3 runs of 3, and the close-time drop test
+  crashed in both gate lanes that ran it and in 1 later run of 6. Such a
+  record now waits on a lock-free list
+  until the next thread with an engine opens a foreign frame, or `mt_close`,
+  erases it, as PyO3 queues a reference count change made while detached. The
+  drop costs a compare-and-swap and a door one relaxed load when nothing
+  waits. `test_handles_dropped_without_an_engine` drops twice the engine's
+  `agc_margin` in handles on a thread with no engine and checks that none is
+  erased there and all are by the next door; without the list it crashes 3
+  runs of 3.
+
 - Carry a rational of any width, and compare numbers of any width. An engine
   rational whose numerator or denominator passed int64 was refused as an
   unsupported value, so `(math-rational 1 (pow-math 2 200))` answered nothing
