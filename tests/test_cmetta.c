@@ -18,6 +18,7 @@
 #include <SWI-Prolog.h>
 
 #include <math.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -1624,6 +1625,98 @@ static void test_alpha_equivalence_is_a_renaming(metta *m)
   CHECK(mt_ok());
 }
 
+/* A random atom of every kind the standard order ranks, drawn so that equal
+   values of different numeric kinds and shared prefixes are common. */
+static mt_atom *order_atom(unsigned depth)
+{ static const char *const symbols[] = { "a", "b", "Apple", "zeta", "\xc3\xa9" };
+  static const char *const texts[] = { "a", "B", "text", "" };
+  static const char *const wide[] = { "99999999999999999999", "-99999999999999999999",
+                                      "18446744073709551616", "9223372036854775808" };
+  static const double floats[] = { 0.0, -0.0, 0.5, 2.0, -1.5, 1e19, 1e20,
+                                   9007199254740996.0, 0.3333333333333333 };
+  switch ( alpha_draw(depth ? 11 : 10) )
+  { case 0: return N((int64_t)alpha_draw(5) - 2);
+    case 1: return N(alpha_draw(2) ? INT64_MAX : INT64_MIN);
+    case 2: return R(floats[alpha_draw(9)]);
+    case 3: return R(NAN);
+    case 4: return mt_bigint(wide[alpha_draw(4)]);
+    case 5: return mt_rational((int64_t)alpha_draw(7) - 3, (int64_t)alpha_draw(3) + 2);
+    case 6: return T(texts[alpha_draw(4)]);
+    case 7: return S(symbols[alpha_draw(5)]);
+    case 8: return B(alpha_draw(2) != 0);
+    case 9: return mt_unit();
+    default:
+    { mt_atom *kids[3];
+      unsigned n = alpha_draw(3) + 1, i;
+      for (i = 0; i < n; i++) kids[i] = order_atom(depth - 1);
+      return mt_exprv(n, kids);
+    }
+  }
+}
+
+static void test_the_standard_order_is_the_engines(metta *m)
+{ unsigned round, agreed = 0, pairs = 0;
+
+  CASE("mixed numbers compare by exact value, a float first on a tie");
+  { mt_atom *two = N(2), *two_f = R(2.0), *half = mt_rational(1, 2), *half_f = R(0.5),
+            *big = mt_bigint("99999999999999999999"), *e19 = R(1e19), *e20 = R(1e20),
+            *exact = N(9007199254740995), *above = R(9007199254740996.0),
+            *nan = R(NAN), *neg0 = R(-0.0), *pos0 = R(0.0), *zero = N(0);
+    CHECK(mt_compare(two_f, two) < 0 && mt_compare(two, two_f) > 0);
+    CHECK(mt_compare(half_f, half) < 0);
+    CHECK(mt_compare(e19, big) < 0 && mt_compare(big, e20) < 0);
+    CHECK(mt_compare(exact, above) < 0);   /* as floats they would tie */
+    CHECK(mt_compare(nan, zero) < 0 && mt_compare(nan, nan) == 0);
+    CHECK(mt_compare(neg0, pos0) < 0 && mt_compare(pos0, zero) < 0);
+    mt_drop(two); mt_drop(two_f); mt_drop(half); mt_drop(half_f); mt_drop(big);
+    mt_drop(e19); mt_drop(e20); mt_drop(exact); mt_drop(above); mt_drop(nan);
+    mt_drop(neg0); mt_drop(pos0); mt_drop(zero);
+  }
+
+  CASE("the classes rank as the engine ranks them, and qsort takes mt_order");
+  { mt_atom *items[] = { E("x", 1), mt_unit(), S("zeta"), T("text"), N(3), R(2.5),
+                         B(true), S("Apple") };
+    size_t n = sizeof items / sizeof items[0], i;
+    qsort(items, n, sizeof items[0], mt_order);
+    CHECK(mt_kind_of(items[0]) == MT_FLOAT && mt_kind_of(items[1]) == MT_INT);
+    CHECK(mt_kind_of(items[2]) == MT_TEXT && mt_len(items[3]) == 0 &&
+          mt_kind_of(items[3]) == MT_EXPR);
+    CHECK(strcmp(mt_name(items[4]), "Apple") == 0 && mt_kind_of(items[5]) == MT_BOOL);
+    CHECK(strcmp(mt_name(items[6]), "zeta") == 0 && mt_len(items[7]) == 2);
+    for (i = 0; i < n; i++) mt_drop(items[i]);
+  }
+
+  CASE("the engine's msort never answers two atoms mt_compare would swap");
+  mt_clear();
+  for (round = 0; round < 40; round++)
+  { mt_atom *kids[24];
+    mt_atom *sorted;
+    size_t i;
+    for (i = 0; i < 24; i++) kids[i] = order_atom(2);
+    sorted = mt_one(mt_eval(m, E("msort", mt_exprv(24, kids))));
+    if ( !sorted || mt_len(sorted) != 24 )
+    { CHECK(!"msort answered a list of the same length");
+      mt_drop(sorted);
+      continue;
+    }
+    for (i = 0; i + 1 < 24; i++)
+    { const mt_atom *x = mt_at(sorted, i), *y = mt_at(sorted, i + 1);
+      int order = mt_compare(x, y);
+      /* A tie is only right between atoms the engine cannot tell apart. */
+      bool fine = order < 0 || (order == 0 && (mt_eq(x, y) ||
+                  mt_kind_of(x) == MT_BOOL || mt_kind_of(y) == MT_BOOL));
+      if ( !fine )
+        fprintf(stderr, "order disagreement: engine put %s before %s\n",
+                mt_show(x), mt_show(y));
+      agreed += fine;
+      pairs++;
+    }
+    mt_drop(sorted);
+  }
+  CHECK(pairs == 40 * 23 && agreed == pairs);
+  CHECK(mt_ok());
+}
+
 static void test_a_refusal_carries_the_engines_remedy_and_ground(metta *m)
 { CASE("a refusal says what to do about it, in the engine's own words");
   mt_clear();
@@ -2002,6 +2095,7 @@ int main(void)
   test_variable_identity_survives_the_round_trip();
   test_an_answer_keeps_variable_identity(m);
   test_alpha_equivalence_is_a_renaming(m);
+  test_the_standard_order_is_the_engines(m);
   test_a_refusal_carries_the_engines_remedy_and_ground(m);
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_the_counters_measure_engine_work(m);

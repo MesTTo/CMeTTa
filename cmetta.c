@@ -1213,6 +1213,290 @@ bool mt_alpha_eq(const mt_atom *a, const mt_atom *b)
   return equal;
 }
 
+/* ------------------------------------------------------------------ *
+ * The standard order of terms
+ * ------------------------------------------------------------------ */
+
+/* Every number as an exact ratio of two magnitudes, which is how a mixed
+   comparison stays exact: a float is its integer ratio M * 2^E, the way
+   CPython's fractions.Fraction compares against a float
+   [source: https://github.com/python/cpython/blob/v3.13.0/Lib/fractions.py,
+   Fraction._richcmp]. Magnitudes are little-endian base-2^32 limbs, long
+   enough for any finite double's integer ratio (2^1074) times an int64. */
+enum { EXACT_LIMBS = 80 };
+
+typedef struct exact_magnitude
+{ uint32_t limb[EXACT_LIMBS];
+  size_t   n;                    /* limbs in use; zero is n == 0 */
+} exact_magnitude;
+
+typedef struct exact_number
+{ int             sign;          /* -1, 0 or 1 */
+  bool            nan;           /* sorts before every other number */
+  bool            infinite;      /* its magnitude is past every finite one */
+  bool            is_float;      /* breaks a tie: a float sorts first */
+  exact_magnitude num, den;
+} exact_number;
+
+static void magnitude_trim(exact_magnitude *m)
+{ while ( m->n && m->limb[m->n - 1] == 0 ) m->n--;
+}
+
+static void magnitude_of_u64(exact_magnitude *m, uint64_t v)
+{ m->limb[0] = (uint32_t)v;
+  m->limb[1] = (uint32_t)(v >> 32);
+  m->n = 2;
+  magnitude_trim(m);
+}
+
+/* m = m * factor + add, for one decimal digit at a time. */
+static bool magnitude_mul_add(exact_magnitude *m, uint32_t factor, uint32_t add)
+{ uint64_t carry = add;
+  size_t i;
+  for (i = 0; i < m->n; i++)
+  { uint64_t v = (uint64_t)m->limb[i] * factor + carry;
+    m->limb[i] = (uint32_t)v;
+    carry = v >> 32;
+  }
+  if ( carry )
+  { if ( m->n == EXACT_LIMBS ) return false;
+    m->limb[m->n++] = (uint32_t)carry;
+  }
+  return true;
+}
+
+static bool magnitude_shift_left(exact_magnitude *m, unsigned bits)
+{ size_t words = bits / 32, i;
+  unsigned rest = bits % 32;
+  if ( m->n == 0 ) return true;
+  if ( m->n + words + 1 > EXACT_LIMBS ) return false;
+  m->limb[m->n + words] = 0;
+  for (i = m->n; i-- > 0; )
+  { uint64_t v = (uint64_t)m->limb[i] << rest;
+    m->limb[i + words + 1] |= (uint32_t)(v >> 32);
+    m->limb[i + words] = (uint32_t)v;
+  }
+  for (i = 0; i < words; i++) m->limb[i] = 0;
+  m->n += words + 1;
+  magnitude_trim(m);
+  return true;
+}
+
+static int magnitude_cmp(const exact_magnitude *a, const exact_magnitude *b)
+{ size_t i;
+  if ( a->n != b->n ) return a->n < b->n ? -1 : 1;
+  for (i = a->n; i-- > 0; )
+    if ( a->limb[i] != b->limb[i] ) return a->limb[i] < b->limb[i] ? -1 : 1;
+  return 0;
+}
+
+/* out = a * b, schoolbook. Time O(|a| * |b|) limb products. */
+static bool magnitude_mul(exact_magnitude *out, const exact_magnitude *a,
+                          const exact_magnitude *b)
+{ size_t i, j;
+  if ( a->n + b->n > EXACT_LIMBS ) return false;
+  memset(out->limb, 0, (a->n + b->n) * sizeof out->limb[0]);
+  for (i = 0; i < a->n; i++)
+  { uint64_t carry = 0;
+    for (j = 0; j < b->n; j++)
+    { uint64_t v = (uint64_t)a->limb[i] * b->limb[j] + out->limb[i + j] + carry;
+      out->limb[i + j] = (uint32_t)v;
+      carry = v >> 32;
+    }
+    out->limb[i + b->n] = (uint32_t)carry;
+  }
+  out->n = a->n + b->n;
+  magnitude_trim(out);
+  return true;
+}
+
+/* A number atom as an exact ratio; false for a kind that is not a number or
+   a value past the fixed width, which no finite double reaches. */
+static bool exact_of(const mt_atom *a, exact_number *x)
+{ memset(x, 0, sizeof *x);
+  magnitude_of_u64(&x->den, 1);
+  switch ( a->kind )
+  { case MT_INT:
+      x->sign = (a->u.i > 0) - (a->u.i < 0);
+      magnitude_of_u64(&x->num, a->u.i < 0 ? (uint64_t)0 - (uint64_t)a->u.i
+                                           : (uint64_t)a->u.i);
+      return true;
+    case MT_RATIONAL:
+      x->sign = (a->u.r.num > 0) - (a->u.r.num < 0);
+      magnitude_of_u64(&x->num, a->u.r.num < 0 ? (uint64_t)0 - (uint64_t)a->u.r.num
+                                               : (uint64_t)a->u.r.num);
+      magnitude_of_u64(&x->den, (uint64_t)a->u.r.den);
+      return true;
+    case MT_BIGINT:
+    { const char *digit = a->u.t.text;
+      x->sign = 1;
+      if ( *digit == '-' ) { x->sign = -1; digit++; }
+      for (; *digit; digit++)
+        if ( !magnitude_mul_add(&x->num, 10, (uint32_t)(*digit - '0')) ) return false;
+      if ( x->num.n == 0 ) x->sign = 0;
+      return true;
+    }
+    case MT_FLOAT:
+    { double f = a->u.f;
+      int exponent;
+      x->is_float = true;
+      if ( isnan(f) ) { x->nan = true; return true; }
+      x->sign = f > 0 ? 1 : f < 0 ? -1 : 0;
+      if ( isinf(f) ) { x->infinite = true; return true; }
+      if ( f == 0 ) return true;
+      /* |f| = mantissa * 2^(exponent - 53), the mantissa an exact 53-bit
+         integer, so the ratio below is the float's value exactly. */
+      { double mantissa = ldexp(frexp(fabs(f), &exponent), 53);
+        magnitude_of_u64(&x->num, (uint64_t)mantissa);
+        exponent -= 53;
+        if ( exponent >= 0 ) return magnitude_shift_left(&x->num, (unsigned)exponent);
+        return magnitude_shift_left(&x->den, (unsigned)-exponent);
+      }
+    }
+    default:
+      return false;
+  }
+}
+
+/* Numbers by value, exactly; a float before an exact number of equal value,
+   NaN before everything, -0.0 before 0.0. The engine's own order, measured:
+   msort answers (NaN -1 0 1.0), (-0.0 0.0 0 1 1.5 2.0 2 3), (0 1r3 0.5 1r2 1)
+   and (1e19 99999999999999999999 1e20). */
+static int compare_numbers(const mt_atom *a, const mt_atom *b)
+{ exact_number x, y;
+  exact_magnitude left, right;
+  int order;
+  if ( !exact_of(a, &x) || !exact_of(b, &y) )
+    return err_set(MT_NOMEM, "a number too wide to compare exactly"), 0;
+  if ( x.nan || y.nan )
+    return x.nan && y.nan ? 0 : x.nan ? -1 : 1;
+  if ( x.sign != y.sign ) return x.sign < y.sign ? -1 : 1;
+  if ( x.infinite || y.infinite )
+    order = x.infinite && y.infinite ? 0 : x.infinite ? 1 : -1;
+  else if ( !magnitude_mul(&left, &x.num, &y.den) ||
+            !magnitude_mul(&right, &y.num, &x.den) )
+    return err_set(MT_NOMEM, "a number too wide to compare exactly"), 0;
+  else
+    order = magnitude_cmp(&left, &right);
+  if ( x.sign < 0 ) order = -order;
+  if ( order ) return order;
+  if ( x.is_float != y.is_float ) return x.is_float ? -1 : 1;
+  if ( x.is_float && x.sign == 0 )       /* -0.0 before 0.0 */
+    return (signbit(a->u.f) != 0) == (signbit(b->u.f) != 0) ? 0
+         : signbit(a->u.f) ? -1 : 1;
+  return 0;
+}
+
+/* The standard order's classes, as the engine's msort ranks them: variables,
+   numbers, strings, host values, the empty expression, symbols, then every
+   other expression [source: SWI-Prolog 10.1 manual, section 4.6.1 Standard
+   Order of Terms; measured 2026-09-24: msort answers
+   (2.5 3 1234...890 "text" () Apple apple false true zeta (x 1))]. */
+static int order_class(const mt_atom *a)
+{ switch ( a->kind )
+  { case MT_VARIABLE: return 0;
+    case MT_INT: case MT_FLOAT: case MT_BIGINT: case MT_RATIONAL: return 1;
+    case MT_TEXT: return 2;
+    case MT_OBJECT: case MT_HANDLE: return 3;
+    case MT_EXPR: return a->u.e.n == 0 ? 4 : 6;
+    case MT_SYMBOL: case MT_BOOL: case MT_SPACE: return 5;
+    case MT_NONE: break;
+  }
+  return 7;
+}
+
+/* Bytes as the engine orders names: code point order, which UTF-8 byte order
+   preserves, a prefix first. */
+static int compare_bytes(const char *a, size_t an, const char *b, size_t bn)
+{ int order = memcmp(a, b, an < bn ? an : bn);
+  if ( order ) return order < 0 ? -1 : 1;
+  return an == bn ? 0 : an < bn ? -1 : 1;
+}
+
+static void name_of(const mt_atom *a, const char **text, size_t *len)
+{ if ( a->kind == MT_BOOL )
+  { *text = a->u.b ? "true" : "false";     /* the engine's atoms for them */
+    *len = strlen(*text);
+    return;
+  }
+  *text = a->u.t.text;
+  *len = a->u.t.len;
+}
+
+/* Two atoms with no children to compare. */
+static int compare_leaves(const mt_atom *a, const mt_atom *b)
+{ const char *x, *y;
+  size_t xn, yn;
+  int ca = order_class(a), cb = order_class(b);
+  if ( ca != cb ) return ca < cb ? -1 : 1;
+  switch ( ca )
+  { case 1:
+      return compare_numbers(a, b);
+    case 3:
+      if ( a->kind != b->kind ) return a->kind == MT_OBJECT ? -1 : 1;
+      if ( a->kind == MT_OBJECT )
+        return a->u.box == b->u.box ? 0 : (uintptr_t)a->u.box < (uintptr_t)b->u.box ? -1 : 1;
+      return compare_bytes(a->u.t.text, a->u.t.len, b->u.t.text, b->u.t.len);
+    case 4:
+      return 0;
+    default:        /* variables, strings and symbols by their bytes */
+      name_of(a, &x, &xn);
+      name_of(b, &y, &yn);
+      return compare_bytes(x, xn, y, yn);
+  }
+}
+
+/* The standard order of terms over atoms: the order the engine's msort and
+   sort-atom answer in. Expressions compare child by child and a prefix sorts
+   first, as SWI's list-shaped expressions do. Time O(n) in the shorter atom's
+   size, with an explicit stack; space O(d) for depth d. */
+int mt_compare(const mt_atom *a, const mt_atom *b)
+{ pair_frame fixed[MT_WALK_FRAMES];
+  pair_stack frames;
+  pair_frame *f;
+  int order = 0;
+
+  if ( !a || !b )
+  { err_set(MT_MISUSE, "mt_compare was given NULL");
+    return a ? 1 : b ? -1 : 0;
+  }
+  stack_init(&frames, fixed);
+  for (;;)
+  { if ( a != b )
+    { int ca = order_class(a), cb = order_class(b);
+      if ( ca == 6 && cb == 6 )
+      { /* The children are compared below, and the lengths decide a prefix. */
+        if ( !pair_push(&frames, a, b, a->u.e.n < b->u.e.n ? a->u.e.n : b->u.e.n) )
+        { err_set(MT_NOMEM, "out of memory comparing two nested expressions");
+          break;
+        }
+      } else if ( (order = compare_leaves(a, b)) != 0 )
+        break;
+    }
+    a = b = NULL;
+    while ( (f = stack_top(&frames)) != NULL )
+    { if ( f->at < f->n )
+      { a = f->a->u.e.kids[f->at];
+        b = f->b->u.e.kids[f->at];
+        f->at++;
+        break;
+      }
+      if ( f->a->u.e.n != f->b->u.e.n )
+      { order = f->a->u.e.n < f->b->u.e.n ? -1 : 1;
+        break;
+      }
+      stack_pop(&frames);
+    }
+    if ( order || !a ) break;
+  }
+  stack_free(&frames);
+  return order;
+}
+
+int mt_order(const void *a, const void *b)
+{ return mt_compare(*(const mt_atom *const *)a, *(const mt_atom *const *)b);
+}
+
 /* RFC 9923 defines FNV-1a as xor-then-multiply per input octet and recommends
    it for general non-cryptographic use. This hash is deliberately an
    in-process table hash rather than a persistent wire value, so native byte

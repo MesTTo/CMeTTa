@@ -461,6 +461,26 @@ MT_API bool mt_eq(const mt_atom *a, const mt_atom *b);
    test_alpha_equivalence_is_a_renaming; commit=52d89c668f800fe58692a0b3a3a733591e39e94e]. */
 MT_API bool mt_alpha_eq(const mt_atom *a, const mt_atom *b);
 
+/* The standard order of terms, the order the engine's msort answers in:
+   negative, zero or positive as a sorts before, with or after b. Variables
+   come first, then numbers by exact value (a float before an exact number of
+   equal value, NaN first, -0.0 before 0.0), then strings, host values, the
+   empty expression, symbols (True and False as the engine's atoms true and
+   false), and other expressions child by child with a prefix first. The
+   engine orders variables by age, which C cannot see; here they order by
+   name. Needs no engine; NULL records MT_MISUSE.
+
+   mt_order is the same order shaped for qsort and bsearch over an array of
+   atom pointers, such as an mt_list's items:
+
+       mt_list all = mt_all(mt_atoms(kb));
+       qsort(all.items, all.len, sizeof *all.items, mt_order);
+
+   [tested: tests/test_cmetta.c, test_the_standard_order_is_the_engines;
+   commit=WORKTREE] */
+MT_API int mt_compare(const mt_atom *a, const mt_atom *b);
+MT_API int mt_order(const void *a, const void *b);
+
 /* Structural FNV-1a hash matching mt_eq(): equal atoms always hash alike,
    signed zeros remain distinct, all NaN payloads agree, counted text includes
    embedded NUL, and C objects hash by identity. This is a non-cryptographic,

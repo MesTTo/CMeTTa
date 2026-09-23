@@ -91,7 +91,7 @@ remains a shared dependency.
 | Constructors, marked `MT_MUST_USE` | `mt_sym`, `mt_var`, `mt_text`, `mt_textn`, `mt_num`, `mt_real`, `mt_bool`, `mt_unit`, `mt_bigint`, `mt_rational`, `mt_spaceref`, `mt_exprv`, `mt_object`, `mt_function` |
 | C argument conversion | `mt_expr`, `mt_atom_of`; helpers `mt_num_`, `mt_real_`, `mt_same`, `mt_same_c` |
 | References | `mt_keep`, `mt_drop` |
-| Inspection | `mt_kind_of`, `mt_kind_str`, `mt_name`, `mt_name_len`, `mt_int`, `mt_float`, `mt_truth`, `mt_ratio_of`, `mt_len`, `mt_at`, `mt_eq`, `mt_alpha_eq`, `mt_hash` |
+| Inspection | `mt_kind_of`, `mt_kind_str`, `mt_name`, `mt_name_len`, `mt_int`, `mt_float`, `mt_truth`, `mt_ratio_of`, `mt_len`, `mt_at`, `mt_eq`, `mt_alpha_eq`, `mt_compare`, `mt_order`, `mt_hash` |
 | Unification | `mt_unify`, `mt_unifyv`, `mt_bindings_len`, `mt_binding`, `mt_binding_var`, `mt_binding_value`, `mt_bindings_free`, `mt_substitute` |
 | Spaces | `mt_self`, `mt_catalog`, `mt_space_open`, `mt_space_close`, `mt_space_drop`, `mt_space_name` |
 | Closed scopes | `mt_transaction`, `mt_speculate` |
@@ -222,6 +222,15 @@ C splits the codec's Number tag into four kinds, and reading promotes only where
 `=alpha`: `(f $x $y)` matches `(f $a $b)` but not `(f $a $a)`, and each `_` is
 a variable of its own. It is how a program asks whether an answer is the atom
 it expected when the answer's variables carry engine names.
+
+`mt_compare` is the engine's standard order of terms, the order `msort`
+answers in, exact across integers, ratios, big integers and floats; `mt_order`
+is the same order shaped for `qsort`:
+
+```c
+mt_list all = mt_all(mt_atoms(kb));
+qsort(all.items, all.len, sizeof *all.items, mt_order);
+```
 
 The hash uses process-local object addresses and native byte order, so it isn't a stored or transmitted atom ID.
 

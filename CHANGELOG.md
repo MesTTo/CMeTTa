@@ -5,6 +5,15 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Add `mt_compare`, the engine's standard order of terms, and `mt_order`, the
+  same order for `qsort`. Python atoms sort in the engine's term order and C
+  atoms could not be sorted at all, so a C program had to ask the engine to
+  `msort` a list it already held. Numbers compare by exact value across
+  integers, ratios, big integers and floats, through each float's integer
+  ratio, because the engine's order is exact: `9007199254740995` sorts before
+  `9007199254740996.0`, which comparing as floats would call a tie. 920
+  adjacent pairs of random mixed atoms from the engine's `msort` agree.
+
 - Add `mt_alpha_eq`, MeTTa's `=alpha` over C atoms: equality up to a
   one-to-one renaming of variables, with each `_` a variable of its own. The
   Python seat's atoms answer `alpha_eq` and C had only `mt_eq`, which compares

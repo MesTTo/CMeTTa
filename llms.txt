@@ -68,7 +68,9 @@ canonicalizes decimal spelling, folding values that fit to MT_INT.
 
 `mt_eq` and `mt_hash` compare structure. Hashes include process-local object
 identity and must not be persistent IDs. `mt_alpha_eq` is MeTTa's `=alpha`:
-equality up to a one-to-one renaming of variables, each `_` its own variable. `mt_unify` and `mt_unifyv` borrow
+equality up to a one-to-one renaming of variables, each `_` its own variable.
+`mt_compare` is the standard order `msort` sorts in, exact across numeric kinds;
+`mt_order` shapes it for `qsort` over an array of atom pointers. `mt_unify` and `mt_unifyv` borrow
 their inputs and return owned bindings; a mismatch is NULL without an error.
 Use `mt_binding`, `mt_binding_var`, `mt_binding_value`, `mt_bindings_len`
 and `mt_substitute`, then `mt_bindings_free`.
