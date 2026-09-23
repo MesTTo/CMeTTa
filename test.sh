@@ -19,7 +19,16 @@
 
 set -eu
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
-# The enclosing gate owns deadlines; this entry point also runs standalone.
-# [tested: check.sh c-binding in an isolated component; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5]
-make --quiet -C "$HERE" clean
-exec make --quiet -C "$HERE" test
+# bounded.sh is the superproject's one definition of the ceiling and of the
+# link to the process that started the command. A standalone checkout of this
+# component has no ../../tools, and no enclosing gate either, so there the
+# command runs as itself.
+bounded() {
+    if [ -f "$HERE/../../tools/bounded.sh" ]; then
+        sh "$HERE/../../tools/bounded.sh" "$@"
+    else
+        "$@"
+    fi
+}
+bounded make --quiet -C "$HERE" clean
+bounded make --quiet -C "$HERE" test
