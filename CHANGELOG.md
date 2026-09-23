@@ -5,6 +5,21 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Stop a decode from aborting the process on terms with many variables, and
+  bound every term walk's SWI references by its depth. Naming a variable
+  walked the engine's name list making two term references per pair and kept
+  them, so a parse of 3,000 distinct variables under a 16 MB stack limit, or
+  16,000 under the default, filled the stacks and passed the 0 that followed
+  to PL_get_arg, which aborts. Those references now live in a frame per call,
+  decode keeps one reference per depth rather than one per sub-expression,
+  reading each element into the next depth's so descending copies nothing,
+  and a handle's key walk keeps two per level, a list's tail
+  taking its cell's level, so a handle over a 400,000-element list decodes
+  under a 16 MB limit where it ran out of memory up to 32 MB. A compound
+  handle's text is again the engine's written form, so mt_name() answers
+  partial(+,[1]) rather than the key it is compared by; the key now sits
+  beside the record and identifies blobs within their runtime too.
+
 - Make a compound handle's identity injective and a handle's release safe
   against a concurrent close. A compound was identified by its quoted text,
   which prints two blobs, or two variables, alike; it now carries a key that

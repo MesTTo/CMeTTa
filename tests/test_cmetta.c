@@ -1729,6 +1729,9 @@ static void test_an_engine_value_crosses_back_whole(metta *m)
   CHECK(mt_kind_of(partial) == MT_HANDLE);
   CHECK(partial && strcmp(mt_show(partial), "(partial + (1))") == 0);
 
+  CASE("its name is the engine's written form, not the key it is compared by");
+  CHECK(partial && mt_name(partial) && strcmp(mt_name(partial), "partial(+,[1])") == 0);
+
   CASE("the handle goes back as the identical value, so it still applies");
   CHECK(mt_one_int(mt_eval(m, E(mt_keep(partial), 2))) == 3);
   again = mt_one(mt_eval(m, E("id", E("+", 1))));
@@ -1751,6 +1754,40 @@ static void test_an_engine_value_crosses_back_whole(metta *m)
   CHECK(rows == 2 && mt_ok());
   mt_drop(partial);
   mt_clear();
+}
+
+/* Naming a parse's variables once kept two term references per name pair for
+   every variable, v times the list's length, and handed the 0 the stacks
+   answered once they filled to PL_get_arg, which aborts the process: 3,000
+   variables under a 16 MB stack limit did [measured 2026-09-24]. */
+static void test_many_variables_are_named_without_aborting(metta *m)
+{ enum { COUNT = 3000 };
+  mt_limits old = mt_limits_of(m), tight = old;
+  char *source = malloc(COUNT * 8 + 8), *at = source;
+  char want[16];
+  mt_atom *parsed;
+  int i, named = 0;
+
+  CASE("a parse of 3,000 distinct variables names each one under a 16 MB stack");
+  CHECK(source != NULL);
+  if ( !source ) return;
+  at += sprintf(at, "(f");
+  for (i = 0; i < COUNT; i++) at += sprintf(at, " $v%d", i);
+  strcpy(at, ")");
+  tight.stack_bytes = 16u << 20;
+  mt_clear();
+  CHECK(mt_limit(m, tight));
+  parsed = mt_parse(source);
+  CHECK(parsed && mt_len(parsed) == COUNT + 1);
+  for (i = 0; parsed && i < COUNT; i++)
+  { const mt_atom *v = mt_at(parsed, (size_t)i + 1);
+    snprintf(want, sizeof want, "v%d", i);
+    named += mt_kind_of(v) == MT_VARIABLE && strcmp(mt_name(v), want) == 0;
+  }
+  CHECK(named == COUNT);
+  CHECK(mt_limit(m, old));
+  mt_drop(parsed);
+  free(source);
 }
 
 static void test_a_refusal_carries_the_engines_remedy_and_ground(metta *m)
@@ -2133,6 +2170,7 @@ int main(void)
   test_alpha_equivalence_is_a_renaming(m);
   test_the_standard_order_is_the_engines(m);
   test_an_engine_value_crosses_back_whole(m);
+  test_many_variables_are_named_without_aborting(m);
   test_a_refusal_carries_the_engines_remedy_and_ground(m);
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_the_counters_measure_engine_work(m);

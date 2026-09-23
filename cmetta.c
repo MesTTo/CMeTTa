@@ -1018,19 +1018,31 @@ const mt_atom *mt_at(const mt_atom *atom, size_t index)
 }
 
 /* What an MT_HANDLE decoded from the engine holds: a record of the engine
-   term, the runtime generation it belongs to, and for a blob the blob atom
-   itself, which is the value's identity; a compound is identified by its
-   quoted text. See handle_of(). */
+   term, the runtime generation it belongs to, and the key handle_key() spells
+   it as, which is its identity. The atom's text is the engine's written form,
+   which presents the value and names it in messages but does not identify
+   it: two blobs can be written alike, and two variants differently. See
+   handle_of(). */
 typedef struct handle_ref
 { record_t record;
   uint64_t generation;
-  atom_t   blob;          /* 0 for a compound */
+  char    *key;           /* owned */
+  size_t   key_len;
 } handle_ref;
 
 static void handle_release(void *owner);
 
-static atom_t handle_blob(const mt_atom *a)
-{ return a->release == handle_release ? ((const handle_ref *)a->owner)->blob : 0;
+/* The bytes mt_eq, mt_hash and mt_compare read as a handle's identity: its
+   key, or for the recordless handle only the fault library makes, its text. */
+static void handle_identity(const mt_atom *a, const char **bytes, size_t *len)
+{ if ( a->release == handle_release )
+  { const handle_ref *h = a->owner;
+    *bytes = h->key;
+    *len = h->key_len;
+  } else
+  { *bytes = a->u.t.text;
+    *len = a->u.t.len;
+  }
 }
 
 /* Two atoms of the same kind, compared WITHOUT their children: for an
@@ -1046,10 +1058,12 @@ static bool eq_shallow(const mt_atom *a, const mt_atom *b)
       return a->u.t.len == b->u.t.len &&
              memcmp(a->u.t.text, b->u.t.text, a->u.t.len) == 0;
     case MT_HANDLE:
-      /* Two blobs may print alike; the blob atom is which value it is. */
-      if ( handle_blob(a) || handle_blob(b) ) return handle_blob(a) == handle_blob(b);
-      return a->u.t.len == b->u.t.len &&
-             memcmp(a->u.t.text, b->u.t.text, a->u.t.len) == 0;
+      { const char *x, *y;
+        size_t xn, yn;
+        handle_identity(a, &x, &xn);
+        handle_identity(b, &y, &yn);
+        return xn == yn && memcmp(x, y, xn) == 0;
+      }
     case MT_INT:      return a->u.i == b->u.i;
     case MT_FLOAT:
       /* SWI preserves signed zero but canonicalises NaN payloads when a float
@@ -1466,10 +1480,13 @@ static int compare_leaves(const mt_atom *a, const mt_atom *b)
       if ( a->kind != b->kind ) return a->kind == MT_OBJECT ? -1 : 1;
       if ( a->kind == MT_OBJECT )
         return a->u.box == b->u.box ? 0 : (uintptr_t)a->u.box < (uintptr_t)b->u.box ? -1 : 1;
-      { int order = compare_bytes(a->u.t.text, a->u.t.len, b->u.t.text, b->u.t.len);
-        atom_t x = handle_blob(a), y = handle_blob(b);
-        if ( order || x == y ) return order;
-        return x < y ? -1 : 1;          /* two blobs that print alike */
+      /* By identity, so the order agrees with mt_eq: variants written with
+         different variable names are one value. */
+      { const char *x, *y;
+        size_t xn, yn;
+        handle_identity(a, &x, &xn);
+        handle_identity(b, &y, &yn);
+        return compare_bytes(x, xn, y, yn);
       }
     case 4:
       return 0;
@@ -1562,13 +1579,12 @@ static uint64_t hash_shallow(uint64_t hash, const mt_atom *atom)
       hash = hash_bytes(hash, &atom->u.t.len, sizeof(atom->u.t.len));
       return hash_bytes(hash, atom->u.t.text, atom->u.t.len);
     case MT_HANDLE:
-      /* By the identity mt_eq reads: the blob atom, else the quoted text. */
-      if ( handle_blob(atom) )
-      { atom_t blob = handle_blob(atom);
-        return hash_bytes(hash, &blob, sizeof(blob));
+      { const char *bytes;
+        size_t len;
+        handle_identity(atom, &bytes, &len);
+        hash = hash_bytes(hash, &len, sizeof(len));
+        return hash_bytes(hash, bytes, len);
       }
-      hash = hash_bytes(hash, &atom->u.t.len, sizeof(atom->u.t.len));
-      return hash_bytes(hash, atom->u.t.text, atom->u.t.len);
     case MT_INT:
       return hash_bytes(hash, &atom->u.i, sizeof(atom->u.i));
     case MT_FLOAT:
@@ -2475,44 +2491,58 @@ static bool name_pair(term_t pair, term_t name, term_t var)
          PL_get_arg(1, pair, name) && PL_get_arg(2, pair, var);
 }
 
-/* The source name the engine's name list gives `var`, owned, or NULL.
+/* The source name the engine's name list gives `var`: true with *name owned,
+   or NULL when the list names it nowhere; false, the reason recorded, when
+   the engine could not be asked. The references it reads the list with live
+   in a frame of its own, so naming v variables keeps none of them. They were
+   made two per pair and kept, v times the list's length, until a parse of
+   16,000 distinct variables exhausted the stacks and the 0 PL_new_term_ref
+   answered then aborted the process inside PL_get_arg [measured 2026-09-24:
+   a probe parsing (f $v0 ... $v15999); tested: tests/test_cmetta.c,
+   test_many_variables_are_named_without_aborting; commit=WORKTREE].
    Time: one PL_compare per pair. */
-static char *source_name(term_t names, term_t var)
-{ term_t head, tail;
-  if ( !names ) return NULL;
-
-  head = PL_new_term_ref();
+static bool source_name(term_t names, term_t var, char **name)
+{ fid_t f;
+  term_t pair, tail, nm, vr;
+  *name = NULL;
+  if ( !names ) return true;
+  if ( !(f = frame_open("naming a variable")) ) return false;
+  pair = PL_new_term_ref();          /* four of the ten a new frame guarantees */
   tail = PL_copy_term_ref(names);
-  while ( PL_get_list(tail, head, tail) )
-  { term_t nm = PL_new_term_ref();
-    term_t vr = PL_new_term_ref();
-    if ( name_pair(head, nm, vr) && PL_compare(vr, var) == 0 )
-      return term_text(nm, CVT_ATOM | CVT_STRING, NULL);
-  }
-  return NULL;
+  nm = PL_new_term_ref();
+  vr = PL_new_term_ref();
+  while ( PL_get_list(tail, pair, tail) )
+    if ( name_pair(pair, nm, vr) && PL_compare(vr, var) == 0 )
+    { *name = term_text(nm, CVT_ATOM | CVT_STRING, NULL);
+      break;
+    }
+  frame_close(f);
+  return true;
 }
 
-/* Whether `spelled` is already a source name in the list. Time: one strcmp
-   per pair. */
-static bool source_name_taken(term_t names, const char *spelled)
-{ term_t head, tail;
-  if ( !names ) return false;
-
-  head = PL_new_term_ref();
+/* Whether `spelled` is already a source name in the list, in *taken; false,
+   the reason recorded, when the engine could not be asked. Its references are
+   scoped as source_name()'s are. Time: one strcmp per pair. */
+static bool source_name_taken(term_t names, const char *spelled, bool *taken)
+{ fid_t f;
+  term_t pair, tail, nm, vr;
+  *taken = false;
+  if ( !names ) return true;
+  if ( !(f = frame_open("naming a variable")) ) return false;
+  pair = PL_new_term_ref();
   tail = PL_copy_term_ref(names);
-  while ( PL_get_list(tail, head, tail) )
-  { term_t nm = PL_new_term_ref();
-    term_t vr = PL_new_term_ref();
-    char *name;
-    bool taken;
-    if ( !name_pair(head, nm, vr) ||
+  nm = PL_new_term_ref();
+  vr = PL_new_term_ref();
+  while ( !*taken && PL_get_list(tail, pair, tail) )
+  { char *name;
+    if ( !name_pair(pair, nm, vr) ||
          !(name = term_text(nm, CVT_ATOM | CVT_STRING, NULL)) )
       continue;
-    taken = strcmp(name, spelled) == 0;
+    *taken = strcmp(name, spelled) == 0;
     mt_free(name);
-    if ( taken ) return true;
   }
-  return false;
+  frame_close(f);
+  return true;
 }
 
 /* The variables one crossing has named so far. A decoded answer keeps the
@@ -2576,12 +2606,23 @@ MT_COLD static const char *variable_name(term_t names, term_t var)
     if ( PL_compare(seen->items[i].var, var) == 0 )
       return seen->items[i].name;
 
-  entry.name = source_name(names, var);
-  if ( !entry.name && (entry.name = mt_alloc(24)) )
-    do snprintf(entry.name, 24, "_%" PRIu64, (uint64_t)MT_INC(&g_fresh_variables));
-    while ( source_name_taken(names, entry.name) );
-  if ( !entry.name || !(entry.var = PL_copy_term_ref(var)) ||
-       !stack_push(seen, entry) )
+  if ( !source_name(names, var, &entry.name) ) return NULL;
+  if ( !entry.name )
+  { bool asked = true, taken = true;
+    if ( !(entry.name = mt_alloc(24)) )
+    { err_set(MT_NOMEM, "out of memory naming a variable");
+      return NULL;
+    }
+    while ( asked && taken )
+    { snprintf(entry.name, 24, "_%" PRIu64, (uint64_t)MT_INC(&g_fresh_variables));
+      asked = source_name_taken(names, entry.name, &taken);
+    }
+    if ( !asked )
+    { mt_free(entry.name);
+      return NULL;
+    }
+  }
+  if ( !(entry.var = PL_copy_term_ref(var)) || !stack_push(seen, entry) )
   { mt_free(entry.name);
     err_set(MT_NOMEM, "out of memory naming a variable");
     return NULL;
@@ -2680,31 +2721,46 @@ static void handle_release(void *owner)
 #endif
   }
   MT_SC_ADD(&g_record_erasers, (unsigned)-1);
+  mt_free(h->key);
   mt_free(h);
 }
 
-/* The identity key of a compound held as a handle: an injective spelling of
-   the term, so two keys are equal exactly when the terms are variants.
-   Quoted text is not injective, since two blobs can print alike and a
-   variable prints as an address; here every name is length-prefixed, a blob
-   is its atom, a float its exact hex digits, and a variable its first
-   occurrence. Time O(n + v^2) for n subterms and v distinct variables; an
-   explicit stack, so depth is data. */
+/* The identity key of an engine value held as a handle: the term spelled so
+   that two keys are equal exactly when the terms are variants. The written
+   form is not injective, since two blobs can be written alike and a variable
+   is written as its stack address. Here every token says how long it is
+   before it starts, a name, string or number by its byte count and a
+   compound by its arity, so a key parses back to one tree and needs no
+   closing marks; a blob is its atom within its runtime generation, a float
+   its exact hex digits, and a variable the order of its first occurrence.
+   Time: one visit per subterm, plus one PL_compare per variable already met
+   at each variable occurrence. That scan is the one engine/c/writer.c and the
+   Python wire make, since the foreign interface tells two variables apart
+   only by comparing them [source: extensions/python/metta/_binding/wire.pl,
+   metta_py_wire_name/4; commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761].
+   Term references: two per level of nesting, reused by every compound met at
+   that level, and one per distinct variable, all released on return because
+   the walk runs in a foreign frame of its own. A compound's last argument
+   takes its parent's level, so a list of any length is one level
+   [tested: tests/test_internal_contracts.c,
+   test_a_long_list_handle_keys_in_constant_references; commit=WORKTREE]. */
 typedef struct key_buf { char *data; size_t len, cap; bool failed; } key_buf;
 
 static void key_put(key_buf *k, const char *bytes, size_t n)
 { if ( k->failed ) return;
-  if ( k->len + n + 1 > k->cap )
-  { size_t cap = k->cap ? k->cap : 64;
+  if ( n > k->cap - k->len )
+  { size_t cap = k->cap, size;
     char *grown;
-    while ( cap < k->len + n + 1 ) cap *= 2;
-    if ( !(grown = mt_resize(k->data, cap)) ) { k->failed = true; return; }
+    if ( n > SIZE_MAX - k->len ) { k->failed = true; return; }
+    do
+      if ( !next_capacity(cap, 64, 1, &cap, &size) ) { k->failed = true; return; }
+    while ( cap - k->len < n );
+    if ( !(grown = mt_resize(k->data, size)) ) { k->failed = true; return; }
     k->data = grown;
     k->cap = cap;
   }
   memcpy(k->data + k->len, bytes, n);
   k->len += n;
-  k->data[k->len] = '\0';
 }
 
 static void key_tag(key_buf *k, char tag, uintmax_t number)
@@ -2722,75 +2778,101 @@ static void key_text(key_buf *k, char tag, term_t t, int cvt)
   mt_free(text);
 }
 
-typedef struct key_frame { term_t term; size_t arity, next; } key_frame;
-typedef MT_STACK(key_frame) key_stack;
+/* One level of the walk: the compound open at that depth, the reference its
+   arguments are read into, and the next argument to read. The references
+   outlive the level and are reused by the next compound at its depth. */
+typedef struct key_level { term_t term, arg; size_t arity, next; } key_level;
+typedef MT_STACK(key_level) key_levels;
 
 static char *handle_key(term_t root, size_t *len)
 { key_buf k = {0};
-  key_frame fixed[MT_WALK_FRAMES];
-  key_stack frames;
-  term_t *vars = NULL;
-  size_t nvars = 0, capvars = 0;
-  term_t t = root;
+  key_level fixed[MT_WALK_FRAMES];
+  key_levels levels;                /* levels.n made, the first `depth` open */
+  size_t depth = 0, nvars = 0, capvars = 0;
+  term_t *vars = NULL, name, t = root;
+  fid_t f = PL_open_foreign_frame();
 
-  stack_init(&frames, fixed);
+  if ( !f ) return NULL;
+  stack_init(&levels, fixed);
+  name = PL_new_term_ref();         /* within the ten a new frame guarantees */
   while ( t && !k.failed )
-  { atom_t name;
+  { atom_t atom;
     size_t arity, i;
     void *blob;
     size_t blob_len;
     PL_blob_t *type;
-    double f;
+    double d;
 
     if ( PL_is_variable(t) )
     { i = 0;
       while ( i < nvars && PL_compare(vars[i], t) != 0 ) i++;
       if ( i == nvars )
       { if ( nvars == capvars )
-        { term_t *grown = mt_resize(vars, (capvars = capvars ? 2 * capvars : 8) * sizeof *vars);
-          if ( !grown ) { k.failed = true; break; }
+        { size_t cap, size;
+          term_t *grown;
+          if ( !next_capacity(capvars, 8, sizeof *vars, &cap, &size) ||
+               !(grown = mt_resize(vars, size)) )
+          { k.failed = true;
+            break;
+          }
           vars = grown;
+          capvars = cap;
         }
-        if ( !(vars[nvars++] = PL_copy_term_ref(t)) ) { k.failed = true; break; }
+        if ( !(vars[nvars] = PL_copy_term_ref(t)) ) { k.failed = true; break; }
+        nvars++;
       }
       key_tag(&k, 'v', i);
-    } else if ( PL_is_compound(t) && PL_get_name_arity(t, &name, &arity) )
-    { term_t functor = PL_new_term_ref();
-      key_frame frame = { t, arity, 1 };
-      if ( !functor || !PL_put_atom(functor, name) ) { k.failed = true; break; }
-      key_text(&k, 'c', functor, CVT_ATOM);
+    } else if ( PL_is_compound(t) && PL_get_name_arity(t, &atom, &arity) )
+    { if ( !PL_put_atom(name, atom) ) { k.failed = true; break; }
+      key_text(&k, 'c', name, CVT_ATOM);
       key_tag(&k, '/', arity);
-      if ( !stack_push(&frames, frame) ) { k.failed = true; break; }
+      if ( arity > 0 )
+      { key_level *level;
+        if ( depth == levels.n )
+        { key_level made = { PL_new_term_ref(), PL_new_term_ref(), 0, 0 };
+          if ( !made.term || !made.arg || !stack_push(&levels, made) )
+          { k.failed = true;
+            break;
+          }
+        }
+        level = &levels.items[depth++];
+        if ( !PL_put_term(level->term, t) ) { k.failed = true; break; }
+        level->arity = arity;
+        level->next = 1;
+      }
     } else if ( PL_get_blob(t, &blob, &blob_len, &type) && !(type->flags & PL_BLOB_TEXT) &&
-                PL_get_atom(t, &name) )
-      key_tag(&k, 'b', (uintmax_t)name);
-    else if ( PL_is_atom(t) )
+                PL_get_atom(t, &atom) )
+    { key_tag(&k, 'b', g_runtime.generation);
+      key_tag(&k, '.', (uintmax_t)atom);
+    } else if ( PL_is_atom(t) )
       key_text(&k, 'a', t, CVT_ATOM);
     else if ( PL_is_string(t) )
       key_text(&k, 's', t, CVT_STRING);
-    else if ( PL_is_float(t) && PL_get_float(t, &f) )
+    else if ( PL_is_float(t) && PL_get_float(t, &d) )
     { char buf[48];
-      int n = snprintf(buf, sizeof buf, "%a", f);
+      int n = snprintf(buf, sizeof buf, "%a", d);
       key_tag(&k, 'f', (uintmax_t)n);
       key_put(&k, buf, (size_t)n);
     } else
       key_text(&k, 'n', t, CVT_WRITEQ);     /* integers and rationals, exact */
 
-    /* The next argument still to spell, closing every finished compound. */
+    /* The next argument still to spell. Reading a compound's last argument
+       finishes it, so that argument takes over its level. */
     t = 0;
-    while ( !k.failed && frames.n > 0 )
-    { key_frame *top = &frames.items[frames.n - 1];
-      if ( top->next <= top->arity )
-      { if ( !(t = PL_new_term_ref()) || !PL_get_arg(top->next++, top->term, t) )
-          k.failed = true;
-        break;
-      }
-      key_put(&k, ")", 1);
-      stack_pop(&frames);
+    if ( !k.failed && depth > 0 )
+    { key_level *top = &levels.items[depth - 1];
+      if ( !PL_get_arg(top->next, top->term, top->arg) ) { k.failed = true; break; }
+      t = top->arg;
+      if ( top->next++ == top->arity ) depth--;
     }
   }
-  stack_free(&frames);
+  stack_free(&levels);
   mt_free(vars);
+  /* A reference the stacks could not hold left a resource exception behind;
+     the caller reports the failure itself, so the ball is not left pending
+     for the next call into the engine to trip over. */
+  if ( k.failed && PL_exception(0) ) PL_clear_exception();
+  PL_close_foreign_frame(f);
   if ( k.failed ) { mt_free(k.data); return NULL; }
   *len = k.len;
   return k.data;
@@ -2798,16 +2880,17 @@ static char *handle_key(term_t root, size_t *len)
 
 static mt_atom *handle_of(term_t t)
 { size_t len;
-  atom_t blob = 0;
-  bool is_blob = PL_get_atom(t, &blob);
-  /* A blob's identity is the blob atom, and its text only presents it; a
-     compound's identity is its injective key. */
-  char *text = is_blob ? term_text(t, CVT_WRITE, &len) : handle_key(t, &len);
+  /* A non-text blob is written plainly and a compound quoted, the forms the
+     refusals below name it by. */
+  char *text = term_text(t, PL_is_atom(t) ? CVT_WRITE : CVT_WRITEQ, &len);
   handle_ref *h = text ? mt_alloc(sizeof *h) : NULL;
   mt_atom *a = NULL;
-  if ( h && (h->record = PL_record(t)) )
+  if ( h )
+  { h->record = 0;
+    h->key = handle_key(t, &h->key_len);
+  }
+  if ( h && h->key && (h->record = PL_record(t)) )
   { h->generation = g_runtime.generation;
-    h->blob = is_blob ? blob : 0;
     if ( (a = atom_text(MT_HANDLE, text, len)) )
     { a->owner = h;
       a->release = handle_release;
@@ -2816,6 +2899,7 @@ static mt_atom *handle_of(term_t t)
   }
   if ( h )
   { if ( h->record ) PL_erase(h->record);
+    mt_free(h->key);
     mt_free(h);
   }
   mt_free(text);
@@ -2907,9 +2991,7 @@ static mt_atom *decode_leaf(term_t t, term_t names)
 }
 
 /* One expression being built: the children taken so far, and how far along
-   the engine's list this level has walked. The tail needs a term reference
-   per level, which SWI allocates on the Prolog stacks and bounds by
-   stack_limit, so depth costs a resource error rather than a signal. */
+   the engine's list this level has walked. */
 typedef struct decode_frame
 { mt_atom **kids;
   size_t    n, cap;
@@ -2918,16 +3000,30 @@ typedef struct decode_frame
 
 typedef MT_STACK(decode_frame) decode_stack;
 
-static bool decode_frame_push(decode_stack *frames, term_t list)
+/* The walk's term references, one per depth: the level at depth d walks its
+   list in reference d and reads each element into reference d + 1, so an
+   element that is itself an expression is already where its own level walks
+   it, and descending copies nothing. A decode holds as many as the answer is
+   deep, not one per sub-expression. SWI allocates them on the Prolog stacks
+   and bounds them by stack_limit, so depth costs a resource error rather
+   than a signal. */
+typedef MT_STACK(term_t) decode_tails;
+
+/* Open a level on the list in the next depth's reference. */
+static bool decode_frame_push(decode_stack *frames, decode_tails *tails)
 { decode_frame frame;
   frame.kids = NULL;
   frame.n = frame.cap = 0;
+  frame.tail = tails->items[frames->n];
   /* Beyond the ten a foreign frame guarantees, PL_new_term_ref() can answer
      0 with a resource exception scheduled, so it is checked
      [source: SWI-Prolog manual, PL_open_foreign_frame: "On success, the stack
      has room for at least 10 term_t handles"]. */
-  frame.tail = PL_copy_term_ref(list);
-  return frame.tail != 0 && stack_push(frames, frame);
+  while ( tails->n < frames->n + 2 )
+  { term_t made = PL_new_term_ref();
+    if ( !made || !stack_push(tails, made) ) return false;
+  }
+  return stack_push(frames, frame);
 }
 
 static inline bool decode_frame_add(decode_frame *f, mt_atom *kid)
@@ -2951,6 +3047,8 @@ static inline bool decode_frame_add(decode_frame *f, mt_atom *kid)
 static mt_atom *decode(term_t t, term_t names)
 { decode_frame fixed[MT_WALK_FRAMES];
   decode_stack frames;
+  term_t fixed_tails[MT_WALK_FRAMES];
+  decode_tails tails;
   decode_var fixed_vars[MT_WALK_FRAMES];
   decode_vars seen, *outer = tls_decode_vars;
   decode_frame *f;
@@ -2966,8 +3064,10 @@ static mt_atom *decode(term_t t, term_t names)
   }
 
   stack_init(&frames, fixed);
-  head = PL_new_term_ref();
-  if ( !head || !decode_frame_push(&frames, t) )
+  stack_init(&tails, fixed_tails);
+  /* The root's list is walked in a copy, so the caller's reference keeps it. */
+  if ( !(head = PL_copy_term_ref(t)) || !stack_push(&tails, head) ||
+       !decode_frame_push(&frames, &tails) )
     err_set(MT_NOMEM, "out of memory decoding an expression");
 
   /* `f` is read out of the stack only where it can have MOVED, which is a
@@ -2976,10 +3076,11 @@ static mt_atom *decode(term_t t, term_t names)
   while ( (f = stack_top(&frames)) != NULL )
   { mt_atom *kid;
 
+    head = tails.items[frames.n];
     if ( PL_get_list(f->tail, head, f->tail) )
     { if ( decode_is_expr(head) )
       { /* Descend. `f` is not touched afterwards: the push may move it. */
-        if ( decode_frame_push(&frames, head) ) continue;
+        if ( decode_frame_push(&frames, &tails) ) continue;
         err_set(MT_NOMEM, "out of memory decoding an expression");
         break;
       }
@@ -3024,6 +3125,7 @@ static mt_atom *decode(term_t t, term_t names)
     stack_pop(&frames);
   }
   stack_free(&frames);
+  stack_free(&tails);
 named:
   tls_decode_vars = outer;
   for (i = 0; i < seen.n; i++) mt_free(seen.items[i].name);
@@ -5646,6 +5748,40 @@ done:
   mt_drop(decoded);
   frame_close(frame);
   return whole;
+}
+
+/* A handle over a long list, wrap([1, 2, ..., length]), decoded through the
+   handle branch. Its key walk holds two references per level and a list's
+   tail takes its cell's level, so the list is one level: it decodes under a
+   stack limit with room for the list once, where the walk that made three
+   references per cell needed room for it twice.
+   [tested: tests/test_internal_contracts.c,
+   test_a_long_list_handle_keys_in_constant_references; commit=WORKTREE] */
+bool mt_test_long_list_handle_decodes(size_t length)
+{ fid_t frame = frame_open("testing a long list held as a handle");
+  term_t list, item, wrapped;
+  mt_atom *held = NULL;
+  bool decoded = false;
+  size_t i;
+
+  if ( !frame ) return false;
+  list = PL_new_term_ref();
+  item = PL_new_term_ref();
+  wrapped = PL_new_term_ref();
+  if ( !list || !item || !wrapped || !PL_put_nil(list) ) goto done;
+  for (i = length; i > 0; i--)
+    if ( !PL_put_int64(item, (int64_t)i) || !PL_cons_list(list, item, list) )
+      goto done;
+  if ( !PL_cons_functor(wrapped, PL_new_functor(PL_new_atom("wrap"), 1), list) )
+    goto done;
+  held = decode(wrapped, 0);
+  decoded = held && mt_kind_of(held) == MT_HANDLE;
+done:
+  /* A list the stacks could not hold leaves its resource error pending. */
+  if ( !decoded && PL_exception(0) ) PL_clear_exception();
+  mt_drop(held);
+  frame_close(frame);
+  return decoded;
 }
 
 /* The close handshake, made deterministic: with a close announced, a handle

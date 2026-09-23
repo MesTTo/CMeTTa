@@ -288,8 +288,9 @@ typedef enum mt_kind {
    prints it as the engine does and passing it back to any door puts the
    identical value back, which still applies, matches and compares as itself;
    mt_write_dup() refuses it, having no source spelling. Two handles are
-   mt_eq, hash alike and compare equal when they hold one blob, or compounds
-   that are variants of each other, never merely because they print alike; a
+   mt_eq, hash alike and compare equal when they hold one blob of one runtime,
+   or compounds that are variants of each other, never merely because they
+   print alike; a
    held compound's variables are its own, fresh each time it goes back, so a
    variant is the one identity it keeps [tested: tests/test_internal_contracts.c,
    test_native_handle_decode_and_encode_contract; commit=WORKTREE]. A handle cannot
@@ -422,7 +423,10 @@ MT_API void mt_drop(const mt_atom *atom);
 MT_API mt_kind mt_kind_of(const mt_atom *atom);
 
 /* The name of a SYMBOL, VARIABLE or SPACE, the text of a TEXT, the digits of
-   a BIGINT. NULL for every other kind. Borrowed. */
+   a BIGINT, the engine's written form of a HANDLE, such as partial(+,[1]).
+   NULL for every other kind. Borrowed. A handle's written form presents it
+   and does not identify it; see MT_HANDLE [tested: tests/test_cmetta.c,
+   test_an_engine_value_crosses_back_whole; commit=WORKTREE]. */
 MT_API const char *mt_name(const mt_atom *atom);
 MT_API size_t mt_name_len(const mt_atom *atom);
 

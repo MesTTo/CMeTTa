@@ -4,7 +4,8 @@
  *   invalid engine terms that the public bridge never returns.
  * Guarantees: exits nonzero if allocation arithmetic wraps, an improper
  *   callback list is accepted, a foreign native handle bypasses its codec
- *   guard, a negative count wraps, a counter loses bits, or clearing limits
+ *   guard, a handle's key walk holds references per cell rather than per
+ *   level, a negative count wraps, a counter loses bits, or clearing limits
  *   does not restore SWI's original stack limit.
  * Owns resources: drops its atom and closes the runtime before exit.
  */
@@ -17,6 +18,7 @@
 extern bool mt_test_improper_apply_is_rejected(void);
 extern bool mt_test_native_handle_codec_round_trips(void);
 extern bool mt_test_close_handshake_skips_erase(void);
+extern bool mt_test_long_list_handle_decodes(size_t length);
 extern bool mt_test_negative_count_is_rejected(void);
 extern bool mt_test_large_stats_are_exact(void);
 extern bool mt_test_decode_growth_overflow_is_rejected(void);
@@ -47,6 +49,20 @@ static void test_a_handle_released_during_close_leaves_its_record(void)
          "to cleanup, and one released otherwise must erase it");
 }
 
+/* The key walk once made three term references per list cell and kept them
+   until it returned, so a handle over a long list needed stack room for the
+   list twice: 400,000 cells failed with out of memory at every limit from 16
+   to 32 MB. Two references per level, and a list is one level. */
+static void test_a_long_list_handle_keys_in_constant_references(metta *runtime)
+{ mt_clear();
+  expect(mt_limit(runtime, (mt_limits){ .stack_bytes = 24u * 1024u * 1024u }),
+         "a 24 MB stack limit must be accepted");
+  expect(mt_test_long_list_handle_decodes(400000),
+         "a handle over a 400,000-element list must decode under a 24 MB "
+         "stack limit, which holds the list once");
+  expect(mt_limit(runtime, (mt_limits){0}), "clearing the limit must succeed");
+}
+
 int main(void)
 { metta *runtime = mt_open(NULL);
   mt_atom *dummy;
@@ -75,6 +91,7 @@ int main(void)
 
   test_native_handle_decode_and_encode_contract();
   test_a_handle_released_during_close_leaves_its_record();
+  test_a_long_list_handle_keys_in_constant_references(runtime);
 
   mt_clear();
   expect(mt_test_negative_count_is_rejected(),
