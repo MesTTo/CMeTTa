@@ -141,10 +141,17 @@ static pl_function_t as_pl_function(mt_anyfn fn)
 #define MT_ATOMIC _Atomic
 #define MT_INC(p) atomic_fetch_add_explicit((p), 1u, memory_order_relaxed)
 #define MT_DEC(p) atomic_fetch_sub_explicit((p), 1u, memory_order_acq_rel)
+/* Sequentially consistent, for the one handshake that needs it: see
+   g_record_erasers. */
+#define MT_SC_LOAD(p)     atomic_load(p)
+#define MT_SC_STORE(p, v) atomic_store((p), (v))
+#define MT_SC_ADD(p, v)   atomic_fetch_add((p), (v))
 #else
-#define MT_ATOMIC
-#define MT_INC(p) ((*(p))++)
-#define MT_DEC(p) ((*(p))--)
+/* cmetta.h promises that atoms are shared and dropped across threads with an
+   atomic refcount, and a handle's record is released under a handshake with
+   mt_close(); plain integers would break both silently, so a compiler
+   without C11 atomics is refused rather than given a build that races. */
+#error "cmetta needs C11 atomics (<stdatomic.h>): atom reference counts and handle release are shared across threads"
 #endif
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && \
@@ -2648,19 +2655,154 @@ static bool decode_is_expr(term_t t)
    mt_close() the heap it lived in is gone with the runtime.
    [tested: tests/test_cmetta.c, test_an_engine_value_crosses_back_whole;
    commit=0733adc4f214bdcb37dce6f378ff75611b79b126] */
+/* A handle may be dropped on any thread, including while mt_close() tears
+   the runtime down on another, and erasing a record into a heap PL_cleanup()
+   is freeing would corrupt it. So an eraser announces itself and then looks
+   for a close, and mt_close() announces the close and then waits for the
+   announced erasers; with sequentially consistent operations at least one of
+   the two sees the other (Dekker's handshake), so an erase either finishes
+   before cleanup starts or is skipped. The erasers' count is held only
+   around PL_erase, which is a few instructions. */
+static MT_ATOMIC unsigned g_record_erasers;
+static MT_ATOMIC bool     g_closing;
+
+#ifdef MT_TEST_FAULTS
+static MT_ATOMIC unsigned g_test_record_erases;
+#endif
+
 static void handle_release(void *owner)
 { handle_ref *h = owner;
-  if ( g_open && h->generation == g_runtime.generation ) PL_erase(h->record);
+  MT_SC_ADD(&g_record_erasers, 1u);
+  if ( !MT_SC_LOAD(&g_closing) && g_open && h->generation == g_runtime.generation )
+  { PL_erase(h->record);
+#ifdef MT_TEST_FAULTS
+    MT_INC(&g_test_record_erases);
+#endif
+  }
+  MT_SC_ADD(&g_record_erasers, (unsigned)-1);
   mt_free(h);
+}
+
+/* The identity key of a compound held as a handle: an injective spelling of
+   the term, so two keys are equal exactly when the terms are variants.
+   Quoted text is not injective, since two blobs can print alike and a
+   variable prints as an address; here every name is length-prefixed, a blob
+   is its atom, a float its exact hex digits, and a variable its first
+   occurrence. Time O(n + v^2) for n subterms and v distinct variables; an
+   explicit stack, so depth is data. */
+typedef struct key_buf { char *data; size_t len, cap; bool failed; } key_buf;
+
+static void key_put(key_buf *k, const char *bytes, size_t n)
+{ if ( k->failed ) return;
+  if ( k->len + n + 1 > k->cap )
+  { size_t cap = k->cap ? k->cap : 64;
+    char *grown;
+    while ( cap < k->len + n + 1 ) cap *= 2;
+    if ( !(grown = mt_resize(k->data, cap)) ) { k->failed = true; return; }
+    k->data = grown;
+    k->cap = cap;
+  }
+  memcpy(k->data + k->len, bytes, n);
+  k->len += n;
+  k->data[k->len] = '\0';
+}
+
+static void key_tag(key_buf *k, char tag, uintmax_t number)
+{ char buf[32];
+  int n = snprintf(buf, sizeof buf, "%c%ju:", tag, number);
+  key_put(k, buf, (size_t)n);
+}
+
+static void key_text(key_buf *k, char tag, term_t t, int cvt)
+{ size_t len;
+  char *text = term_text(t, cvt, &len);
+  if ( !text ) { k->failed = true; return; }
+  key_tag(k, tag, len);
+  key_put(k, text, len);
+  mt_free(text);
+}
+
+typedef struct key_frame { term_t term; size_t arity, next; } key_frame;
+typedef MT_STACK(key_frame) key_stack;
+
+static char *handle_key(term_t root, size_t *len)
+{ key_buf k = {0};
+  key_frame fixed[MT_WALK_FRAMES];
+  key_stack frames;
+  term_t *vars = NULL;
+  size_t nvars = 0, capvars = 0;
+  term_t t = root;
+
+  stack_init(&frames, fixed);
+  while ( t && !k.failed )
+  { atom_t name;
+    size_t arity, i;
+    void *blob;
+    size_t blob_len;
+    PL_blob_t *type;
+    double f;
+
+    if ( PL_is_variable(t) )
+    { i = 0;
+      while ( i < nvars && PL_compare(vars[i], t) != 0 ) i++;
+      if ( i == nvars )
+      { if ( nvars == capvars )
+        { term_t *grown = mt_resize(vars, (capvars = capvars ? 2 * capvars : 8) * sizeof *vars);
+          if ( !grown ) { k.failed = true; break; }
+          vars = grown;
+        }
+        if ( !(vars[nvars++] = PL_copy_term_ref(t)) ) { k.failed = true; break; }
+      }
+      key_tag(&k, 'v', i);
+    } else if ( PL_is_compound(t) && PL_get_name_arity(t, &name, &arity) )
+    { term_t functor = PL_new_term_ref();
+      key_frame frame = { t, arity, 1 };
+      if ( !functor || !PL_put_atom(functor, name) ) { k.failed = true; break; }
+      key_text(&k, 'c', functor, CVT_ATOM);
+      key_tag(&k, '/', arity);
+      if ( !stack_push(&frames, frame) ) { k.failed = true; break; }
+    } else if ( PL_get_blob(t, &blob, &blob_len, &type) && !(type->flags & PL_BLOB_TEXT) &&
+                PL_get_atom(t, &name) )
+      key_tag(&k, 'b', (uintmax_t)name);
+    else if ( PL_is_atom(t) )
+      key_text(&k, 'a', t, CVT_ATOM);
+    else if ( PL_is_string(t) )
+      key_text(&k, 's', t, CVT_STRING);
+    else if ( PL_is_float(t) && PL_get_float(t, &f) )
+    { char buf[48];
+      int n = snprintf(buf, sizeof buf, "%a", f);
+      key_tag(&k, 'f', (uintmax_t)n);
+      key_put(&k, buf, (size_t)n);
+    } else
+      key_text(&k, 'n', t, CVT_WRITEQ);     /* integers and rationals, exact */
+
+    /* The next argument still to spell, closing every finished compound. */
+    t = 0;
+    while ( !k.failed && frames.n > 0 )
+    { key_frame *top = &frames.items[frames.n - 1];
+      if ( top->next <= top->arity )
+      { if ( !(t = PL_new_term_ref()) || !PL_get_arg(top->next++, top->term, t) )
+          k.failed = true;
+        break;
+      }
+      key_put(&k, ")", 1);
+      stack_pop(&frames);
+    }
+  }
+  stack_free(&frames);
+  mt_free(vars);
+  if ( k.failed ) { mt_free(k.data); return NULL; }
+  *len = k.len;
+  return k.data;
 }
 
 static mt_atom *handle_of(term_t t)
 { size_t len;
   atom_t blob = 0;
   bool is_blob = PL_get_atom(t, &blob);
-  /* A compound's identity is its quoted text, which reads unambiguously; a
-     blob's is the blob atom, and its text only presents it. */
-  char *text = term_text(t, is_blob ? CVT_WRITE : CVT_WRITEQ, &len);
+  /* A blob's identity is the blob atom, and its text only presents it; a
+     compound's identity is its injective key. */
+  char *text = is_blob ? term_text(t, CVT_WRITE, &len) : handle_key(t, &len);
   handle_ref *h = text ? mt_alloc(sizeof *h) : NULL;
   mt_atom *a = NULL;
   if ( h && (h->record = PL_record(t)) )
@@ -4056,6 +4198,7 @@ metta *mt_open(const mt_config *config)
   g_runtime.path = path;
   g_runtime.verbose = config->verbose;
   g_open = true;
+  MT_SC_STORE(&g_closing, false);
 
   /* The seam's shipped points, declared once the runtime is open, so every
      door this seat already had is a row from the first call and "what can I
@@ -4087,14 +4230,21 @@ void mt_close(metta *runtime)
      handle and the g_open state still describe the live engine and must stay
      intact. A failed reclamation has passed the point of cancellation but
      cannot be restarted safely, so it is closed and remembered as terminal. */
+  /* No handle record may be erased into the heap cleanup is about to free:
+     the other half of the handshake in handle_release(). */
+  MT_SC_STORE(&g_closing, true);
+  while ( MT_SC_LOAD(&g_record_erasers) != 0 )
+    ;
   cleaned = PL_cleanup(0);
   if ( cleaned == PL_CLEANUP_CANCELED )
-  { err_set(MT_ERROR,
+  { MT_SC_STORE(&g_closing, false);
+    err_set(MT_ERROR,
             "SWI-Prolog canceled runtime cleanup; the runtime remains open");
     return;
   }
   if ( cleaned == PL_CLEANUP_RECURSIVE )
-  { err_set(MT_ERROR,
+  { MT_SC_STORE(&g_closing, false);
+    err_set(MT_ERROR,
             "mt_close was called recursively from SWI-Prolog cleanup; the "
             "outer cleanup still owns the runtime");
     return;
@@ -5465,6 +5615,25 @@ bool mt_test_native_handle_codec_round_trips(void)
        mt_hash(decoded) != mt_hash(again) || mt_eq(decoded, different) ||
        mt_compare(decoded, different) == 0 )
     goto done;
+  /* So do compounds holding them: wrap(<blob>) and wrap(<look-alike>). */
+  { functor_t wrap = PL_new_functor(PL_new_atom("wrap"), 1);
+    term_t one = PL_new_term_ref(), two = PL_new_term_ref();
+    mt_atom *first, *second, *first_again;
+    bool distinct;
+    if ( !one || !two || !PL_cons_functor(one, wrap, encoded) ||
+         !PL_cons_functor(two, wrap, alike) )
+      goto done;
+    first = decode(one, 0);
+    second = decode(two, 0);
+    first_again = decode(one, 0);
+    distinct = first && second && first_again && mt_kind_of(first) == MT_HANDLE &&
+               !mt_eq(first, second) && mt_eq(first, first_again) &&
+               mt_hash(first) == mt_hash(first_again);
+    mt_drop(first);
+    mt_drop(second);
+    mt_drop(first_again);
+    if ( !distinct ) goto done;
+  }
   printed_only = mt_test_handle_atom("<cmetta-test-handle>");
   mt_clear();
   whole = printed_only && !put_atom(printed_only, destination) &&
@@ -5477,6 +5646,42 @@ done:
   mt_drop(decoded);
   frame_close(frame);
   return whole;
+}
+
+/* The close handshake, made deterministic: with a close announced, a handle
+   released on this thread does not erase its record, and with none announced
+   it does. The concurrent case is the race this rule exists for, and it is
+   too narrow to reproduce on demand, so the rule is tested where it decides.
+   [tested: tests/test_internal_contracts.c,
+   test_a_handle_released_during_close_leaves_its_record; commit=WORKTREE] */
+bool mt_test_close_handshake_skips_erase(void)
+{ fid_t frame = frame_open("testing the handle close handshake");
+  term_t partial;
+  mt_atom *during = NULL, *after = NULL;
+  unsigned before;
+  bool skipped = false, erased = false;
+
+  if ( !frame ) return false;
+  partial = PL_new_term_ref();
+  if ( !partial || !PL_chars_to_term("partial(+,[1])", partial) ) goto done;
+  if ( !(during = decode(partial, 0)) || !(after = decode(partial, 0)) ) goto done;
+
+  before = MT_SC_LOAD(&g_test_record_erases);
+  MT_SC_STORE(&g_closing, true);
+  mt_drop(during);                       /* its record is left to cleanup */
+  during = NULL;
+  skipped = MT_SC_LOAD(&g_test_record_erases) == before;
+  MT_SC_STORE(&g_closing, false);
+
+  before = MT_SC_LOAD(&g_test_record_erases);
+  mt_drop(after);
+  after = NULL;
+  erased = MT_SC_LOAD(&g_test_record_erases) == before + 1;
+done:
+  mt_drop(during);
+  mt_drop(after);
+  frame_close(frame);
+  return skipped && erased;
 }
 
 bool mt_test_improper_apply_is_rejected(void)

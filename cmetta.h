@@ -287,10 +287,11 @@ typedef enum mt_kind {
    (partial + (1)). The atom holds the engine term by reference, so mt_show()
    prints it as the engine does and passing it back to any door puts the
    identical value back, which still applies, matches and compares as itself;
-   mt_write_dup() refuses it, having no source spelling. Its identity is the
-   engine's: two handles are mt_eq, hash alike and compare equal when they
-   hold one blob, or compounds with one quoted text, never merely because
-   they print alike [tested: tests/test_internal_contracts.c,
+   mt_write_dup() refuses it, having no source spelling. Two handles are
+   mt_eq, hash alike and compare equal when they hold one blob, or compounds
+   that are variants of each other, never merely because they print alike; a
+   held compound's variables are its own, fresh each time it goes back, so a
+   variant is the one identity it keeps [tested: tests/test_internal_contracts.c,
    test_native_handle_decode_and_encode_contract; commit=WORKTREE]. A handle cannot
    outlive the runtime that answered it: after mt_close() passing it back is
    refused by name [tested: tests/test_cmetta.c,

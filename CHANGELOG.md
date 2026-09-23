@@ -5,6 +5,17 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Make a compound handle's identity injective and a handle's release safe
+  against a concurrent close. A compound was identified by its quoted text,
+  which prints two blobs, or two variables, alike; it now carries a key that
+  length-prefixes every name, spells floats exactly, names a blob by its
+  atom and a variable by its first occurrence, so two handles are equal
+  exactly when they hold variants. Releasing a handle erases its engine
+  record, and mt_close() now announces itself and waits for any erase in
+  flight while every release checks for the announcement first, so no record
+  is erased into the heap PL_cleanup() frees. A compiler without C11 atomics
+  is refused at build time instead of producing reference counts that race.
+
 - Identify a native-blob handle by its blob atom and a compound handle by its
   quoted text. Handles compared by their printed text, so two different
   blobs whose writer prints the same text were `mt_eq`, hashed alike and

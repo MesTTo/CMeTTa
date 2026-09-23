@@ -5,7 +5,10 @@
  *   table as unguarded after worker evaluation starts.
  * Guarantees: exits 0 only after two attached workers have received their own
  *   error text, exercised mt_of, isolated the mt_show ring, and detached
- *   [tested: test_threads.c; commit=b339084bb5625996fc88a31608d48ad31c575d1f].
+ *   [tested: test_threads.c; commit=b339084bb5625996fc88a31608d48ad31c575d1f],
+ *   and after four threads dropped 4,000 handles while the main thread closed
+ *   the runtime [tested: test_threads.c, drop_handles_while_closing;
+ *   commit=WORKTREE].
  * Owns resources: two pthreads and their joined lifetimes; one runtime closed
  *   after both workers have detached.
  * Guarded by: C atomics coordinate rendezvous; each worker owns its result.
@@ -128,6 +131,56 @@ static void *run_worker(void *opaque)
   return NULL;
 }
 
+/* Handles dropped on worker threads while the main thread closes the
+   runtime: each drop erases the handle's engine record unless the close has
+   begun, and none may erase into the heap PL_cleanup() is freeing. This is a
+   safety smoke test and not a discriminating one: the window is narrow, and
+   a library without the close handshake passed it 12 runs of 12 too
+   [measured 2026-09-24]; test_internal_contracts tests the handshake's rule
+   deterministically. */
+enum { HANDLES = 4000, DROPPERS = 4 };
+
+typedef struct dropper
+{ mt_atom   **handles;
+  size_t      first, count;
+  atomic_uint *started;
+} dropper;
+
+static void *run_dropper(void *opaque)
+{ dropper *d = opaque;
+  size_t i;
+  atomic_fetch_add(d->started, 1);
+  for (i = d->first; i < d->first + d->count; i++) mt_drop(d->handles[i]);
+  return NULL;
+}
+
+static int drop_handles_while_closing(metta *runtime)
+{ static mt_atom *handles[HANDLES];
+  dropper droppers[DROPPERS];
+  pthread_t threads[DROPPERS];
+  atomic_uint started = 0;
+  size_t i;
+  int failed = 0;
+
+  for (i = 0; i < HANDLES; i++)
+  { handles[i] = mt_one(mt_eval(runtime, E("id", E("+", (int64_t)i))));
+    if ( mt_kind_of(handles[i]) != MT_HANDLE )
+    { fprintf(stderr, "partial %zu did not decode as a handle: %s\n", i,
+              mt_errmsg() ? mt_errmsg() : "no message");
+      return 1;
+    }
+  }
+  for (i = 0; i < DROPPERS; i++)
+  { droppers[i] = (dropper){ handles, i * (HANDLES / DROPPERS), HANDLES / DROPPERS, &started };
+    if ( pthread_create(&threads[i], NULL, run_dropper, &droppers[i]) != 0 ) return 1;
+  }
+  while ( atomic_load(&started) < DROPPERS ) sched_yield();
+  mt_close(runtime);                        /* while the drops are in flight */
+  for (i = 0; i < DROPPERS; i++)
+    if ( pthread_join(threads[i], NULL) != 0 ) failed++;
+  return failed;
+}
+
 int main(void)
 { thread_test test = {0};
   worker workers[2] = {
@@ -176,9 +229,11 @@ int main(void)
     failed++;
   }
   if ( !mt_undef(test.runtime, "thread-fail") ) failed++;
-  mt_close(test.runtime);
+  failed += drop_handles_while_closing(test.runtime);
+  mt_close(test.runtime);                   /* already closed: a no-op */
 
   if ( failed == 0 )
-    puts("thread attach, isolated errors, mt_of and detach ok");
+    puts("thread attach, isolated errors, mt_of, detach and handle drops "
+         "during close ok");
   return failed == 0 ? 0 : 1;
 }
