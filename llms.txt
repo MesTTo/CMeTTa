@@ -205,6 +205,12 @@ Conjunction patterns express joins. Build a prepared query once, pass mt_keep
 at each call, and it reads current facts. Add temporary facts inside
 mt_speculate and collect answers with mt_all before leaving the callback.
 
+`mt_solve(space, pattern, subject)` consumes both atoms and evaluates
+`(let pattern subject template)`, the template being the named variables of the
+pattern then the subject's new ones, a lone one standing for itself; each row
+reads a variable with `mt_bound`. It refuses MT_MISUSE when neither atom names
+a variable.
+
 Use engine terms new-state, get-state and change-state! for mutable cells.
 The current engine rolls cell writes back with the surrounding transaction.
 Type declarations and get-type express typed atoms and array shape relations.

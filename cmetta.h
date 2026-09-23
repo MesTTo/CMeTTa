@@ -807,6 +807,24 @@ MT_API MT_MUST_USE mt_answers *mt_self_query(metta *runtime, mt_atom *pattern,
                                             mt_atom *guard);
 MT_API MT_MUST_USE mt_answers *mt_space_query(mt_space *space, mt_atom *pattern,
                                              mt_atom *guard);
+/* Relational let answered as bindings, the Python seat's solve(). The known
+   value goes on let's pattern side and the relation runs backwards:
+
+       mt_rows (row, mt_solve(m, mt_num(10), mt_expr("double", mt_var("x"))))
+           printf("x = %s\n", mt_show(mt_bound(row, "x")));      prints x = 5
+
+   The answer template is derived rather than written: the named variables of
+   the pattern, then those the subject adds, each at its first occurrence, a
+   lone one standing for itself. Every answer is an instance of it, so
+   mt_bound() reads each variable by name. TAKES both atoms. NULL with
+   MT_MISUSE when neither holds a named variable, `_` being no name.
+   Longhand: (let pattern subject ($x $y ...)) [tested: tests/test_cmetta.c,
+   test_solve_runs_let_backwards_and_reads_bindings_by_name;
+   commit=WORKTREE]. */
+MT_API MT_MUST_USE mt_answers *mt_self_solve(metta *runtime, mt_atom *pattern,
+                                            mt_atom *subject);
+MT_API MT_MUST_USE mt_answers *mt_space_solve(mt_space *space, mt_atom *pattern,
+                                             mt_atom *subject);
 /* Evaluate under the engine's per-ask algebra. Each answer is (value coefficient),
    both ordinary atoms; the cursor owns it until the next step. TAKES algebra
    and goal. The declaration remains unchanged after close, failure or exhaustion.
@@ -845,6 +863,8 @@ MT_API bool mt_space_wipe(mt_space *space);
 /* Stored atoms unifying a pattern, lazily. TAKES `pattern`. */
 #define mt_match(target, pat)   MT_ON((target), match)((target), (pat))
 #define mt_query(target, pat, guard) MT_ON((target), query)((target), (pat), (guard))
+#define mt_solve(target, pattern, subject) \
+    MT_ON((target), solve)((target), (pattern), (subject))
 #define mt_eval_under(target, algebra, goal) \
     MT_ON((target), eval_under)((target), (algebra), (goal))
 

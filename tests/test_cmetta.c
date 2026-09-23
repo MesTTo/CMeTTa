@@ -1790,6 +1790,58 @@ static void test_many_variables_are_named_without_aborting(metta *m)
   free(source);
 }
 
+/* The Python seat's solve(): relational let answered as bindings, with the
+   template derived from the variables so no third let argument is written. */
+static void test_solve_runs_let_backwards_and_reads_bindings_by_name(metta *m)
+{ size_t rows = 0, factors = 0;
+  mt_space *kb;
+
+  CASE("mt_solve runs + backwards and reads the unknown by its name");
+  mt_clear();
+  mt_rows (row, mt_solve(m, mt_num(5), E("+", V("p"), 2)))
+  { rows++;
+    CHECK(mt_int(mt_bound(row, "p")) == 3);
+  }
+  CHECK(rows == 1 && mt_ok());
+
+  CASE("two unknowns answer every factor pair of 25, each read by name");
+  rows = 0;
+  mt_rows (row, mt_solve(m, mt_num(25), E("*", V("x"), V("y"))))
+  { rows++;
+    factors += mt_int(mt_bound(row, "x")) * mt_int(mt_bound(row, "y")) == 25;
+  }
+  CHECK(rows == 6 && factors == 6 && mt_ok());
+
+  CASE("the template is the pattern's variables, then the subject's new ones");
+  rows = 0;
+  mt_rows (row, mt_solve(m, E("pair", V("a"), 1), E("pair", 2, V("b"))))
+  { rows++;
+    CHECK(mt_len(row->atom) == 2 && mt_int(mt_at(row->atom, 0)) == 2 &&
+          mt_int(mt_at(row->atom, 1)) == 1);
+    CHECK(mt_int(mt_bound(row, "a")) == 2 && mt_int(mt_bound(row, "b")) == 1);
+  }
+  CHECK(rows == 1 && mt_ok());
+
+  CASE("a named space solves against its own equations");
+  kb = mt_space_open(m, "&cmetta-solve");
+  CHECK(kb && mt_add(kb, E("=", E("double", V("n")), E("*", 2, V("n")))));
+  rows = 0;
+  mt_rows (row, mt_solve(kb, mt_num(10), E("double", V("x"))))
+  { rows++;
+    CHECK(mt_int(mt_bound(row, "x")) == 5);
+  }
+  CHECK(rows == 1 && mt_ok());
+  CHECK(mt_wipe(kb));
+  mt_space_close(kb);
+
+  CASE("a solve with no named variable is refused, and _ names none");
+  mt_clear();
+  CHECK(mt_solve(m, mt_num(5), E("+", 3, 2)) == NULL && mt_error() == MT_MISUSE);
+  mt_clear();
+  CHECK(mt_solve(m, mt_num(5), E("+", V("_"), 2)) == NULL && mt_error() == MT_MISUSE);
+  mt_clear();
+}
+
 static void test_a_refusal_carries_the_engines_remedy_and_ground(metta *m)
 { CASE("a refusal says what to do about it, in the engine's own words");
   mt_clear();
@@ -2171,6 +2223,7 @@ int main(void)
   test_the_standard_order_is_the_engines(m);
   test_an_engine_value_crosses_back_whole(m);
   test_many_variables_are_named_without_aborting(m);
+  test_solve_runs_let_backwards_and_reads_bindings_by_name(m);
   test_a_refusal_carries_the_engines_remedy_and_ground(m);
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_the_counters_measure_engine_work(m);

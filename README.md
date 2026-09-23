@@ -125,6 +125,7 @@ Like `tgmath.h`, `_Generic` selects the declared function for either a runtime's
 | `mt_load` | `mt_self_load` | `mt_space_load` |
 | `mt_do` | `mt_self_do` | `mt_space_do` |
 | `mt_query` | `mt_self_query` | `mt_space_query` |
+| `mt_solve` | `mt_self_solve` | `mt_space_solve` |
 | `mt_eval_under` | `mt_self_eval_under` | `mt_space_eval_under` |
 
 ## Ownership
@@ -376,6 +377,18 @@ mt_drop(pattern);
 With `(Parent Tom Bob)` and `(Parent Bob Ann)`, this prints `Ann`.
 `mt_match` remains the primitive stored-pattern lookup; `mt_query` reaches the
 language matcher, including conjunctions.
+
+`mt_solve(target, pattern, subject)` is relational `let` answered as bindings:
+the known value goes on the pattern side and the relation runs backwards, and
+the answer template is the pattern's variables then the subject's new ones, so
+`mt_bound` reads each by name.
+
+```c
+mt_rows (row, mt_solve(m, mt_num(25), mt_expr("*", mt_var("x"), mt_var("y"))))
+    printf("%s * %s\n", mt_show(mt_bound(row, "x")), mt_show(mt_bound(row, "y")));
+```
+
+This prints the six integer factor pairs of 25, `-25 * -1` first.
 
 ## Prepared queries and temporary facts
 

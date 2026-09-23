@@ -5167,6 +5167,111 @@ mt_answers *mt_space_query(mt_space *space, mt_atom *pattern, mt_atom *guard)
   return out;
 }
 
+/* The template mt_solve() asks let to answer with: the distinct named
+   variables of `pattern`, then those `subject` adds, each at its first
+   occurrence depth first, a lone one standing for itself. NULL with the
+   reason recorded when neither atom holds a named variable.
+   [source: extensions/python/metta/_spaces/query.py, solve and
+   extensions/python/metta/_spaces/cursor.py, _column_names;
+   commit=b88bfb4ce75e4f37ccda3d99456acb40afddf761]
+   Time: one visit per node, plus one name comparison per variable already
+   collected at each named variable met; the variables are the ones a
+   program wrote, so the scan is over a handful. */
+static mt_atom *solve_template(const mt_atom *pattern, const mt_atom *subject)
+{ hash_frame fixed[MT_WALK_FRAMES];
+  hash_stack frames;
+  const mt_atom *roots[2];
+  mt_atom **vars = NULL, *template = NULL;
+  size_t n = 0, cap = 0, r, i;
+  bool failed = false;
+
+  roots[0] = pattern;
+  roots[1] = subject;
+  stack_init(&frames, fixed);
+  for (r = 0; r < 2 && !failed; r++)
+  { const mt_atom *current = roots[r];
+    while ( current && !failed )
+    { if ( current->kind == MT_VARIABLE &&
+           !(current->u.t.len == 1 && current->u.t.text[0] == '_') )
+      { i = 0;
+        while ( i < n && !mt_eq(vars[i], current) ) i++;
+        if ( i == n )
+        { if ( n == cap )
+          { size_t grown_cap, bytes;
+            mt_atom **grown;
+            if ( !next_capacity(cap, 4, sizeof *vars, &grown_cap, &bytes) ||
+                 !(grown = mt_resize(vars, bytes)) )
+            { failed = true;
+              break;
+            }
+            vars = grown;
+            cap = grown_cap;
+          }
+          vars[n++] = mt_keep(current);
+        }
+      } else if ( current->kind == MT_EXPR && current->u.e.n )
+      { hash_frame frame = { current, 1 };
+        if ( !stack_push(&frames, frame) )
+        { failed = true;
+          break;
+        }
+        current = current->u.e.kids[0];
+        continue;
+      }
+      /* The next sibling still to visit, closing every finished level. */
+      current = NULL;
+      while ( stack_top(&frames) )
+      { hash_frame *frame = stack_top(&frames);
+        if ( frame->at < frame->atom->u.e.n )
+        { current = frame->atom->u.e.kids[frame->at++];
+          break;
+        }
+        stack_pop(&frames);
+      }
+    }
+  }
+  stack_free(&frames);
+  if ( failed )
+    err_set(MT_NOMEM, "out of memory collecting the variables mt_solve answers");
+  else if ( n == 0 )
+    err_set(MT_MISUSE,
+            "mt_solve needs a named variable in its pattern or its subject: "
+            "the answers are that variable's bindings, and there is none to "
+            "report; evaluate a ground let with mt_eval instead");
+  else if ( n == 1 )
+  { template = vars[0];
+    n = 0;
+  } else
+  { template = mt_exprv(n, vars);    /* takes the variables */
+    n = 0;
+  }
+  for (i = 0; i < n; i++) mt_drop(vars[i]);
+  mt_free(vars);
+  return template;
+}
+
+/* (let pattern subject template), kept as the cursor's pattern, since every
+   answer is an instance of the template and mt_bound() then reads each
+   variable by name. [tested: tests/test_cmetta.c,
+   test_solve_runs_let_backwards_and_reads_bindings_by_name;
+   commit=WORKTREE] */
+mt_answers *mt_space_solve(mt_space *space, mt_atom *pattern, mt_atom *subject)
+{ mt_answers *out = NULL;
+  mt_atom *template = NULL;
+  if ( handle_ready(space, "mt_space_solve") &&
+       atom_given(pattern, "mt_space_solve") &&
+       atom_given(subject, "mt_space_solve") &&
+       (template = solve_template(pattern, subject)) )
+  { out = mt_space_eval(space, mt_expr("let", pattern, subject, mt_keep(template)));
+    pattern = subject = NULL;
+  }
+  mt_drop(pattern);
+  mt_drop(subject);
+  if ( out ) out->pattern = template;
+  else mt_drop(template);
+  return out;
+}
+
 mt_answers *mt_space_eval_under(mt_space *space, mt_atom *algebra, mt_atom *goal)
 { mt_answers *out = NULL;
   mt_atom *request = mt_expr(algebra, goal);
@@ -5178,6 +5283,8 @@ mt_answers *mt_space_eval_under(mt_space *space, mt_atom *algebra, mt_atom *goal
 
 mt_answers *mt_self_query(metta *runtime, mt_atom *pattern, mt_atom *guard)
 { return mt_space_query(mt_self(runtime), pattern, guard); }
+mt_answers *mt_self_solve(metta *runtime, mt_atom *pattern, mt_atom *subject)
+{ return mt_space_solve(mt_self(runtime), pattern, subject); }
 mt_answers *mt_self_eval_under(metta *runtime, mt_atom *algebra, mt_atom *goal)
 { return mt_space_eval_under(mt_self(runtime), algebra, goal); }
 

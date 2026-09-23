@@ -5,6 +5,16 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Add mt_solve, relational let answered as bindings, the C counterpart of the
+  Python seat's solve(). mt_solve(target, pattern, subject) evaluates
+  (let pattern subject template) with the template derived rather than
+  written: the named variables of the pattern, then those the subject adds,
+  each at its first occurrence, a lone one standing for itself. Every answer
+  is an instance of the template, so the cursor keeps it and mt_bound() reads
+  each variable by name, as it does for mt_match and mt_query. Solving 25 for
+  (* $x $y) answers the six factor pairs. A solve naming no variable, `_`
+  included, is refused with MT_MISUSE.
+
 - Stop a decode from aborting the process on terms with many variables, and
   bound every term walk's SWI references by its depth. Naming a variable
   walked the engine's name list making two term references per pair and kept
