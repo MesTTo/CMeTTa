@@ -2873,8 +2873,10 @@ static mt_atom *written(term_t t)
    encoding the handle puts back the identical blob. The record belongs to the
    runtime generation that made it, and is erased on the handle's last release
    only while that runtime is still open; after mt_close() the heap it lived
-   in is gone with the runtime [tested: tests/test_cmetta.c,
-   test_a_native_value_crosses_back_whole; commit=65b02ca599b0db696faf221f4f39e94210013fc1]. */
+   in is gone with the runtime [tested: tests/test_internal_contracts.c,
+   test_native_handle_decode_and_encode_contract,
+   test_a_handle_released_during_close_leaves_its_record; tests/test_reopen.c,
+   test_a_handle_does_not_outlive_its_runtime; commit=WORKTREE]. */
 /* A handle may be dropped on any thread, including while mt_close() tears
    the runtime down on another, and erasing a record into a heap PL_cleanup()
    is freeing would corrupt it. So an eraser announces itself and then looks
@@ -2882,7 +2884,10 @@ static mt_atom *written(term_t t)
    announced erasers; with sequentially consistent operations at least one of
    the two sees the other (Dekker's handshake), so an erase either finishes
    before cleanup starts or is skipped. The erasers' count is held only
-   around PL_erase, which is a few instructions. */
+   around PL_erase, which is a few instructions [tested:
+   tests/test_threads.c, test_drop_handles_while_closing;
+   tests/test_internal_contracts.c,
+   test_a_handle_released_during_close_leaves_its_record; commit=WORKTREE]. */
 static MT_ATOMIC unsigned g_record_erasers;
 static MT_ATOMIC bool     g_closing;
 

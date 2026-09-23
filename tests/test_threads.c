@@ -9,8 +9,8 @@
  *   error text, exercised mt_of, isolated the mt_show ring, and detached
  *   [tested: test_threads.c; commit=b339084bb5625996fc88a31608d48ad31c575d1f],
  *   and after four threads dropped 4,000 handles while the main thread closed
- *   the runtime [tested: test_threads.c, drop_handles_while_closing;
- *   commit=6e91a33be09722c403ae665dd7affd608a067437].
+ *   the runtime [tested: test_threads.c, test_drop_handles_while_closing;
+ *   commit=WORKTREE].
  * Owns resources: two pthreads and their joined lifetimes; one runtime closed
  *   after both workers have detached.
  * Guarded by: C atomics coordinate rendezvous; each worker owns its result.
@@ -159,7 +159,7 @@ static void *run_dropper(void *opaque)
   return NULL;
 }
 
-static int drop_handles_while_closing(metta *runtime)
+static int test_drop_handles_while_closing(metta *runtime)
 { static mt_atom *handles[HANDLES];
   dropper droppers[DROPPERS];
   pthread_t threads[DROPPERS];
@@ -234,7 +234,7 @@ int main(void)
     failed++;
   }
   if ( !mt_undef(test.runtime, "thread-fail") ) failed++;
-  failed += drop_handles_while_closing(test.runtime);
+  failed += test_drop_handles_while_closing(test.runtime);
   mt_close(test.runtime);                   /* already closed: a no-op */
 
   if ( failed == 0 )
