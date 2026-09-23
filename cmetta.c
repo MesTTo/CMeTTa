@@ -2279,6 +2279,75 @@ typedef struct mt_row_entry {
   mt_seam_row row;
 } mt_row_entry;
 
+/* Every predicate this seat calls by name, each once: its name, arity and
+   module. A call used to intern all three through PL_predicate() every time,
+   two atom lookups and a procedure lookup on every bridge call, and an atom
+   lookup hashes its text, so the cost also moved with where the linker
+   happened to put the strings: cursor-step spent 54 more instructions a step
+   in MurmurHashAligned2 once "user" sat off a 16-byte boundary, with every
+   call count unchanged [measured 2026-09-24: callgrind, cases cursor-step
+   20000, 8241b53 against a tree whose only hot-path change was that literal's
+   address; lookupBlob +16 a step]. Each handle is now resolved at its first
+   call in a runtime, exactly when the per-call lookup first resolved it, and
+   kept in the runtime until mt_close() clears it (see bridge_predicate()). */
+#define MT_BRIDGES(X) \
+  X(BRIDGE_CALL,                "call", 1, "user") \
+  X(BRIDGE_CONSULT,             "consult", 1, "user") \
+  X(BRIDGE_CURRENT_PROLOG_FLAG, "current_prolog_flag", 2, "user") \
+  X(BRIDGE_ADD,                 "metta_c_add", 2, "user") \
+  X(BRIDGE_ADD_ALL,             "metta_c_add_all", 2, "user") \
+  X(BRIDGE_ANSWER_PARTS,        "metta_c_answer_parts", 4, "user") \
+  X(BRIDGE_CLEAR,               "metta_c_clear", 1, "user") \
+  X(BRIDGE_CLOSE,               "metta_c_close", 1, "user") \
+  X(BRIDGE_CLOSE_PROVIDER,      "metta_c_close_provider", 1, "user") \
+  X(BRIDGE_COUNT,               "metta_c_count", 2, "user") \
+  X(BRIDGE_DROP_SPACE,          "metta_c_drop_space", 1, "user") \
+  X(BRIDGE_EFFECT_PLAN,         "metta_c_effect_plan", 3, "user") \
+  X(BRIDGE_ERROR_ADVICE,        "metta_c_error_advice", 3, "user") \
+  X(BRIDGE_ERROR_TEXT,          "metta_c_error_text", 2, "user") \
+  X(BRIDGE_LIBRARY_PATH,        "metta_c_library_path", 3, "user") \
+  X(BRIDGE_LIMIT_BALL,          "metta_c_limit_ball", 3, "user") \
+  X(BRIDGE_LOAD,                "metta_c_load", 5, "user") \
+  X(BRIDGE_NEXT,                "metta_c_next", 4, "user") \
+  X(BRIDGE_OPEN_EVAL,           "metta_c_open_eval", 4, "user") \
+  X(BRIDGE_OPEN_MATCH,          "metta_c_open_match", 4, "user") \
+  X(BRIDGE_OPEN_PROVIDER,       "metta_c_open_provider", 3, "user") \
+  X(BRIDGE_OPEN_UNDER,          "metta_c_open_under", 4, "user") \
+  X(BRIDGE_RATIONAL_PARTS,      "metta_c_rational_parts", 3, "user") \
+  X(BRIDGE_READ,                "metta_c_read", 3, "user") \
+  X(BRIDGE_READ_FORMS,          "metta_c_read_forms", 3, "user") \
+  X(BRIDGE_REGISTER_OP,         "metta_c_register_op", 3, "user") \
+  X(BRIDGE_REMOVE,              "metta_c_remove", 3, "user") \
+  X(BRIDGE_RUN,                 "metta_c_run", 5, "user") \
+  X(BRIDGE_SHOW,                "metta_c_show", 3, "user") \
+  X(BRIDGE_SPACE_OPERAND,       "metta_c_space_operand", 1, "user") \
+  X(BRIDGE_SPECULATE,           "metta_c_speculate", 1, "user") \
+  X(BRIDGE_STATS,               "metta_c_stats", 1, "user") \
+  X(BRIDGE_SUBSCRIBE,           "metta_c_subscribe", 4, "user") \
+  X(BRIDGE_TRANSACTION,         "metta_c_transaction", 1, "user") \
+  X(BRIDGE_TRANSACTION_SCOPE,   "metta_c_transaction_scope", 1, "user") \
+  X(BRIDGE_UNREGISTER_OP,       "metta_c_unregister_op", 1, "user") \
+  X(BRIDGE_UNSUBSCRIBE,         "metta_c_unsubscribe", 1, "user") \
+  X(BRIDGE_WRITE_ATOM,          "metta_c_write_atom", 3, "user") \
+  X(BRIDGE_HOST_SET_SILENT,     "metta_host_set_silent", 1, "user") \
+  X(BRIDGE_SET_PROLOG_FLAG,     "set_prolog_flag", 2, "user")
+
+typedef enum bridge_id
+{
+#define MT_BRIDGE_ID(id, name, arity, module) id,
+  MT_BRIDGES(MT_BRIDGE_ID)
+#undef MT_BRIDGE_ID
+  MT_BRIDGES_N
+} bridge_id;
+
+static const struct bridge_row { const char *name; int arity; const char *module; }
+g_bridges[MT_BRIDGES_N] =
+{
+#define MT_BRIDGE_ROW(id, name, arity, module) [id] = { name, arity, module },
+  MT_BRIDGES(MT_BRIDGE_ROW)
+#undef MT_BRIDGE_ROW
+};
+
 struct metta
 { bool              open;
   uint64_t          generation;
@@ -2286,7 +2355,8 @@ struct metta
   bool              verbose;
   mt_limits    limits;
   size_t            initial_stack_bytes;
-  predicate_t        space_operand;
+  /* Bridge handles by bridge_id, each resolved at its first call. */
+  MT_ATOMIC predicate_t bridges[MT_BRIDGES_N];
   functor_t          equal_functor;
   functor_t          pair_functor;
   mt_op_entry_t *ops;
@@ -2300,6 +2370,21 @@ struct metta
 };
 
 static struct metta g_runtime;
+
+/* One bridge predicate's handle in this runtime: resolved at its first call
+   and kept until mt_close() clears the runtime, since PL_cleanup()
+   invalidates every predicate_t. Two threads resolving one handle at once
+   each store the procedure PL_predicate() answers both, the same one, so a
+   relaxed load and store are all the sharing needs. */
+static predicate_t bridge_predicate(bridge_id which)
+{ predicate_t p = atomic_load_explicit(&g_runtime.bridges[which], memory_order_relaxed);
+  if ( !p )
+  { p = PL_predicate(g_bridges[which].name, g_bridges[which].arity,
+                     g_bridges[which].module);
+    atomic_store_explicit(&g_runtime.bridges[which], p, memory_order_relaxed);
+  }
+  return p;
+}
 static bool         g_open = false;
 static bool         g_cleanup_failed = false;
 static uint64_t     g_runtime_generation;
@@ -2326,7 +2411,8 @@ static mt_space g_catalog = { &g_runtime, (char *)"&metta", true };
    [tested: test_restart_replaces_runtime_owned_predicates;
    commit=802878f86f478c23fc05f7e68cbe605160eedb59]. */
 void *mt_test_cached_space_predicate(void)
-{ return g_runtime.space_operand;
+{ return g_open ? (void *)bridge_predicate(BRIDGE_SPACE_OPERAND)
+                : (void *)atomic_load(&g_runtime.bridges[BRIDGE_SPACE_OPERAND]);
 }
 #endif
 
@@ -2430,7 +2516,7 @@ static char *term_text(term_t t, int cvt, size_t *len_out)
   return copy;
 }
 
-static mt_status call_bridge(const char *name, int arity, term_t av);
+static mt_status call_bridge(bridge_id which, term_t av);
 /* The seam lives below `Publishing C functions`, where its doors read best
    beside mt_def(); mt_close() and the boot's foreign registrations are above
    it and reach it through these. */
@@ -2462,27 +2548,21 @@ static foreign_t pl_cmetta_tx_outcome(term_t ticket, term_t committed);
    The predicate is a test over a bound atom and cannot throw, so a plain
    call is enough; a failure is the answer "no" rather than an error.
 
-   The handle is resolved once per runtime. PL_predicate() interns the name
-   and walks the module's procedure table on every call, and this runs once
-   per decoded atom: caching it takes the question from 3,358 to 2,208
-   instructions per atom [measured 2026-08-27, perf stat -e instructions:u,
-   minimum of three runs of kit/driver over 500 programs answering 40 symbols each:
-   3,018,075,923 asking nothing, 3,085,234,884 resolving per call,
-   3,062,228,470 resolving once, so 1,150 saved of 3,358 and +1.46% over
-   asking nothing on a workload that is nothing but symbol decoding].
-   PL_cleanup() invalidates predicate handles, so the runtime owns this one
-   and mt_open() resolves it again after every successful restart. */
+   Its handle is the bridge table's, resolved once per runtime. PL_predicate()
+   interns the name and walks the module's procedure table on every call, and
+   this runs once per decoded atom: caching it took the question from 3,358
+   to 2,208 instructions per atom [measured 2026-08-27, perf stat -e
+   instructions:u, minimum of three runs of kit/driver over 500 programs
+   answering 40 symbols each: 3,018,075,923 asking nothing, 3,085,234,884
+   resolving per call, 3,062,228,470 resolving once, so 1,150 saved of 3,358
+   and +1.46% over asking nothing on a workload that is nothing but symbol
+   decoding]. */
 static bool is_space(term_t t)
 { fid_t f;
   int rc;
 
-  if ( !g_runtime.space_operand )
-  { err_set(MT_ERROR,
-            "the runtime has no metta_c_space_operand/1 predicate handle");
-    return false;
-  }
   if ( !(f = frame_open("decoding a symbol")) ) return false;
-  rc = PL_call_predicate(NULL, PL_Q_NORMAL, g_runtime.space_operand, t);
+  rc = PL_call_predicate(NULL, PL_Q_NORMAL, bridge_predicate(BRIDGE_SPACE_OPERAND), t);
   PL_discard_foreign_frame(f);
   return rc == TRUE;
 }
@@ -2666,7 +2746,7 @@ static mt_atom *decode_number(term_t t, int type)
     if ( !f ) return NULL;
     av = PL_new_term_refs(3);
     if ( av && PL_unify(av, t) &&
-         call_bridge("metta_c_rational_parts", 3, av) == MT_OK &&
+         call_bridge(BRIDGE_RATIONAL_PARTS, av) == MT_OK &&
          PL_get_int64(av + 1, &num) && PL_get_int64(av + 2, &den) )
       a = mt_rational(num, den);
     else
@@ -3434,7 +3514,7 @@ done:
 static void advise_ball(term_t ball)
 { fid_t f = PL_open_foreign_frame();
   term_t av;
-  predicate_t p = PL_predicate("metta_c_error_advice", 3, "user");
+  predicate_t p = bridge_predicate(BRIDGE_ERROR_ADVICE);
   qid_t q;
 
   /* PL_open_foreign_frame() rather than frame_open(): this runs with the
@@ -3462,7 +3542,7 @@ static void advise_ball(term_t ball)
 static void render_ball(term_t ball)
 { fid_t f = frame_open("rendering an engine error");
   term_t av;
-  predicate_t p = PL_predicate("metta_c_error_text", 2, "user");
+  predicate_t p = bridge_predicate(BRIDGE_ERROR_TEXT);
   qid_t q;
 
   if ( !f ) return;   /* frame_open() recorded why, which is all there is */
@@ -3498,7 +3578,7 @@ static void render_ball(term_t ball)
 static bool ball_is_limit(term_t ball)
 { fid_t f = frame_open("classifying an engine error");
   term_t av;
-  predicate_t p = PL_predicate("metta_c_limit_ball", 3, "user");
+  predicate_t p = bridge_predicate(BRIDGE_LIMIT_BALL);
   qid_t q;
   bool yes = false;
 
@@ -3546,9 +3626,10 @@ static mt_status ball_status(record_t saved, const char *name, int arity)
 
 /* Call a bridge predicate for its first solution, KEEPING its bindings, so the
    caller can read the output arguments out of av. The caller owns the frame. */
-static mt_status call_bridge(const char *name, int arity, term_t av)
-{ predicate_t p = PL_predicate(name, arity, "user");
-  qid_t q = PL_open_query(NULL, PL_Q_CATCH_EXCEPTION, p, av);
+static mt_status call_bridge(bridge_id which, term_t av)
+{ const char *name = g_bridges[which].name;
+  int arity = g_bridges[which].arity;
+  qid_t q = PL_open_query(NULL, PL_Q_CATCH_EXCEPTION, bridge_predicate(which), av);
   int rc;
   mt_status status;
 
@@ -3966,7 +4047,7 @@ static bool goal(const char *text)
     } else
       status = err_set(MT_ERROR, "the engine goal could not be read");
   } else
-    status = call_bridge("call", 1, t);
+    status = call_bridge(BRIDGE_CALL, t);
   PL_discard_foreign_frame(f);
   return status == MT_OK;
 }
@@ -3980,8 +4061,9 @@ static bool goal(const char *text)
    byte interpretation used by PL_put_atom_chars
    [source: https://github.com/SWI-Prolog/swipl-devel/blob/dec2acf760a8571381fb6b554438bd7d90c8cacf/src/SWI-Prolog.h#L969-L981;
    commit=2ed500695e8c9ecefaeeaa2b3fd30e4fef32a8e2]. */
-static bool goal_atom(const char *name, const char *value)
-{ fid_t f = frame_open("running an engine goal with an atom argument");
+static bool goal_atom(bridge_id which, const char *value)
+{ const char *name = g_bridges[which].name;
+  fid_t f = frame_open("running an engine goal with an atom argument");
   term_t av;
   mt_status status;
 
@@ -4005,7 +4087,7 @@ static bool goal_atom(const char *name, const char *value)
                        name);
   }
   else
-    status = call_bridge(name, 1, av);
+    status = call_bridge(which, av);
   frame_close(f);
   return status == MT_OK;
 }
@@ -4024,7 +4106,7 @@ static bool prolog_size_flag(const char *name, size_t *value)
   if ( !av || !put_name(av, name) )
     status = err_set(MT_NOMEM, "out of memory reading Prolog flag %s", name);
   else
-    status = call_bridge("current_prolog_flag", 2, av);
+    status = call_bridge(BRIDGE_CURRENT_PROLOG_FLAG, av);
   if ( status == MT_OK && !PL_get_uint64(av + 1, &wide) )
     status = err_set(MT_ERROR, "Prolog flag %s was not an unsigned integer",
                      name);
@@ -4053,7 +4135,7 @@ static bool set_prolog_size_flag(const char *name, size_t value)
                      "could not represent the requested Prolog flag %s",
                      name);
   else
-    status = call_bridge("set_prolog_flag", 2, av);
+    status = call_bridge(BRIDGE_SET_PROLOG_FLAG, av);
   frame_close(f);
   return status == MT_OK;
 }
@@ -4208,7 +4290,7 @@ metta *mt_open(const mt_config *config)
      re-run 2026-09-05 against an EMPTY artifact set, so all six generate:
      6/6]. */
   snprintf(buf, bufsz, "%s/engine/qlf_boot.pl", path);
-  if ( !goal_atom("consult", buf) )
+  if ( !goal_atom(BRIDGE_CONSULT, buf) )
   { mt_free(path); mt_free(buf);
     return NULL;
   }
@@ -4252,12 +4334,10 @@ metta *mt_open(const mt_config *config)
   }
 
   /* predicate_t values point into SWI's procedure table and PL_cleanup()
-     invalidates them. Resolve the cache after the bridge has loaded, then
-     clear it only after cleanup succeeds
+     invalidates them, so the bridge table resolves each at its first call
+     and mt_close() clears the table only after cleanup succeeds
      [tested: test_restart_replaces_runtime_owned_predicates;
      commit=802878f86f478c23fc05f7e68cbe605160eedb59]. */
-  g_runtime.space_operand =
-    PL_predicate("metta_c_space_operand", 1, "user");
   g_runtime.equal_functor = equal_functor;
   g_runtime.pair_functor = pair_functor;
   g_runtime.initial_stack_bytes = initial_stack_bytes;
@@ -4347,7 +4427,7 @@ bool mt_verbose(metta *runtime, bool verbose)
      it resolves in `user` the way every other engine predicate this file
      reaches does. */
   if ( av && put_name(av, verbose ? "false" : "true") &&
-       call_bridge("metta_host_set_silent", 1, av) == MT_OK )
+       call_bridge(BRIDGE_HOST_SET_SILENT, av) == MT_OK )
     runtime->verbose = verbose;
   PL_discard_foreign_frame(f);
   return was;
@@ -4384,7 +4464,7 @@ void mt_thread_detach(void)
    there is one of those per process. Threading a handle through them was
    ceremony that never chose anything. */
 static mt_atom *parse_n(const char *source, size_t length, const char *door,
-                        const char *predicate)
+                        bridge_id which)
 { fid_t f;
   term_t av;
   mt_atom *out = NULL;
@@ -4398,7 +4478,7 @@ static mt_atom *parse_n(const char *source, size_t length, const char *door,
     if ( mt_ok() ) err_set(MT_NOMEM, "out of memory holding the source");
     return NULL;
   }
-  if ( call_bridge(predicate, 3, av) == MT_OK )
+  if ( call_bridge(which, av) == MT_OK )
     out = decode(av + 1, av + 2);
   PL_discard_foreign_frame(f);
   return out;
@@ -4406,19 +4486,19 @@ static mt_atom *parse_n(const char *source, size_t length, const char *door,
 
 mt_atom *mt_parse(const char *source)
 { if ( !source ) return err_null(MT_MISUSE, "mt_parse needs source text");
-  return parse_n(source, strlen(source), "mt_parse", "metta_c_read");
+  return parse_n(source, strlen(source), "mt_parse", BRIDGE_READ);
 }
 
 mt_atom *mt_parsen(const char *source, size_t length)
 { if ( !source ) return err_null(MT_MISUSE, "mt_parsen needs source text");
-  return parse_n(source, length, "mt_parsen", "metta_c_read");
+  return parse_n(source, length, "mt_parsen", BRIDGE_READ);
 }
 
 mt_list mt_forms(const char *source)
 { mt_atom *forms;
   mt_list result = {0};
   if ( !source ) { err_set(MT_MISUSE, "mt_forms needs source text"); return result; }
-  forms = parse_n(source, strlen(source), "mt_forms", "metta_c_read_forms");
+  forms = parse_n(source, strlen(source), "mt_forms", BRIDGE_READ_FORMS);
   if ( !forms ) return result;
   /* The fresh decoded expression has one owner; transfer its child vector. */
   result = (mt_list){forms->u.e.kids, forms->u.e.n};
@@ -4436,7 +4516,7 @@ char *mt_show_dup(const mt_atom *atom)
   if ( !(f = frame_open("mt_show_dup")) ) return NULL;
   av = PL_new_term_refs(3);
   if ( av && put_atom_named(atom, av, av + 1) &&
-       call_bridge("metta_c_show", 3, av) == MT_OK &&
+       call_bridge(BRIDGE_SHOW, av) == MT_OK &&
        !(text = term_text(av + 2, CVT_ATOM | CVT_STRING, NULL)) )
     err_set(MT_NOMEM, "out of memory copying the engine's rendering");
   PL_discard_foreign_frame(f);
@@ -4452,7 +4532,7 @@ mt_string mt_write_dup(const mt_atom *atom)
   if ( !(f = frame_open("mt_write_dup")) ) return text;
   av = PL_new_term_refs(3);
   if ( av && put_atom_named(atom, av, av + 1) &&
-       call_bridge("metta_c_write_atom", 3, av) == MT_OK &&
+       call_bridge(BRIDGE_WRITE_ATOM, av) == MT_OK &&
        !(text.data = term_text(av + 2, CVT_ATOM | CVT_STRING, &text.len)) )
     err_set(MT_NOMEM, "out of memory copying the engine's written form");
   PL_discard_foreign_frame(f);
@@ -4567,10 +4647,12 @@ static bool atom_given(const mt_atom *atom, const char *door)
    [measured 2026-08-31: clang --analyze reported cmetta.c:1737 and 1741, and
    valgrind "Use of uninitialised value of size 8 at
    PL_discard_foreign_frame" under mt_space_del]. */
-static mt_status space_call(const char *pred, mt_space *space,
-                                 const mt_atom *atom, int arity,
+static mt_status space_call(bridge_id which, mt_space *space,
+                                 const mt_atom *atom,
                                  term_t *avp, fid_t *fp)
-{ fid_t f = frame_open(pred);
+{ const char *pred = g_bridges[which].name;
+  int arity = g_bridges[which].arity;
+  fid_t f = frame_open(pred);
   term_t av = 0;
   mt_status status = MT_NOMEM;
 
@@ -4587,7 +4669,7 @@ static mt_status space_call(const char *pred, mt_space *space,
                                  "%s could not write its arguments", pred)
                        : mt_error();   /* put_atom already said why */
     else
-      status = call_bridge(pred, arity, av);
+      status = call_bridge(which, av);
   }
   if ( !fp ) frame_close(f);
   return status;
@@ -4601,7 +4683,7 @@ bool mt_space_add(mt_space *space, mt_atom *atom)
 { mt_status status = MT_MISUSE;
 
   if ( handle_ready(space, "mt_space_add") && atom_given(atom, "mt_space_add") )
-    status = space_call("metta_c_add", space, atom, 2, NULL, NULL);
+    status = space_call(BRIDGE_ADD, space, atom, NULL, NULL);
   mt_drop(atom);
   return status == MT_OK;
 }
@@ -4649,7 +4731,7 @@ bool mt_space_add_all(mt_space *space, mt_list atoms)
                  : mt_error();
           break;
         }
-      if ( status == MT_OK ) status = call_bridge("metta_c_add_all", 2, av);
+      if ( status == MT_OK ) status = call_bridge(BRIDGE_ADD_ALL, av);
     }
   }
   frame_close(f);
@@ -4664,7 +4746,7 @@ bool mt_space_del(mt_space *space, mt_atom *atom)
   bool removed = false;
 
   if ( handle_ready(space, "mt_space_del") && atom_given(atom, "mt_space_del") )
-    status = space_call("metta_c_remove", space, atom, 3, &av, &f);
+    status = space_call(BRIDGE_REMOVE, space, atom, &av, &f);
 
   if ( status == MT_OK )
   { char *text = term_text(av + 2, CVT_ATOM, NULL);
@@ -4699,7 +4781,7 @@ size_t mt_space_count(mt_space *space)
   size_t n = 0;
 
   if ( handle_ready(space, "mt_space_count") )
-    status = space_call("metta_c_count", space, NULL, 2, &av, &f);
+    status = space_call(BRIDGE_COUNT, space, NULL, &av, &f);
 
   if ( status == MT_OK && !space_count_value(av + 1, &n) )
     status = MT_ERROR;
@@ -4709,7 +4791,7 @@ size_t mt_space_count(mt_space *space)
 
 bool mt_space_wipe(mt_space *space)
 { return handle_ready(space, "mt_space_wipe") &&
-         space_call("metta_c_clear", space, NULL, 1, NULL, NULL) == MT_OK;
+         space_call(BRIDGE_CLEAR, space, NULL, NULL, NULL) == MT_OK;
 }
 
 /* The &self halves of the same verbs, which is what a `metta *` receiver
@@ -4881,7 +4963,7 @@ static mt_status collect_groups(term_t groups, mt_answers *out)
       char *text = NULL;
 
       if ( av && PL_unify(av, answer) &&
-           call_bridge("metta_c_answer_parts", 4, av) == MT_OK )
+           call_bridge(BRIDGE_ANSWER_PARTS, av) == MT_OK )
       { atom = decode_answer(av + 1, av + 2);
         text = term_text(av + 3, CVT_ATOM | CVT_STRING, NULL);
       }
@@ -4916,13 +4998,14 @@ static mt_status collect_groups(term_t groups, mt_answers *out)
   return MT_OK;
 }
 
-static mt_status run_or_load(metta *runtime, const char *pred, int representation,
+static mt_status run_or_load(metta *runtime, bridge_id which, int representation,
                                   const char *argument, const char *space,
                                   mt_answers **out)
 { fid_t f;
   term_t av;
   mt_answers *answers;
   mt_status status;
+  const char *pred = g_bridges[which].name;
 
   *out = NULL;   /* zeroed FIRST: a caller reusing one variable across calls
                     would otherwise still hold the last cursor's pointer after
@@ -4944,7 +5027,7 @@ static mt_status run_or_load(metta *runtime, const char *pred, int representatio
     return mt_ok() ? err_set(MT_NOMEM, "out of memory holding the argument")
                    : mt_error();
   }
-  status = call_bridge(pred, 5, av);
+  status = call_bridge(which, av);
   if ( status == MT_OK ) status = collect_groups(av + 4, answers);
   PL_discard_foreign_frame(f);
 
@@ -4959,7 +5042,7 @@ static mt_status run_or_load(metta *runtime, const char *pred, int representatio
 mt_answers *mt_self_run(metta *runtime, const char *source)
 { mt_answers *out = NULL;
   if ( handle_ready(runtime, "mt_run") )
-    run_or_load(runtime, "metta_c_run", REP_UTF8, source, "&self", &out);
+    run_or_load(runtime, BRIDGE_RUN, REP_UTF8, source, "&self", &out);
   return out;
 }
 
@@ -4974,21 +5057,21 @@ bool mt_self_do(metta *runtime, const char *source)
 mt_answers *mt_self_load(metta *runtime, const char *path)
 { mt_answers *out = NULL;
   if ( handle_ready(runtime, "mt_load") )
-    run_or_load(runtime, "metta_c_load", REP_FN, path, "&self", &out);
+    run_or_load(runtime, BRIDGE_LOAD, REP_FN, path, "&self", &out);
   return out;
 }
 
 mt_answers *mt_space_run(mt_space *space, const char *source)
 { mt_answers *out = NULL;
   if ( handle_ready(space, "mt_space_run") )
-    run_or_load(space->runtime, "metta_c_run", REP_UTF8, source, space->name, &out);
+    run_or_load(space->runtime, BRIDGE_RUN, REP_UTF8, source, space->name, &out);
   return out;
 }
 
 mt_answers *mt_space_load(mt_space *space, const char *path)
 { mt_answers *out = NULL;
   if ( handle_ready(space, "mt_space_load") )
-    run_or_load(space->runtime, "metta_c_load", REP_FN, path, space->name, &out);
+    run_or_load(space->runtime, BRIDGE_LOAD, REP_FN, path, space->name, &out);
   return out;
 }
 
@@ -5001,10 +5084,10 @@ bool mt_space_do(mt_space *space, const char *source)
 
 bool mt_space_drop(mt_space *space)
 { if ( !handle_ready(space, "mt_space_drop") ) return false;
-  return space_call("metta_c_drop_space", space, NULL, 1, NULL, NULL) == MT_OK;
+  return space_call(BRIDGE_DROP_SPACE, space, NULL, NULL, NULL) == MT_OK;
 }
 
-static mt_status open_cursor(mt_space *space, const char *pred,
+static mt_status open_cursor(mt_space *space, bridge_id which,
                                   const mt_atom *atom,
                                   mt_answers **out)
 { fid_t f;
@@ -5013,6 +5096,7 @@ static mt_status open_cursor(mt_space *space, const char *pred,
   mt_status status;
   int64_t id;
   atom_t ref;
+  const char *pred = g_bridges[which].name;
 
   *out = NULL;   /* see run_or_load: zeroed before anything can fail. */
   if ( !(answers = answers_alloc(space->runtime)) ) return MT_NOMEM;
@@ -5029,7 +5113,7 @@ static mt_status open_cursor(mt_space *space, const char *pred,
     return mt_ok() ? err_set(MT_MISUSE, "%s could not write its goal", pred)
                    : mt_error();   /* put_atom already said why */
   }
-  status = call_bridge(pred, 4, av);
+  status = call_bridge(which, av);
   if ( status == MT_OK )
   { term_t parts = PL_new_term_refs(2);
     if ( parts && PL_get_arg(1, av + 3, parts) &&
@@ -5044,7 +5128,7 @@ static mt_status open_cursor(mt_space *space, const char *pred,
       answers->cursor_ref = ref;
     } else
     { if ( parts && PL_get_arg(2, av + 3, parts) )
-        call_bridge("metta_c_close", 1, parts);
+        call_bridge(BRIDGE_CLOSE, parts);
       status = err_set(MT_ERROR, "the bridge did not answer a cursor reference");
     }
   }
@@ -5073,8 +5157,7 @@ static mt_answers *open_with(mt_space *space, const char *door,
 { mt_answers *out = NULL;
 
   if ( handle_ready(space, door) && atom_given(atom, door) )
-    open_cursor(space, as_pattern ? "metta_c_open_match"
-                                  : "metta_c_open_eval", atom, &out);
+    open_cursor(space, as_pattern ? BRIDGE_OPEN_MATCH : BRIDGE_OPEN_EVAL, atom, &out);
   /* Only a MATCH keeps its atom. A match answer is an INSTANCE of the
      pattern, so the two line up position for position and mt_bound() can read
      a binding off them. An eval answer is a reduced value and shares no shape
@@ -5100,7 +5183,7 @@ mt_atom *mt_space_effect_plan(mt_space *space, mt_atom *goal)
        (f = frame_open("mt_space_effect_plan")) )
   { term_t av = PL_new_term_refs(3);
     if ( av && put_name(av, space->name) && put_atom(goal, av + 1) &&
-         call_bridge("metta_c_effect_plan", 3, av) == MT_OK )
+         call_bridge(BRIDGE_EFFECT_PLAN, av) == MT_OK )
       result = decode(av + 2, 0);
     if ( !result && mt_ok() ) err_set(MT_ERROR, "the engine refused the effect plan");
   }
@@ -5242,7 +5325,7 @@ mt_answers *mt_space_eval_under(mt_space *space, mt_atom *algebra, mt_atom *goal
 { mt_answers *out = NULL;
   mt_atom *request = mt_expr(algebra, goal);
   if ( handle_ready(space, "mt_space_eval_under") && atom_given(request, "mt_space_eval_under") )
-    open_cursor(space, "metta_c_open_under", request, &out);
+    open_cursor(space, BRIDGE_OPEN_UNDER, request, &out);
   mt_drop(request);
   return out;
 }
@@ -5327,7 +5410,7 @@ static mt_status answers_pull(mt_answers *answers, const char *door)
   { PL_discard_foreign_frame(f);
     return err_set(MT_NOMEM, "out of memory stepping a cursor");
   }
-  status = call_bridge("metta_c_next", 4, av);
+  status = call_bridge(BRIDGE_NEXT, av);
   if ( status != MT_OK )
   { PL_discard_foreign_frame(f);
     answers->done = true;
@@ -5344,7 +5427,7 @@ static mt_status answers_pull(mt_answers *answers, const char *door)
 
   { term_t parts = PL_new_term_refs(4);
     if ( parts && PL_unify(parts, head) &&
-         call_bridge("metta_c_answer_parts", 4, parts) == MT_OK )
+         call_bridge(BRIDGE_ANSWER_PARTS, parts) == MT_OK )
     { answers->current = decode_answer(parts + 1, parts + 2);
       answers->current_text = term_text(parts + 3, CVT_ATOM | CVT_STRING, NULL);
     }
@@ -5596,7 +5679,7 @@ void mt_answers_free(mt_answers *answers)
     { fid_t f = frame_open("mt_answers_free");
       term_t av = f ? PL_new_term_refs(1) : 0;
       if ( av && PL_put_atom(av, answers->cursor_ref) )
-        call_bridge("metta_c_close", 1, av);
+        call_bridge(BRIDGE_CLOSE, av);
       frame_close(f);
       /* A close error is reported through call_bridge, but must not strand
          C's reference. The bridge has already erased its recorded owner and
@@ -5717,7 +5800,7 @@ mt_stats mt_stats_now(metta *runtime)
   if ( !(f = frame_open("mt_stats_now")) ) return out;
 
   av = PL_new_term_refs(1);
-  status = av ? call_bridge("metta_c_stats", 1, av)
+  status = av ? call_bridge(BRIDGE_STATS, av)
               : err_set(MT_NOMEM, "out of memory sampling the counters");
   if ( status == MT_OK && !decode_stats(av, &out) ) status = MT_ERROR;
   PL_discard_foreign_frame(f);
@@ -6471,7 +6554,7 @@ static mt_status provider_open_body(metta *runtime, void *data)
           !PL_cons_list(av + 1, capability, av + 1)) )
     { status = err_set(MT_NOMEM, "cannot retain a provider capability"); goto done; }
   }
-  status = call_bridge("metta_c_open_provider", 3, av);
+  status = call_bridge(BRIDGE_OPEN_PROVIDER, av);
   if ( status != MT_OK ) goto done;
   row = (mt_seam_row){.point="provider", .name=space, .value=entry,
                       .release=provider_entry_release};
@@ -6503,7 +6586,7 @@ static mt_status provider_close_body(metta *runtime, void *data)
   if ( !av || !put_name(av, space) )
     status = mt_ok() ? err_set(MT_NOMEM, "cannot name the provider to close")
                      : mt_error();
-  else status = call_bridge("metta_c_close_provider", 1, av);
+  else status = call_bridge(BRIDGE_CLOSE_PROVIDER, av);
   frame_close(f);
   if ( status == MT_OK && !mt_unregister(runtime, "provider", space) )
     return err_set(MT_ERROR, "the provider registration disappeared while closing");
@@ -6711,7 +6794,7 @@ static mt_status subscribe_body(metta *runtime, void *data)
        !put_name(av + 2, r->subscription.space) ||
        !put_atom(r->subscription.pattern, av + 3) )
     status = mt_ok() ? err_set(MT_NOMEM, "cannot encode a subscription") : mt_error();
-  else status = call_bridge("metta_c_subscribe", 4, av);
+  else status = call_bridge(BRIDGE_SUBSCRIBE, av);
   frame_close(f);
   return status;
 }
@@ -6737,7 +6820,7 @@ static mt_status unsubscribe_body(metta *runtime, void *data)
   if ( !f ) return MT_NOMEM;
   av = PL_new_term_ref();
   status = av && put_name(av, name)
-         ? call_bridge("metta_c_unsubscribe", 1, av)
+         ? call_bridge(BRIDGE_UNSUBSCRIBE, av)
          : mt_ok() ? err_set(MT_NOMEM, "cannot name a subscription") : mt_error();
   frame_close(f);
   if ( status == MT_OK && !mt_unregister(runtime, "subscription", name) )
@@ -6802,7 +6885,7 @@ static bool register_library(metta *runtime, const char *alias, const char *dire
     if ( mt_ok() ) err_set(MT_NOMEM, "out of memory naming a library path");
     return false;
   }
-  status = call_bridge("metta_c_library_path", 3, av);
+  status = call_bridge(BRIDGE_LIBRARY_PATH, av);
   PL_discard_foreign_frame(f);
   if ( status != MT_OK ) return false;
 
@@ -6956,7 +7039,7 @@ static bool define_operation(metta *runtime, mt_op op)
     if ( mt_ok() ) err_set(MT_NOMEM, "out of memory registering an operation");
     return false;
   }
-  status = call_bridge("metta_c_register_op", 3, av);
+  status = call_bridge(BRIDGE_REGISTER_OP, av);
   PL_discard_foreign_frame(f);
   if ( status != MT_OK )
   { mt_free(published);
@@ -7029,7 +7112,7 @@ static bool undefine_operation(metta *runtime, const char *name)
   }
   av = PL_new_term_refs(1);
   status = ( av && put_name(av, published) )
-         ? call_bridge("metta_c_unregister_op", 1, av)
+         ? call_bridge(BRIDGE_UNREGISTER_OP, av)
          : mt_ok() ? err_set(MT_NOMEM, "out of memory withdrawing an operation")
                    : mt_error();
   PL_discard_foreign_frame(f);
@@ -7145,7 +7228,7 @@ static bool registry_writable(const char *door)
 { fid_t f = frame_open(door);
   term_t scope = f ? PL_new_term_ref() : 0;
   bool writable = false;
-  if ( scope && call_bridge("metta_c_transaction_scope", 1, scope) == MT_OK )
+  if ( scope && call_bridge(BRIDGE_TRANSACTION_SCOPE, scope) == MT_OK )
   { writable = PL_get_nil(scope) ||
                (g_transaction && g_transaction->scope &&
                 PL_same_compound(scope, g_transaction->scope));
@@ -7169,7 +7252,7 @@ static foreign_t pl_cmetta_tx_body(term_t ticket)
     return PL_permission_error("call", "cmetta_transaction", ticket);
   frame->called = true;
   frame->scope = PL_new_term_ref();
-  if ( !frame->scope || call_bridge("metta_c_transaction_scope", 1, frame->scope) != MT_OK )
+  if ( !frame->scope || call_bridge(BRIDGE_TRANSACTION_SCOPE, frame->scope) != MT_OK )
     frame->status = mt_ok() ? err_set(MT_NOMEM, "cannot retain the C transaction's scope") : mt_error();
   else
     frame->status = frame->body(frame->runtime, frame->user);
@@ -7192,8 +7275,9 @@ static foreign_t pl_cmetta_tx_outcome(term_t ticket, term_t committed)
 }
 
 static mt_status transaction_run(metta *runtime, mt_scope_fn body, void *user,
-                                  const char *predicate)
-{ metta saved;
+                                  bridge_id which)
+{ const char *predicate = g_bridges[which].name;
+  metta saved;
   transaction_frame frame = {.runtime = runtime, .body = body, .user = user};
   transaction_frame *previous = g_transaction;
   error_state prior_error;
@@ -7209,7 +7293,7 @@ static mt_status transaction_run(metta *runtime, mt_scope_fn body, void *user,
   if ( !registry_copy(runtime, &saved) ) { frame_close(f); return MT_NOMEM; }
   error_save(&prior_error);
   g_transaction = &frame;
-  status = PL_put_pointer(ticket, &frame) ? call_bridge(predicate, 1, ticket)
+  status = PL_put_pointer(ticket, &frame) ? call_bridge(which, ticket)
                                         : err_set(MT_NOMEM, "cannot hold a transaction ticket");
   g_transaction = previous;
   if ( frame.committed ) registry_clear(&saved);
@@ -7228,11 +7312,11 @@ static mt_status transaction_run(metta *runtime, mt_scope_fn body, void *user,
 }
 
 mt_status mt_transaction(metta *runtime, mt_scope_fn body, void *user)
-{ return transaction_run(runtime, body, user, "metta_c_transaction");
+{ return transaction_run(runtime, body, user, BRIDGE_TRANSACTION);
 }
 
 mt_status mt_speculate(metta *runtime, mt_scope_fn body, void *user)
-{ return transaction_run(runtime, body, user, "metta_c_speculate");
+{ return transaction_run(runtime, body, user, BRIDGE_SPECULATE);
 }
 
 static mt_status define_body(metta *runtime, void *value)

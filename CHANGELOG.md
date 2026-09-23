@@ -5,6 +5,17 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Resolve each bridge predicate once per runtime. Every door the engine
+  answers through called `PL_predicate()`, which interns the name and the
+  module and looks the procedure up, on every call, about 2,227 instructions
+  of each cursor step; that cost also moved with where the linker put the
+  strings, so a change with no hot-path code in it read +0.30% on cursor-step
+  when the `"user"` literal left a 16-byte boundary. The predicates now live in
+  one table with their arities, each handle resolved at its first call and
+  cleared when `mt_close()` cleans up. The c-bench rows are re-pinned:
+  cursor-step -12.0%, space-pair -3.3%, term-out -1.9%, term-in -1.4% and
+  error-ball -0.7% in instructions, inferences unchanged.
+
 - Run the component gate's lanes that link the C library after the lane that
   rebuilds it. The c-binding lane cleans this directory before building, which
   deletes `libcmetta.so`, and the gate runs lanes at once, so the stranger-c
