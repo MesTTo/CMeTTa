@@ -69,9 +69,10 @@ cc consumer.c $(pkg-config --cflags cmetta) \
   $(pkg-config --static --libs cmetta) -o archive-consumer
 ```
 
-`make install-check` runs both consumers with `METTA_PATH` unset and checks
-that the archive consumer has no dependency on `libcmetta.so`. SWI-Prolog
-remains a shared dependency.
+`make install-check` runs both consumers with `METTA_PATH` unset, checks
+that the archive consumer has no dependency on `libcmetta.so`, and refuses an
+install carrying version-control metadata, which `make install` prunes from
+the engine tree it copies. SWI-Prolog remains a shared dependency.
 
 [MesTTo/CMeTTa](https://github.com/MesTTo/CMeTTa) is the C driver beside `extensions/python` and `extensions/node`, separate from the vendored CeTTa substrate.
 

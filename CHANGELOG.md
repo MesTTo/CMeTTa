@@ -5,6 +5,15 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Keep version-control metadata out of `make install`. The rule copied the
+  engine with `find engine lib -type f`, so an install from a main checkout
+  carried lib's whole repository, 1,105 of its 1,488 files, and one from a
+  worktree carried lib's gitlink, which made the installed lib a nested
+  repository that `git clean -fdx` leaves behind; both carried the
+  `.gitignore` files. Every `.git*` name is pruned now, as the Python
+  seat's sdist prunes `.git` directories, and `make install-check`, the
+  `c-install` lane, refuses an install that carries any.
+
 - Turn a C array of values into an expression with `mt_array(count,
   values)`, each value converted as `mt_atom_of` converts one: integers and
   floats are Numbers, strings are symbols, atoms are retained, and a `bool`

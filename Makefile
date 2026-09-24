@@ -18,6 +18,9 @@
 #   proves the result by compiling a consumer that knows only what pkg-config
 #   says and booting it with no METTA_PATH and no rpath into this checkout
 #   [tested: extensions/cmetta/check.sh c-install; commit=1c40a5f96c308941b4c0669594acb06403109751].
+#   Nothing under $PREFIX is version-control metadata, and install-check
+#   refuses an install that carries any [tested: extensions/cmetta/check.sh
+#   c-install; commit=WORKTREE].
 # Decides: the engine tree is baked in as MT_ENGINE_PATH so a linked program
 #   boots with no environment set, and $METTA_PATH still overrides it at run
 #   time. A checkout that moves relinks at its next `make`, because the path is
@@ -403,7 +406,15 @@ cmetta.pc: Makefile cmetta.h FORCE
 # the builder's SWI version, which is the same reasoning MANIFEST.in gives for
 # leaving them out of the sdist. The .so artifacts ARE installed, unlike the
 # py3-none-any wheel's, because this install is for one platform by
-# construction.
+# construction. Version-control metadata never ships: every `.git*` name is
+# pruned, which is a submodule's `.git` (its whole repository in a main
+# checkout, a one-line gitlink in a worktree), the `.gitignore` files and any
+# `.github`, as the Python seat's sdist prunes `.git` directories [source:
+# setuptools 84.0.0, setuptools/_distutils/command/sdist.py,
+# prune_file_list]. Unpruned, an install from a main checkout carried 1,105
+# files of lib's repository, and one from a worktree made the installed lib a
+# nested repository `git clean -fdx` leaves behind [measured: 2026-09-24,
+# find over wt-merge and battery 1].
 install: $(SOFILE) build/install/$(STATIC_LIB) cmetta.pc version
 	install -d $(DESTDIR)$(libdir) $(DESTDIR)$(includedir) \
 	           $(DESTDIR)$(pkgconfigdir) $(DESTDIR)$(enginedir)
@@ -413,11 +424,11 @@ install: $(SOFILE) build/install/$(STATIC_LIB) cmetta.pc version
 	ln -sf $(SONAME) $(DESTDIR)$(libdir)/$(LIB)
 	install -m 644 $(HEADERS) $(DESTDIR)$(includedir)/
 	install -m 644 cmetta.pc $(DESTDIR)$(pkgconfigdir)/cmetta.pc
-	cd "$(ENGINE_PATH)" && find engine lib -type f \
+	cd "$(ENGINE_PATH)" && find engine lib -name '.git*' -prune -o -type f \
 	    ! -name '*.qlf' ! -name '.qlf-stamp' ! -name '*.o' \
 	    ! -path '*/__pycache__/*' \
 	    -exec install -Dm 644 {} $(DESTDIR)$(enginedir)/{} \;
-	cd "$(ENGINE_PATH)" && find engine lib -type f -name '*.so' \
+	cd "$(ENGINE_PATH)" && find engine lib -name '.git*' -prune -o -type f -name '*.so' \
 	    -exec install -Dm 755 {} $(DESTDIR)$(enginedir)/{} \;
 	install -Dm 644 extension.pl $(DESTDIR)$(enginedir)/extensions/cmetta/extension.pl
 	install -Dm 644 bridge.pl $(DESTDIR)$(enginedir)/extensions/cmetta/bridge.pl
@@ -443,6 +454,12 @@ install-check:
 	# A real prefix under build/ is an install that is genuinely installed,
 	# needs no root, and is the configuration a consumer meets.
 	$(MAKE) install PREFIX=$(CURDIR)/build/install-check
+	@leaked=$$(find build/install-check -name '.git*'); \
+	if [ -n "$$leaked" ]; then \
+	    echo "install-check: the install carries version-control metadata:" >&2; \
+	    echo "$$leaked" >&2; exit 1; \
+	fi
+	@echo "install-check: the install carries no version-control metadata"
 	@test "$$(PKG_CONFIG_PATH=$(CURDIR)/build/install-check/lib/pkgconfig pkg-config --variable=prefix cmetta)" = "$(CURDIR)/build/install-check"
 	@cd build/install-check && \
 	    export PKG_CONFIG_PATH=$(CURDIR)/build/install-check/lib/pkgconfig && \
