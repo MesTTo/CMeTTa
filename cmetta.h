@@ -1463,6 +1463,48 @@ MT_API bool mt_library(metta *runtime, const char *alias, const char *directory)
 typedef bool (*mt_extension_fn)(metta *runtime);
 MT_API bool mt_extension(metta *runtime, const char *path);
 
+/* Where Prolog to register comes from, the engine's file(Spec) or
+   text(Text): a source file by its path, resolved against the working
+   directory as SWI resolves a consult, or the Prolog text itself. */
+typedef enum mt_prolog_origin { MT_PROLOG_FILE, MT_PROLOG_TEXT } mt_prolog_origin;
+typedef struct mt_prolog {
+  mt_prolog_origin origin;
+  const char      *chars;   /* the path, or the text */
+} mt_prolog;
+
+/* Register Prolog predicates as MeTTa functions, which then run as native
+   Prolog: the extension point for a library that wants to be fast. This is
+   the engine's one registration sequence, metta_register_prolog/3, which
+   the Python seat's register_prolog and the Node seat's registerProlog cross
+   too, so every seat registers alike [source: engine/metta/interop.pl,
+   metta_register_prolog/3; commit=90be572a9d67b4efd2c9829b256dba9687c16a29].
+
+   `names` says what to register:
+     NULL or ()       what the source declares of itself: the names of its
+                      :- metta_export("...") declarations, or none for a
+                      source that only joins an extension point through
+                      :- metta_extension(name, []), such as a space provider;
+     (name ...)       those names, each a predicate taking its inputs first
+                      and its one output last, whose solutions are the
+                      function's answers;
+     ((from to) ...)  a module file's export `from`, under the name `to`,
+                      which needs a file.
+   Every name registers or none does, and the names are checked before the
+   source loads.
+
+       mt_atom *added = mt_register_prolog(m,
+           (mt_prolog){ MT_PROLOG_TEXT, "'vec-dot'(A, B, Out) :- ... ." },
+           mt_expr("vec-dot"));
+
+   TAKES names. Answers the names registered as an expression of symbols, ()
+   for a source that joins an extension. NULL on failure: MT_MISUSE for no
+   runtime, no chars or an origin outside the enum, and the engine's own
+   refusal, MT_ERROR, for a file that is not there, a source that declares
+   nothing, a name no predicate stands behind or a builtin holds, and renames
+   of text [tested: tests/test_cmetta.c,
+   test_prolog_registers_as_metta_functions; commit=WORKTREE]. */
+MT_API MT_MUST_USE mt_atom *mt_register_prolog(metta *runtime, mt_prolog source, mt_atom *names);
+
 /* ================================================================== *
  * Bounding and measuring
  * ================================================================== */

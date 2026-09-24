@@ -276,6 +276,11 @@ through close. `mt_provider_open` takes user on every path;
 `mt_extension` loads a shared object exporting `mt_extension_init`.
 Initialization runs transactionally over C registrations and engine state.
 `mt_library` registers source paths and `mt_repr` registers display callbacks.
+`mt_register_prolog` registers Prolog predicates as MeTTa functions through the
+engine's metta_register_prolog/3, which the Python and Node seats cross too: a
+source `(mt_prolog){ MT_PROLOG_FILE, path }` or `{ MT_PROLOG_TEXT, text }`, and
+names `()` for what the source declares, `(name ...)`, or `((from to) ...)` to
+rename a module file's export. It answers the names registered.
 `mt_point_declare`, `mt_register`, `mt_unregister`, `mt_point_of`,
 `mt_point_at`, `mt_point_count`, `mt_seam_at`, `mt_seam_count` and
 `mt_claim` expose the extension registry as data. Libraries can declare their

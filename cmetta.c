@@ -2711,6 +2711,7 @@ typedef struct mt_row_entry {
   X(BRIDGE_READ,                "metta_c_read", 3, "user") \
   X(BRIDGE_READ_FORMS,          "metta_c_read_forms", 3, "user") \
   X(BRIDGE_REGISTER_OP,         "metta_c_register_op", 3, "user") \
+  X(BRIDGE_REGISTER_PROLOG,     "metta_c_register_prolog", 4, "user") \
   X(BRIDGE_REMOVE,              "metta_c_remove", 3, "user") \
   X(BRIDGE_RUN,                 "metta_c_run", 5, "user") \
   X(BRIDGE_RUN_GOAL,            "metta_c_run_goal", 5, "user") \
@@ -7980,6 +7981,47 @@ bool mt_extension(metta *runtime, const char *path)
   { extension_initialization extension = {init, path};
     return mt_transaction(runtime, extension_body, &extension) == MT_OK;
   }
+}
+
+/* --- Prolog registered as MeTTa functions ------------------------- */
+
+/* Each origin: the engine's word for it, the functor of file(Spec) and
+   text(Text), and how its chars cross, a path in the platform's file-name
+   representation as mt_library puts one and text as UTF-8. */
+static const struct prolog_origin { const char *word; int flags; } prolog_origins[] = {
+  [MT_PROLOG_FILE] = { "file", PL_ATOM | REP_FN },
+  [MT_PROLOG_TEXT] = { "text", PL_STRING | REP_UTF8 },
+};
+
+mt_atom *mt_register_prolog(metta *runtime, mt_prolog source, mt_atom *names)
+{ mt_atom *registered = NULL;
+  fid_t f;
+  term_t av;
+
+  if ( !handle_ready(runtime, "mt_register_prolog") )
+  { mt_drop(names);
+    return NULL;
+  }
+  if ( (unsigned)source.origin >= sizeof prolog_origins / sizeof *prolog_origins || !source.chars )
+  { mt_drop(names);
+    return err_null(MT_MISUSE, "mt_register_prolog needs a source: MT_PROLOG_FILE "
+                    "with a path or MT_PROLOG_TEXT with Prolog text");
+  }
+  if ( !(f = frame_open("mt_register_prolog")) )
+  { mt_drop(names);
+    return NULL;
+  }
+  av = PL_new_term_refs(4);
+  if ( av && PL_put_atom_chars(av, prolog_origins[source.origin].word) &&
+       put_chars(av + 1, prolog_origins[source.origin].flags, (size_t)-1, source.chars) &&
+       (names ? put_atom(names, av + 2) : PL_put_nil(av + 2)) )
+  { if ( call_bridge(BRIDGE_REGISTER_PROLOG, av) == MT_OK )
+      registered = decode(av + 3, 0);
+  } else if ( mt_ok() )
+    err_set(MT_NOMEM, "out of memory putting a Prolog registration's arguments");
+  PL_discard_foreign_frame(f);
+  mt_drop(names);
+  return registered;
 }
 
 /* The points this seat declares at boot, so every door it already had is a

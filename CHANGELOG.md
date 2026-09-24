@@ -5,6 +5,22 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Register Prolog predicates as MeTTa functions with
+  `mt_register_prolog(runtime, source, names)`, the C counterpart of the
+  Python seat's `register_prolog` and the Node seat's `registerProlog`. All
+  three cross the engine's one registration sequence,
+  `metta_register_prolog/3`, once. The source is a tagged `mt_prolog`,
+  `{ MT_PROLOG_FILE, path }` or `{ MT_PROLOG_TEXT, text }`, the engine's own
+  `file(Spec)` or `text(Text)`, so a source that is both cannot be written.
+  The names are the engine's own term: `()` or NULL for what the source
+  declares of itself, `(name ...)`, or `((from to) ...)` to register a module
+  file's export under a new name. The door answers the names registered, `()`
+  for a source that only joins an extension. A C host previously reached
+  this only through the MeTTa-level `import_prolog_functions_from_file`.
+  `test_prolog_registers_as_metta_functions` covers a file, text, a
+  predicate with three solutions, declared exports, an extension, a rename,
+  four engine refusals and the door's own contract.
+
 - Open a handle on a parametric space with `mt_space_of(runtime, name)`,
   which takes any name the engine takes for a space: a reference, as
   `mt_space_open` does, or a nonempty expression headed by a symbol such as

@@ -107,7 +107,7 @@ remains a shared dependency.
 | Lowering | `mt_lower`, `mt_lower_raw`, `MT_METTA`, `MT_METTA_RAW` |
 | Bounds and counters | `mt_limit`, `mt_limits_of`, `mt_stats_now`, `mt_stats_since` |
 | Extension points | `mt_point_declare`, `mt_point_count`, `mt_point_at`, `mt_point_of`, `mt_register`, `mt_unregister`, `mt_seam_count`, `mt_seam_at`, `mt_claim` |
-| Libraries and providers | `mt_extension`, `mt_repr`, `mt_provider_open`, `mt_provider_close`, `mt_library` |
+| Libraries and providers | `mt_extension`, `mt_repr`, `mt_provider_open`, `mt_provider_close`, `mt_library`, `mt_register_prolog` |
 | Scope cleanup | `MT_AUTO`, `MT_AUTO_ASK`, `MT_TAKE`; helpers `mt_drop_p`, `mt_answers_free_p` |
 
 Like `tgmath.h`, `_Generic` selects the declared function for either a runtime's `&self` or an explicit space.
@@ -774,6 +774,13 @@ mt_extension(m, "/usr/lib/solars.so");   /* and it is all registered */
 | `mt_library` | a directory of MeTTa or Prolog sources |
 
 These registrations use declared extension points, the C counterpart of `engine/ext_points.pl`, with libraries declaring their own points as the driver declares `op`, `repr`, `provider`, and `library`.
+
+A library that wants its hot path in Prolog registers the predicates as MeTTa functions with `mt_register_prolog`. That registration happens in the engine, through `metta_register_prolog/3`, the one sequence the Python seat's `register_prolog` and the Node seat's `registerProlog` cross too, so it takes no point here. The source is a file or text, and the names say what to register: `()` for what the source declares of itself, `(name ...)`, or `((from to) ...)` to register a module file's export under a new name.
+
+```c
+mt_atom *added = mt_register_prolog(m, (mt_prolog){ MT_PROLOG_FILE, "fast.pl" },
+                                    mt_expr("vec-dot", "vec-norm"));
+```
 
 | Kind | Reading rule |
 |---|---|

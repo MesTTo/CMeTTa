@@ -790,6 +790,14 @@ seam:grounded_text(Obj, Text) :-
 metta_c_library_path(Alias, Directory, Ok) :-
     register_metta_library_path(Alias, Directory, Ok).
 
+% Prolog registered as MeTTa functions: the engine's one registration
+% sequence every seat crosses, its origin rebuilt from the word C names it by,
+% file or text [source: engine/metta/interop.pl, metta_register_prolog/3;
+% commit=90be572a9d67b4efd2c9829b256dba9687c16a29].
+metta_c_register_prolog(Kind, Chars, Names, Registered) :-
+    Origin =.. [Kind, Chars],
+    metta_register_prolog(Origin, Names, Registered).
+
 % Clauses are the engine's event subscribers, including its commit buffering.
 % Each clause head carries its space and pattern, so the engine can index it.
 % Registration and erasure are trailed by the same transaction as C rows.

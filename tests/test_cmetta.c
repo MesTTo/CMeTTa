@@ -243,6 +243,7 @@ static void test_a_door_before_the_runtime_refuses(void)
   CHECK(mt_self_eval(NULL, E("+", 1, 2)) == NULL);
   CHECK(mt_self_match(NULL, V("x")) == NULL);
   CHECK(mt_self_atoms(NULL) == NULL);
+  CHECK(mt_register_prolog(NULL, (mt_prolog){ MT_PROLOG_TEXT, "x." }, S("dropped-anyway")) == NULL);
 
   /* A release door is a no-op rather than a refusal: tidying up must not
      depend on the order it is done in. */
@@ -2047,6 +2048,85 @@ static void test_an_eager_goal_runs_in_the_runtimes_engine(metta *m)
   mt_clear();
 }
 
+/* A registration answered GOT, which must be the names in WANT, and each of
+   them, asked for 3, answers 21, as every fixture's function multiplies by
+   seven. TAKES both. */
+static void check_registered(metta *m, mt_atom *got, mt_atom *want)
+{ size_t i;
+  CHECK(got && mt_eq(got, want));
+  for (i = 0; i < mt_len(want); i++)
+    CHECK(mt_one_int(mt_eval(m, E(mt_keep(mt_at(want, i)), 3))) == 21);
+  mt_drop(got);
+  mt_drop(want);
+}
+
+static void test_prolog_registers_as_metta_functions(metta *m)
+{ static const char each[] =
+    "'cmetta-prolog-each'(_, 1).\n'cmetta-prolog-each'(_, 2).\n'cmetta-prolog-each'(_, 3).\n";
+  mt_atom *got, *want;
+  mt_list answers;
+  size_t i;
+  /* What the engine refuses, and a word of its own refusal naming why: a
+     file that is not there, renames of text, a source that declares nothing
+     it could register, and a name no predicate stands behind. */
+  struct { mt_prolog source; mt_atom *names; const char *says; } refused[] = {
+    { { MT_PROLOG_FILE, "tests/fixtures/no_such_source.pl" }, E("cmetta-prolog-absent"), "no_such_source" },
+    { { MT_PROLOG_TEXT, ":- module(cmetta_prolog_text, [f/2]).\nf(X, X).\n" },
+      E(E("f", "cmetta-prolog-from-text")), "file" },
+    { { MT_PROLOG_TEXT, "'cmetta-prolog-silent'(X, X).\n" }, NULL, "metta_extension" },
+    { { MT_PROLOG_TEXT, "'cmetta-prolog-other'(X, X).\n" }, E("cmetta-prolog-missing"), "cmetta-prolog-missing" },
+  };
+
+  CASE("a file's predicate registers under the name given and answers as a function");
+  check_registered(m, mt_register_prolog(m, (mt_prolog){ MT_PROLOG_FILE, "tests/fixtures/prolog_named.pl" },
+                                         E("cmetta-prolog-seven")),
+                   E("cmetta-prolog-seven"));
+
+  CASE("text registers alike, and a predicate's solutions are its function's answers");
+  got = mt_register_prolog(m, (mt_prolog){ MT_PROLOG_TEXT, each }, E("cmetta-prolog-each"));
+  want = E("cmetta-prolog-each");
+  CHECK(got && mt_eq(got, want));
+  mt_drop(got);
+  mt_drop(want);
+  answers = mt_all(mt_eval(m, E("cmetta-prolog-each", "x")));
+  CHECK(answers.len == 3);
+  for (i = 0; i < answers.len; i++) CHECK(mt_int(answers.items[i]) == (int64_t)i + 1);
+  mt_list_free(answers);
+
+  CASE("with no names, what the source exports is what registers");
+  check_registered(m, mt_register_prolog(m, (mt_prolog){ MT_PROLOG_FILE, "tests/fixtures/prolog_exports.pl" }, NULL),
+                   E("cmetta-prolog-exported"));
+
+  CASE("a source that only joins an extension registers no function");
+  got = mt_register_prolog(m, (mt_prolog){ MT_PROLOG_TEXT, ":- metta_extension(cmetta_prolog_extension, []).\n" },
+                           mt_exprv(0, NULL));
+  CHECK(got && mt_kind_of(got) == MT_EXPR && mt_len(got) == 0);
+  mt_drop(got);
+
+  CASE("a rename registers a module file's export under the new name");
+  check_registered(m, mt_register_prolog(m, (mt_prolog){ MT_PROLOG_FILE, "tests/fixtures/prolog_module.pl" },
+                                         E(E("cmetta_prolog_export", "cmetta-prolog-renamed"))),
+                   E("cmetta-prolog-renamed"));
+
+  CASE("the engine's refusals reach C as MT_ERROR, in its own words");
+  for (i = 0; i < sizeof refused / sizeof *refused; i++)
+  { mt_clear();
+    CHECK(mt_register_prolog(m, refused[i].source, refused[i].names) == NULL);
+    CHECK(mt_error() == MT_ERROR);
+    CHECK(mt_errmsg() && strstr(mt_errmsg(), refused[i].says) != NULL);
+  }
+
+  CASE("a source the door cannot name is refused before the engine is asked");
+  mt_clear();
+  CHECK(mt_register_prolog(m, (mt_prolog){ MT_PROLOG_TEXT, NULL }, S("dropped-anyway")) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "mt_register_prolog") != NULL);
+  mt_clear();
+  CHECK(mt_register_prolog(m, (mt_prolog){ (mt_prolog_origin)7, "x." }, NULL) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  mt_clear();
+}
+
 static void test_a_bound_stops_a_runaway_and_says_so(metta *m)
 { mt_limits bounded = {0}, none = {0};
   int pulled = 0;
@@ -2496,6 +2576,7 @@ int main(void)
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_an_eager_goal_runs_in_the_runtimes_engine(m);
   test_a_parametric_space_is_a_handle_like_any_other(m);
+  test_prolog_registers_as_metta_functions(m);
   test_the_counters_measure_engine_work(m);
   test_verbosity_reaches_the_engines_own_door(m);
   test_reopening_is_the_same_runtime(m);
