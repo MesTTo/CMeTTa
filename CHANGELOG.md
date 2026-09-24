@@ -5,6 +5,17 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Reproduce, without cmetta or PeTTa, SWI-Prolog's halt passing over a thread
+  that has been created but has not started running: `make
+  runtime-halt-created-thread` builds `tests/swi_halt_created_thread_probe.c`,
+  which creates eight detached threads and calls `PL_cleanup`, and runs it
+  twenty times. `exitPrologThreads()` joins finished threads and signals
+  running ones but takes no action on a `PL_THREAD_CREATED` one, which then
+  starts its goal while cleanup frees the module tables it reads. On
+  swipl-patched.2, 16 runs of 20 die. The C seat meets it at `mt_close()`
+  whenever a lib_thread timer or spawn was created just before; the target
+  passes only on a host that waits for such a thread.
+
 - Erase a dropped handle's record on the thread that drops it again, a thread
   with no Prolog engine included. The lock-free list that held such records
   until a thread with an engine arrived worked around SWI 10.1.14 signalling

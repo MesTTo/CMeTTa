@@ -139,6 +139,7 @@ SOFILE    := libcmetta.so.$(VERSION)
 SONAME    := libcmetta.so.$(SOVERSION)
 
 .PHONY: all test bench examples kit surface docs version hardening sanitize runtime-memory runtime-engineless-erase \
+        runtime-halt-created-thread \
         install uninstall install-check clean FORCE
 
 kit: $(KIT)
@@ -320,6 +321,22 @@ $(TEST_TMP)/swi-engineless-erase-probe: tests/swi_engineless_erase_probe.c .tool
 
 runtime-engineless-erase: $(TEST_TMP)/swi-engineless-erase-probe
 	@"$(TEST_TMP)/swi-engineless-erase-probe"
+
+# A third host defect: SWI's halt passes over a thread still being created,
+# which then runs while PL_cleanup frees the modules it looks its goal up in.
+# One run dies only often, so the target runs twenty: at the measured rate an
+# unpatched host passes all twenty with probability 0.2^20, about 1e-14
+# [measured 2026-09-24: 16 runs of 20 died on swipl-patched.2].
+$(TEST_TMP)/swi-halt-created-thread-probe: tests/swi_halt_created_thread_probe.c .toolchain-stamp
+	@mkdir -p "$(TEST_TMP)"
+	$(CC) $(CFLAGS) -pthread -o $@ $< $(LDFLAGS) $(LDLIBS)
+
+runtime-halt-created-thread: $(TEST_TMP)/swi-halt-created-thread-probe
+	@run=1; while [ $$run -le 20 ]; do \
+	    "$(TEST_TMP)/swi-halt-created-thread-probe" > /dev/null || \
+	        { echo "halt died in run $$run of 20"; exit 1; }; \
+	    run=$$((run + 1)); \
+	done; echo "halted past threads just created, 20 runs of 20"
 
 runtime-memory: $(TEST_TMP)/swi-memory-probe
 	@status=0; for scenario in baseline int64 unicode; do \
