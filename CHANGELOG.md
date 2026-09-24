@@ -5,6 +5,23 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Turn a C array of values into an expression with `mt_array(count,
+  values)`, each value converted as `mt_atom_of` converts one: integers and
+  floats are Numbers, strings are symbols, atoms are retained, and a `bool`
+  array is True and False, which `mt_atom_of` cannot make of a lone `bool`
+  because C promotes it first. The element type is read from the array, so
+  there is no type argument to keep in step, and a `char` array, which is
+  text, does not compile. `mt_arrayv` is the same walk over a converter of
+  the caller's own. A C program had `mt_exprv` for an array of atoms and
+  wrote a loop for anything else, which the C example corpus did thirteen
+  times in twelve programs, most of them into a fixed-size buffer; the
+  Python seat converts a tuple of values by itself.
+  `test_an_array_becomes_an_expression` covers each element family, an empty
+  array, an array of atoms left the caller's, a value that fails with its own
+  reason and the misuse refusals, and
+  `test_a_macro_evaluates_each_argument_exactly_once` holds the array
+  argument to one evaluation.
+
 - Let a C provider promise that its space holds a program with
   `mt_provider.rules`. A provider's capabilities came only from the
   callbacks it filled in, and `rules` is a promise about what the store

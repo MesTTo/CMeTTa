@@ -170,12 +170,111 @@ static void test_the_builder_coerces_each_child_by_its_c_type(void)
   }
 }
 
+static void test_an_array_becomes_an_expression(void)
+{ mt_atom *e, *want;
+
+  CASE("mt_array: an integer array is a tuple of Numbers, in order");
+  { const int64_t ids[] = { 3, 1, 2 };
+    e = mt_array(3, ids);
+    want = E(3, 1, 2);
+    CHECK(e && mt_eq(e, want));
+    mt_drop(e); mt_drop(want);
+  }
+
+  CASE("mt_array: each element type reads its own width, unsigned kept exact");
+  { const unsigned char bytes[] = { 0, 255 };
+    const short shorts[] = { -7 };
+    const unsigned long long wide[] = { UINT64_MAX };
+    e = mt_array(2, bytes);
+    want = E(0, 255);
+    CHECK(e && mt_eq(e, want));
+    mt_drop(e); mt_drop(want);
+    e = mt_array(1, shorts);
+    CHECK(e && mt_int(mt_at(e, 0)) == -7);
+    mt_drop(e);
+    e = mt_array(1, wide);
+    want = E(UINT64_MAX);
+    CHECK(e && mt_eq(e, want));
+    mt_drop(e); mt_drop(want);
+  }
+
+  CASE("mt_array: floats are Numbers and strings are symbols");
+  { const double xs[] = { 0.5, -2.0 };
+    const char *const names[] = { "a", "b" };
+    e = mt_array(2, xs);
+    want = E(0.5, -2.0);
+    CHECK(e && mt_eq(e, want));
+    mt_drop(e); mt_drop(want);
+    e = mt_array(2, names);
+    want = E("a", "b");
+    CHECK(e && mt_eq(e, want) && mt_kind_of(mt_at(e, 0)) == MT_SYMBOL);
+    mt_drop(e); mt_drop(want);
+  }
+
+  CASE("mt_array: a bool array is True and False, where a lone bool through "
+       "mt_atom_of is the Number its promotion makes");
+  { const bool flags[] = { true, false };
+    e = mt_array(2, flags);
+    CHECK(e && mt_kind_of(mt_at(e, 0)) == MT_BOOL && mt_truth(mt_at(e, 0)) &&
+          !mt_truth(mt_at(e, 1)));
+    mt_drop(e);
+    e = E(flags[0]);
+    CHECK(e && mt_kind_of(mt_at(e, 0)) == MT_INT);
+    mt_drop(e);
+  }
+
+  CASE("mt_array: an array of atoms is retained and stays the caller's");
+  { mt_atom *kids[] = { S("x"), N(1) };
+    e = mt_array(2, kids);
+    want = E("x", 1);
+    CHECK(e && mt_eq(e, want));
+    mt_drop(e);
+    CHECK(mt_kind_of(kids[0]) == MT_SYMBOL && mt_int(kids[1]) == 1);
+    mt_drop(kids[0]); mt_drop(kids[1]); mt_drop(want);
+  }
+
+  CASE("mt_array: a compound literal passes whole, commas and all");
+  e = mt_array(3, (const double[]){ 1.5, 2.5, 3.5 });
+  want = E(1.5, 2.5, 3.5);
+  CHECK(e && mt_eq(e, want));
+  mt_drop(e); mt_drop(want);
+
+  CASE("mt_array: no values is the empty expression, with or without an array");
+  { const int64_t *none = NULL;
+    e = mt_array(0, none);
+    CHECK(e && mt_kind_of(e) == MT_EXPR && mt_len(e) == 0);
+    mt_drop(e);
+  }
+
+  CASE("mt_array: a value that does not convert fails the whole array with "
+       "its own reason");
+  { const char *const names[] = { "a", NULL };
+    mt_clear();
+    e = mt_array(2, names);
+    CHECK(e == NULL && mt_error() == MT_MISUSE &&
+          strstr(mt_errmsg(), "needs text") != NULL);
+    mt_clear();
+  }
+
+  CASE("mt_arrayv: values without an array or a converter are misuse");
+  { const int64_t one[] = { 1 };
+    CHECK(mt_arrayv(1, NULL, sizeof(int64_t), MT_ELEMENT(one[0])) == NULL &&
+          mt_error() == MT_MISUSE);
+    mt_clear();
+    CHECK(mt_arrayv(1, one, sizeof one[0], NULL) == NULL &&
+          mt_error() == MT_MISUSE);
+    mt_clear();
+  }
+}
+
 /* A macro that evaluates its argument twice is C's classic trap: mt_expr and
    the receiver dispatch both mention theirs more than once in their
    expansion, so "exactly once" is a property to test rather than assume. */
 static int side_effects;
 static metta *counted_runtime;
+static const int64_t counted_values[] = { 1, 2 };
 static int64_t bump(void)       { side_effects++; return 1; }
+static const int64_t *bump_values(void) { side_effects++; return counted_values; }
 static const char *bump_s(void) { side_effects++; return "s"; }
 static metta *bump_rt(void)     { side_effects++; return counted_runtime; }
 
@@ -187,6 +286,13 @@ static void test_a_macro_evaluates_each_argument_exactly_once(metta *m)
   e = E("f", bump(), bump_s(), bump());
   CHECK(e != NULL);
   CHECK(side_effects == 3);
+  mt_drop(e);
+
+  CASE("mt_array evaluates its array exactly once");
+  side_effects = 0;
+  e = mt_array(2, bump_values());
+  CHECK(e != NULL && mt_len(e) == 2);
+  CHECK(side_effects == 1);
   mt_drop(e);
 
   CASE("the _Generic receiver dispatch evaluates its target exactly once");
@@ -2530,6 +2636,7 @@ int main(void)
   test_atoms_need_no_engine();
   test_public_scalar_readers_cover_their_whole_domain();
   test_the_builder_coerces_each_child_by_its_c_type();
+  test_an_array_becomes_an_expression();
   test_a_macro_evaluates_each_argument_exactly_once(m);
   test_a_failed_child_does_not_leak_its_siblings();
   test_refusals_are_named();

@@ -468,6 +468,33 @@ MT_API mt_atom *mt_same_c(const mt_atom *atom);
     mt_exprv(MT_NARG(__VA_ARGS__),                                     \
                 (mt_atom *[]){ MT_MAP(__VA_ARGS__) })
 
+/* An expression of the first COUNT values of a C array, each converted as
+   mt_atom_of converts one value. The element type is read from the array
+   itself, before any promotion, so a bool array is a tuple of True and
+   False, which mt_atom_of cannot make of a lone bool; a char array is text,
+   which mt_text makes, and does not compile here:
+
+       int64_t ids[] = { 3, 1, 2 };
+       mt_array(3, ids)                       (3 1 2)
+       const char *names[] = { "a", "b" };
+       mt_array(2, names)                     (a b)
+
+   The array is BORROWED, so an array of atoms is retained child by child and
+   stays the caller's. It may be a compound literal, commas and all, which is
+   why it is the macro's variadic part. It is evaluated once: sizeof and
+   _Generic read only its type. NULL when a value does not convert, with
+   that value's own reason recorded and the values before it dropped.
+   mt_arrayv is the same walk over a converter of the caller's own, which
+   reads the value at `value` and answers its atom.
+   [tested: tests/test_cmetta.c, test_an_array_becomes_an_expression;
+   commit=WORKTREE] */
+#define mt_array(count, ...)                                              \
+    mt_arrayv((count), (__VA_ARGS__), sizeof *(__VA_ARGS__),              \
+              MT_ELEMENT(*(__VA_ARGS__)))
+MT_API MT_MUST_USE mt_atom *mt_arrayv(size_t count, const void *values,
+                                     size_t stride,
+                                     mt_atom *(*element)(const void *value));
+
 /* --- lifetime --- */
 
 /* Take a reference. Returns its argument, so it composes inline. NULL-safe. */
@@ -1655,6 +1682,40 @@ static inline void mt_answers_free_p(mt_answers **p) { mt_answers_free(*p); }
 #define MT_MAP_14(a, ...) mt_atom_of(a), MT_MAP_13(__VA_ARGS__)
 #define MT_MAP_15(a, ...) mt_atom_of(a), MT_MAP_14(__VA_ARGS__)
 #define MT_MAP_16(a, ...) mt_atom_of(a), MT_MAP_15(__VA_ARGS__)
+
+/* The element types mt_array accepts, each with the constructor that
+   converts one value of it: what mt_atom_of calls, except that bool is a
+   Bool. The one table generates both the converters and MT_ELEMENT's
+   dispatch, so a type cannot be converted without being dispatched to. */
+#define MT_ELEMENT_TYPES(X)                                               \
+    X(bool,    bool,               mt_bool)                               \
+    X(schar,   signed char,        mt_num_)                               \
+    X(uchar,   unsigned char,      mt_num_)                               \
+    X(short,   short,              mt_num_)                               \
+    X(ushort,  unsigned short,     mt_num_)                               \
+    X(int,     int,                mt_num_)                               \
+    X(uint,    unsigned,           mt_unum_)                              \
+    X(long,    long,               mt_num_)                               \
+    X(ulong,   unsigned long,      mt_unum_)                              \
+    X(llong,   long long,          mt_num_)                               \
+    X(ullong,  unsigned long long, mt_unum_)                              \
+    X(float,   float,              mt_real_)                              \
+    X(double,  double,             mt_real_)                              \
+    X(ldouble, long double,        mt_real_)                              \
+    X(str,     char *,             mt_sym)                                \
+    X(cstr,    const char *,       mt_sym)                                \
+    X(atom,    mt_atom *,          mt_same_c)                             \
+    X(catom,   const mt_atom *,    mt_same_c)
+
+#define MT_ELEMENT_CONVERTER(name, type, convert)                         \
+    static inline mt_atom *mt_element_##name##_(const void *value)        \
+    { return convert(*(type const *)value); }
+MT_ELEMENT_TYPES(MT_ELEMENT_CONVERTER)
+
+/* The converter for an element's type: one association per row, each
+   written with its comma first so the list needs no final one. */
+#define MT_ELEMENT_CASE(name, type, convert) , type: mt_element_##name##_
+#define MT_ELEMENT(x) _Generic((x) MT_ELEMENT_TYPES(MT_ELEMENT_CASE))
 
 #ifdef __cplusplus
 }

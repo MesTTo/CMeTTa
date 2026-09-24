@@ -89,7 +89,7 @@ remains a shared dependency.
 |---|---|
 | Runtime | `mt_open`, `mt_close`, `mt_verbose`, `mt_thread_attach`, `mt_thread_detach`, `mt_version` |
 | Constructors, marked `MT_MUST_USE` | `mt_sym`, `mt_var`, `mt_text`, `mt_textn`, `mt_num`, `mt_real`, `mt_bool`, `mt_unit`, `mt_bigint`, `mt_rational`, `mt_spaceref`, `mt_exprv`, `mt_object`, `mt_function` |
-| C argument conversion | `mt_expr`, `mt_atom_of`; helpers `mt_num_`, `mt_real_`, `mt_same`, `mt_same_c` |
+| C argument conversion | `mt_expr`, `mt_atom_of`, `mt_array`, `mt_arrayv`; helpers `mt_num_`, `mt_real_`, `mt_same`, `mt_same_c` |
 | References | `mt_keep`, `mt_drop` |
 | Inspection | `mt_kind_of`, `mt_kind_str`, `mt_name`, `mt_name_len`, `mt_int`, `mt_float`, `mt_truth`, `mt_ratio_of`, `mt_len`, `mt_at`, `mt_eq`, `mt_alpha_eq`, `mt_compare`, `mt_order`, `mt_hash` |
 | Unification | `mt_unify`, `mt_unifyv`, `mt_bindings_len`, `mt_binding`, `mt_binding_var`, `mt_binding_value`, `mt_bindings_free`, `mt_substitute` |

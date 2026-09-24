@@ -56,7 +56,9 @@ is called word_count. Names never acquire another identity in the binding.
 
 `mt_atom_of` and `mt_expr` dispatch on C types. Unsigned values preserve all
 64 bits. Booleans need `mt_bool`; C integer promotion otherwise gives them
-integer meaning. Use `mt_exprv` for arrays and arbitrary arity; the convenience
+integer meaning. `mt_array(count, values)` converts a C array the same way,
+reading the element type before promotion, so a `bool` array is True and
+False; `mt_exprv` takes an array of atoms and any arity. The convenience
 variadic macro accepts up to sixteen children. `MT_SHORTHAND` enables
 `S V T N R B E` builders.
 

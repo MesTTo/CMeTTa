@@ -1212,6 +1212,38 @@ mt_atom *mt_exprv(size_t count, mt_atom **children)
   return a;
 }
 
+/* Borrow the array and convert each value. The first value that does not
+   convert keeps its own reason, which mt_exprv would replace with its own,
+   so the walk stops there and drops what it built. */
+mt_atom *mt_arrayv(size_t count, const void *values, size_t stride,
+                   mt_atom *(*element)(const void *value))
+{ mt_atom **kids, *a;
+  size_t bytes, i;
+
+  if ( count == 0 )
+    return mt_exprv(0, NULL);
+  if ( !values || !element )
+    return err_null(MT_MISUSE,
+                    "mt_arrayv was asked for %zu values and given no %s",
+                    count, values ? "converter" : "array");
+  if ( !array_bytes(count, sizeof(*kids), &bytes) )
+    return err_null(MT_NOMEM,
+                    "an expression with %zu children exceeds addressable memory",
+                    count);
+  if ( !(kids = mt_alloc(bytes)) )
+    return err_null(MT_NOMEM, "out of memory converting %zu values", count);
+  for (i = 0; i < count; i++)
+  { if ( !(kids[i] = element((const char *)values + i*stride)) )
+    { while ( i > 0 ) mt_drop(kids[--i]);
+      mt_free(kids);
+      return NULL;
+    }
+  }
+  a = mt_exprv(count, kids);
+  mt_free(kids);
+  return a;
+}
+
 /* Keep unsigned values exact and retain borrowed const atoms. */
 mt_atom *mt_num_(long long value)      { return mt_num((int64_t)value); }
 mt_atom *mt_unum_(unsigned long long value) { return mt_unum((uint64_t)value); }
