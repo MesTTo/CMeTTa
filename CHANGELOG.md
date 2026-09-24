@@ -5,6 +5,22 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Open a handle on a parametric space with `mt_space_of(runtime, name)`,
+  which takes any name the engine takes for a space: a reference, as
+  `mt_space_open` does, or a nonempty expression headed by a symbol such as
+  `(cache &primary-kb 100)`, each parameter set a space of its own whose
+  equations read their parameters through `context-space`. The Python seat
+  opens one with `metta.space(S.cache(...))`; the C seat refused every name
+  without a leading ampersand, so a C host could reach a parametric space only
+  through the language's own forms. A parametric space is declared, not made
+  by the first write, so opening one declares it with `(new-space name)`,
+  which answers the same space with its contents on every later open. A
+  handle now carries its name as the engine's term, put into every bridge
+  call through one helper, and the run and load doors take the space rather
+  than its name. `test_a_parametric_space_is_a_handle_like_any_other` covers
+  two parameter sets, their equations and matches, a reopen, a reference, and
+  the refusals.
+
 - Evaluate a goal atom eagerly in the runtime's own engine with
   `mt_run_goal(target, goal)`, the eager cell beside `mt_eval`'s lazy one:
   the eval door's goal and fuel scope, run to its last answer and answered as

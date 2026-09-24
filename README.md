@@ -93,7 +93,7 @@ remains a shared dependency.
 | References | `mt_keep`, `mt_drop` |
 | Inspection | `mt_kind_of`, `mt_kind_str`, `mt_name`, `mt_name_len`, `mt_int`, `mt_float`, `mt_truth`, `mt_ratio_of`, `mt_len`, `mt_at`, `mt_eq`, `mt_alpha_eq`, `mt_compare`, `mt_order`, `mt_hash` |
 | Unification | `mt_unify`, `mt_unifyv`, `mt_bindings_len`, `mt_binding`, `mt_binding_var`, `mt_binding_value`, `mt_bindings_free`, `mt_substitute` |
-| Spaces | `mt_self`, `mt_catalog`, `mt_space_open`, `mt_space_close`, `mt_space_drop`, `mt_space_name` |
+| Spaces | `mt_self`, `mt_catalog`, `mt_space_open`, `mt_space_of`, `mt_space_close`, `mt_space_drop`, `mt_space_name` |
 | Closed scopes | `mt_transaction`, `mt_speculate` |
 | Standing queries | `mt_subscribe`, `mt_unsubscribe` |
 | Native producers | `mt_iterator`, `mt_answers_from`, `mt_answer_iter`, `mt_stream`, `mt_stream_of`, `mt_step`, `mt_answers_status` |
@@ -369,6 +369,19 @@ exhaustion, error or abandonment. `mt_answer_iter` uses this protocol inside a
 host callback and retains the callback arguments until close. A callable value
 returns a consumptive stream, read through `(c-iter value)` or `mt_stream_of`.
 `mt_step` and `mt_answers_status` distinguish exhaustion from failure.
+
+`mt_space_of` opens a handle on any name the engine takes for a space: a
+reference, which is `mt_space_open`'s, or a parametric name, a nonempty
+expression headed by a symbol, each parameter set a space of its own whose
+equations read their parameters through `context-space`. The engine declares a
+parametric space, so opening one declares it with `(new-space name)`, which
+answers the same space with its contents on every later open.
+
+```c
+mt_space *primary = mt_space_of(m, mt_expr("cache", mt_sym("&primary-kb"), 100));
+mt_add(primary, mt_expr("entry", "primary"));   /* only this parameter set sees it */
+puts(mt_space_name(primary));                   /* (cache &primary-kb 100) */
+```
 
 `mt_space_close` releases the C handle; `mt_space_drop` retires the engine space
 and its definitions. `mt_del` removes one unifying occurrence, refusing a bare

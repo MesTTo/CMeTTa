@@ -2790,16 +2790,18 @@ static bool registry_writable(const char *door);
 
 struct mt_space
 { metta *runtime;
-  char    *name;
+  char    *name;       /* the name as text, what mt_space_name() answers */
   bool     borrowed;   /* &self and &metta live with the runtime */
+  mt_atom *term;       /* a parametric name, (cache &kb 100), as the term the
+                          engine declared the space under; NULL for &name */
 };
 
 /* The two spaces every runtime has. Their names are constants, so they are
    written here rather than in mt_open(): a handle whose name appears only
    once the engine booted is a handle with a window in which reading it is a
    null dereference. */
-static mt_space g_self    = { &g_runtime, (char *)"&self",  true };
-static mt_space g_catalog = { &g_runtime, (char *)"&metta", true };
+static mt_space g_self    = { .runtime = &g_runtime, .name = (char *)"&self",  .borrowed = true };
+static mt_space g_catalog = { .runtime = &g_runtime, .name = (char *)"&metta", .borrowed = true };
 
 #ifdef MT_TEST_FAULTS
 /* Inspect only the ownership boundary exercised by the restart regression;
@@ -4186,6 +4188,15 @@ static bool put_atom(const mt_atom *a, term_t out)
   return ok;
 }
 
+/* A space as the bridge takes it: an &-name as the atom it spells, and a
+   parametric name as the expression the engine declared the space under. */
+static bool put_space(term_t out, const mt_space *space)
+{ return space->term ? put_atom(space->term, out) : put_name(out, space->name); }
+
+/* The atom a MeTTa form names the space by. */
+static mt_atom *space_ref(const mt_space *space)
+{ return space->term ? mt_keep(space->term) : mt_spaceref(space->name); }
+
 /* The same, plus the Name-Var pairs the encode collected, which is what the
    engine's writer needs to print $x as $x rather than $_0. The list is built
    in the caller's frame and stays valid as long as `out` does. */
@@ -5420,6 +5431,7 @@ mt_space *mt_space_open(metta *runtime, const char *name)
 
 void mt_space_close(mt_space *space)
 { if ( !space || space->borrowed ) return;
+  mt_drop(space->term);
   mt_free(space->name);
   mt_free(space);
 }
@@ -5432,6 +5444,51 @@ static bool atom_given(const mt_atom *atom, const char *door)
           "%s was given no atom; the constructor that should have made one "
           "failed and mt_errmsg() said why at the time", door);
   return false;
+}
+
+/* A parametric space is one the engine declares. (new-space name) makes it
+   the first time and answers it again, contents kept, every time after, so
+   opening a handle on one declares it [tested: tests/test_cmetta.c,
+   test_a_parametric_space_is_a_handle_like_any_other; commit=WORKTREE]. */
+static mt_space *parametric_space(metta *runtime, const mt_atom *name)
+{ mt_space *s;
+  mt_atom *declared = mt_first(mt_self_eval(runtime, mt_expr("new-space", mt_keep(name))));
+
+  if ( !declared )
+    return mt_ok() ? err_null(MT_ERROR, "the engine declared no space named %s",
+                              mt_show(name))
+                   : NULL;
+  mt_drop(declared);
+  if ( !(s = mt_calloc(1, sizeof(*s))) )
+    return err_null(MT_NOMEM, "out of memory opening a space");
+  if ( !(s->name = mt_show_dup(name)) )
+  { mt_free(s);
+    return err_null(MT_NOMEM, "out of memory naming a space");
+  }
+  s->term = mt_keep(name);
+  s->runtime = runtime;
+  return s;
+}
+
+mt_space *mt_space_of(metta *runtime, mt_atom *name)
+{ mt_space *s = NULL;
+
+  if ( handle_ready(runtime, "mt_space_of") && atom_given(name, "mt_space_of") )
+  { mt_kind kind = mt_kind_of(name);
+
+    if ( kind == MT_SPACE || kind == MT_SYMBOL )
+      s = mt_space_open(runtime, mt_name(name));
+    else if ( kind == MT_EXPR && mt_len(name) > 0 &&
+              mt_kind_of(mt_at(name, 0)) == MT_SYMBOL )
+      s = parametric_space(runtime, name);
+    else
+      err_set(MT_MISUSE,
+              "a space is named by a reference beginning with an ampersand or "
+              "by a nonempty expression headed by a symbol; %s is neither",
+              mt_show(name));
+  }
+  mt_drop(name);
+  return s;
 }
 
 /* One of the bridge's space predicates, with the space's name in av[0] and,
@@ -5466,7 +5523,7 @@ static mt_status space_call(bridge_id which, mt_space *space,
   if ( avp ) *avp = av;
 
   if ( f && av )
-  { if ( !put_name(av, space->name) ||
+  { if ( !put_space(av, space) ||
          ( atom && !put_atom(atom, av + 1) ) )
       status = mt_ok() ? err_set(MT_MISUSE,
                                  "%s could not write its arguments", pred)
@@ -5520,7 +5577,7 @@ bool mt_space_add_all(mt_space *space, mt_list atoms)
   { f = frame_open("mt_space_add_all");
     av = f ? PL_new_term_refs(2) : 0;
     item = av ? PL_new_term_ref() : 0;
-    if ( !av || !item || !put_name(av, space->name) ||
+    if ( !av || !item || !put_space(av, space) ||
          !PL_put_nil(av + 1) )
       status = mt_ok() ? err_set(MT_NOMEM, "out of memory encoding an atom batch")
                        : mt_error();
@@ -5818,10 +5875,11 @@ static mt_status run_frame(bridge_id which, fid_t f, term_t av,
   return MT_OK;
 }
 
-static mt_status run_or_load(metta *runtime, bridge_id which, int representation,
-                                  const char *argument, const char *space,
-                                  mt_answers **out)
-{ fid_t f;
+static mt_status run_or_load(const mt_space *space, bridge_id which,
+                              int representation, const char *argument,
+                              mt_answers **out)
+{ metta *runtime = space->runtime;
+  fid_t f;
   term_t av;
   mt_answers *answers;
   const char *pred = g_bridges[which].name;
@@ -5838,7 +5896,7 @@ static mt_status run_or_load(metta *runtime, bridge_id which, int representation
   }
   av = PL_new_term_refs(5);
   if ( !av || !put_chars(av, PL_STRING | representation, (size_t)-1, argument) ||
-       !put_name(av + 1, space) ||
+       !put_space(av + 1, space) ||
        !PL_put_float(av + 2, runtime->limits.seconds) ||
        !PL_put_int64(av + 3, (int64_t)runtime->limits.inferences) )
   { PL_discard_foreign_frame(f);
@@ -5865,7 +5923,7 @@ static mt_status run_goal(mt_space *space, const mt_atom *goal, mt_answers **out
     return MT_NOMEM;
   }
   av = PL_new_term_refs(5);
-  if ( !av || !put_atom(goal, av) || !put_name(av + 1, space->name) ||
+  if ( !av || !put_atom(goal, av) || !put_space(av + 1, space) ||
        !PL_put_float(av + 2, space->runtime->limits.seconds) ||
        !PL_put_int64(av + 3, (int64_t)space->runtime->limits.inferences) )
   { PL_discard_foreign_frame(f);
@@ -5890,7 +5948,7 @@ mt_answers *mt_self_run_goal(metta *runtime, mt_atom *goal)
 mt_answers *mt_self_run(metta *runtime, const char *source)
 { mt_answers *out = NULL;
   if ( handle_ready(runtime, "mt_run") )
-    run_or_load(runtime, BRIDGE_RUN, REP_UTF8, source, "&self", &out);
+    run_or_load(&g_self, BRIDGE_RUN, REP_UTF8, source, &out);
   return out;
 }
 
@@ -5905,21 +5963,21 @@ bool mt_self_do(metta *runtime, const char *source)
 mt_answers *mt_self_load(metta *runtime, const char *path)
 { mt_answers *out = NULL;
   if ( handle_ready(runtime, "mt_load") )
-    run_or_load(runtime, BRIDGE_LOAD, REP_FN, path, "&self", &out);
+    run_or_load(&g_self, BRIDGE_LOAD, REP_FN, path, &out);
   return out;
 }
 
 mt_answers *mt_space_run(mt_space *space, const char *source)
 { mt_answers *out = NULL;
   if ( handle_ready(space, "mt_space_run") )
-    run_or_load(space->runtime, BRIDGE_RUN, REP_UTF8, source, space->name, &out);
+    run_or_load(space, BRIDGE_RUN, REP_UTF8, source, &out);
   return out;
 }
 
 mt_answers *mt_space_load(mt_space *space, const char *path)
 { mt_answers *out = NULL;
   if ( handle_ready(space, "mt_space_load") )
-    run_or_load(space->runtime, BRIDGE_LOAD, REP_FN, path, space->name, &out);
+    run_or_load(space, BRIDGE_LOAD, REP_FN, path, &out);
   return out;
 }
 
@@ -5954,7 +6012,7 @@ static mt_status open_cursor(mt_space *space, bridge_id which,
     return MT_NOMEM;
   }
   av = PL_new_term_refs(4);
-  if ( !av || !put_atom(atom, av) || !put_name(av + 1, space->name) ||
+  if ( !av || !put_atom(atom, av) || !put_space(av + 1, space) ||
        !PL_put_int64(av + 2, (int64_t)space->runtime->limits.inferences) )
   { PL_discard_foreign_frame(f);
     mt_answers_free(answers);
@@ -6030,7 +6088,7 @@ mt_atom *mt_space_effect_plan(mt_space *space, mt_atom *goal)
        atom_given(goal, "mt_space_effect_plan") &&
        (f = frame_open("mt_space_effect_plan")) )
   { term_t av = PL_new_term_refs(3);
-    if ( av && put_name(av, space->name) && put_atom(goal, av + 1) &&
+    if ( av && put_space(av, space) && put_atom(goal, av + 1) &&
          call_bridge(BRIDGE_EFFECT_PLAN, av) == MT_OK )
       result = decode(av + 2, 0);
     if ( !result && mt_ok() ) err_set(MT_ERROR, "the engine refused the effect plan");
@@ -6053,7 +6111,7 @@ mt_answers *mt_space_match(mt_space *space, mt_atom *pattern)
 mt_answers *mt_space_query(mt_space *space, mt_atom *pattern, mt_atom *guard)
 { mt_answers *out = NULL;
   if ( handle_ready(space, "mt_space_query") && atom_given(pattern, "mt_space_query") )
-  { out = mt_space_eval(space, mt_expr("match", mt_spaceref(space->name),
+  { out = mt_space_eval(space, mt_expr("match", space_ref(space),
                      mt_keep(pattern), mt_expr("if", guard ? guard : mt_bool(true),
                                                mt_keep(pattern), "Empty")));
     guard = NULL;

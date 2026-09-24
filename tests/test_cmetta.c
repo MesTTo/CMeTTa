@@ -1932,6 +1932,68 @@ static void test_a_refusal_carries_the_engines_remedy_and_ground(metta *m)
   mt_clear();
 }
 
+static void test_a_parametric_space_is_a_handle_like_any_other(metta *m)
+{ static const struct { const char *base; int64_t limit; } caches[] = {
+    { "&primary-kb", 100 }, { "&secondary-kb", 10 },
+  };
+  mt_space *spaces[2], *again, *plain;
+  mt_atom *config, *want;
+  size_t i;
+
+  CASE("each parameter set of a parametric name is a space of its own");
+  /* A parameter is a symbol, not a space: &primary-kb names no space here,
+     so it crosses and comes back as the symbol it is. */
+  for (i = 0; i < 2; i++)
+  { spaces[i] = mt_space_of(m, E("cache", S(caches[i].base), caches[i].limit));
+    CHECK(spaces[i] != NULL);
+    /* The equation reads its own space's parameters through context-space. */
+    CHECK(mt_add(spaces[i], E("=", E("cache-config"),
+                              E("let", E("cache", V("base"), V("limit")), E("context-space"),
+                                E("config", V("base"), V("limit"))))));
+    CHECK(mt_add(spaces[i], E("entry", caches[i].base)));
+  }
+  for (i = 0; i < 2; i++)
+  { config = mt_first(mt_eval(spaces[i], E("cache-config")));
+    want = E("config", S(caches[i].base), caches[i].limit);
+    CHECK(config && mt_alpha_eq(config, want));
+    mt_drop(config);
+    mt_drop(want);
+    config = mt_first(mt_match(spaces[i], E("entry", V("which"))));
+    CHECK(config && mt_len(config) == 2 && strcmp(mt_name(mt_at(config, 1)), caches[i].base) == 0);
+    mt_drop(config);
+    CHECK(mt_count(spaces[i]) == 2);
+  }
+
+  CASE("its name reads back as text, and opening it again finds what it holds");
+  CHECK(strcmp(mt_space_name(spaces[0]), "(cache &primary-kb 100)") == 0);
+  again = mt_space_of(m, E("cache", S("&primary-kb"), 100));
+  CHECK(again && mt_count(again) == 2);
+  mt_space_close(again);
+
+  CASE("a reference opens what mt_space_open opens");
+  plain = mt_space_of(m, mt_spaceref("&cmetta-plain"));
+  CHECK(plain && strcmp(mt_space_name(plain), "&cmetta-plain") == 0);
+  CHECK(mt_add(plain, E("seen", "once")));
+  again = mt_space_open(m, "&cmetta-plain");
+  CHECK(again && mt_count(again) == 1);
+  mt_space_close(again);
+  CHECK(mt_wipe(plain));
+  mt_space_close(plain);
+
+  CASE("anything else names no space and says so");
+  mt_clear();
+  CHECK(mt_space_of(m, mt_num(7)) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  mt_clear();
+  CHECK(mt_space_of(m, mt_exprv(0, NULL)) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  mt_clear();
+  CHECK(mt_space_of(m, NULL) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  mt_clear();
+  for (i = 0; i < 2; i++) mt_space_close(spaces[i]);
+}
+
 static void test_an_eager_goal_runs_in_the_runtimes_engine(metta *m)
 { mt_list lazy;
   mt_atom *store, *want;
@@ -2433,6 +2495,7 @@ int main(void)
   test_a_refusal_carries_the_engines_remedy_and_ground(m);
   test_a_bound_stops_a_runaway_and_says_so(m);
   test_an_eager_goal_runs_in_the_runtimes_engine(m);
+  test_a_parametric_space_is_a_handle_like_any_other(m);
   test_the_counters_measure_engine_work(m);
   test_verbosity_reaches_the_engines_own_door(m);
   test_reopening_is_the_same_runtime(m);

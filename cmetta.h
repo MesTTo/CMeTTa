@@ -756,6 +756,18 @@ MT_API mt_space *mt_catalog(metta *runtime);
 
 /* Create or open a space by name; names begin with '&'. NULL on failure. */
 MT_API MT_MUST_USE mt_space *mt_space_open(metta *runtime, const char *name);
+
+/* Create or open a space by any name the engine takes: a reference, &kb,
+   which is mt_space_open()'s, or a PARAMETRIC name, a nonempty expression
+   headed by a symbol such as (cache &kb 100), each parameter set its own
+   space whose equations read the parameters through context-space. A
+   parametric space is one the engine declares, so this declares it with
+   (new-space name), which makes it the first time and answers it again,
+   contents kept, after; every door taking a handle then reaches it as it
+   reaches &kb, and mt_space_name() answers its name as text. TAKES name;
+   NULL with MT_MISUSE for any other atom [tested: tests/test_cmetta.c,
+   test_a_parametric_space_is_a_handle_like_any_other; commit=WORKTREE]. */
+MT_API MT_MUST_USE mt_space *mt_space_of(metta *runtime, mt_atom *name);
 MT_API void mt_space_close(mt_space *space);
 /* Release the engine space and its compiled definitions. The C handle remains
    owned and must be closed. The engine decides which spaces are releasable. */

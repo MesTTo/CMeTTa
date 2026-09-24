@@ -122,7 +122,9 @@ converts the atom. mt_drop uses no allocation and no recursive calls.
 ## Spaces, source and answers
 
 `mt_space_open(m, "&kb")` returns an owned C handle; close it with
-`mt_space_close`. `mt_self` and `mt_catalog` borrow runtime-owned handles.
+`mt_space_close`. `mt_space_of(m, name_atom)` opens a handle on any space name,
+a reference or a parametric expression such as (cache &kb 100), which it
+declares through the engine's new-space. `mt_self` and `mt_catalog` borrow runtime-owned handles.
 `mt_space_drop` retires the engine space and declarations without freeing the
 C handle. Obtain an anonymous space through the engine's new-space operation.
 
