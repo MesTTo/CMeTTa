@@ -5,6 +5,14 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- `mt_register_prolog`'s refusals are the engine's `registration` kind,
+  `MT_REFUSAL_KIND_REGISTRATION`, which `vocabularies.h` places before
+  `MT_REFUSAL_KIND_ENGINE`, so the latter's value moves up by one. A source
+  that declares nothing says why in `mt_errmsg()` and what to add in
+  `mt_remedy()`, and a rename from text asks for a file origin. `mt_errmsg()`
+  reads every engine signal as its own sentence, where a value, type or
+  interrupted refusal read `Unknown error term`.
+
 - The test suite finds its fixture files from `MT_ENGINE_PATH` through one
   `FIXTURE(name)` macro, so it passes wherever it is started. Three
   `mt_register_prolog` file cases named `tests/fixtures/...` relative to the

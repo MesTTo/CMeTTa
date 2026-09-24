@@ -971,7 +971,7 @@ static inline bool mt_refinement_of(const char *word, enum mt_refinement *member
 
 /* (vocabulary refusal-kind syntax time_limit inference_limit restraint
    interrupted value type assertion capability platform operation stack
-   source engine) */
+   source registration engine) */
 enum mt_refusal_kind {
   MT_REFUSAL_KIND_SYNTAX,
   MT_REFUSAL_KIND_TIME_LIMIT,
@@ -986,6 +986,7 @@ enum mt_refusal_kind {
   MT_REFUSAL_KIND_OPERATION,
   MT_REFUSAL_KIND_STACK,
   MT_REFUSAL_KIND_SOURCE,
+  MT_REFUSAL_KIND_REGISTRATION,
   MT_REFUSAL_KIND_ENGINE,
 };
 
@@ -1004,6 +1005,7 @@ MT_VOCABULARY_TABLE char *const mt_refusal_kind_names[] = {
   "operation",
   "stack",
   "source",
+  "registration",
   "engine",
 };
 

@@ -2180,15 +2180,16 @@ static void test_prolog_registers_as_metta_functions(metta *m)
   mt_atom *got, *want;
   mt_list answers;
   size_t i;
-  /* What the engine refuses, and a word of its own refusal naming why: a
-     file that is not there, renames of text, a source that declares nothing
-     it could register, and a name no predicate stands behind. */
-  struct { mt_prolog source; mt_atom *names; const char *says; } refused[] = {
-    { { MT_PROLOG_FILE, FIXTURE("no_such_source.pl") }, E("cmetta-prolog-absent"), "no_such_source" },
+  /* What the engine refuses, a word of its own refusal naming why and, for a
+     registration its contract refuses, a word of the remedy naming what to
+     supply: a file that is not there, renames of text, a source that declares
+     nothing it could register, and a name no predicate stands behind. */
+  struct { mt_prolog source; mt_atom *names; const char *says; const char *supply; } refused[] = {
+    { { MT_PROLOG_FILE, FIXTURE("no_such_source.pl") }, E("cmetta-prolog-absent"), "no_such_source", NULL },
     { { MT_PROLOG_TEXT, ":- module(cmetta_prolog_text, [f/2]).\nf(X, X).\n" },
-      E(E("f", "cmetta-prolog-from-text")), "file" },
-    { { MT_PROLOG_TEXT, "'cmetta-prolog-silent'(X, X).\n" }, NULL, "metta_extension" },
-    { { MT_PROLOG_TEXT, "'cmetta-prolog-other'(X, X).\n" }, E("cmetta-prolog-missing"), "cmetta-prolog-missing" },
+      E(E("f", "cmetta-prolog-from-text")), "file", "a file origin" },
+    { { MT_PROLOG_TEXT, "'cmetta-prolog-silent'(X, X).\n" }, NULL, "extension", "metta_extension" },
+    { { MT_PROLOG_TEXT, "'cmetta-prolog-other'(X, X).\n" }, E("cmetta-prolog-missing"), "cmetta-prolog-missing", NULL },
   };
 
   CASE("a file's predicate registers under the name given and answers as a function");
@@ -2228,6 +2229,7 @@ static void test_prolog_registers_as_metta_functions(metta *m)
     CHECK(mt_register_prolog(m, refused[i].source, refused[i].names) == NULL);
     CHECK(mt_error() == MT_ERROR);
     CHECK(mt_errmsg() && strstr(mt_errmsg(), refused[i].says) != NULL);
+    CHECK(!refused[i].supply || (mt_remedy() && strstr(mt_remedy(), refused[i].supply) != NULL));
   }
 
   CASE("a source the door cannot name is refused before the engine is asked");
