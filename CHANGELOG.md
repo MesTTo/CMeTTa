@@ -5,6 +5,16 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Link README.md's files by URL, so its site page resolves them too. The
+  site publishes README.md through website/extensions/cmetta/index.md's
+  @include, one directory deeper, where the relative links to
+  `vocabularies.h` and `settings.h` were dead and failed the docs lane, and
+  the one to `llms.txt` published a 404 VitePress does not flag, `.txt`
+  being on its asset list. All three name their GitHub URL now, as the
+  `cmetta.h` link beside them always did, and `make docs`, which `make
+  test` and the c-binding lane run, refuses a relative link in README.md
+  through `tests/readme_links.py`.
+
 - Keep version-control metadata out of `make install`. The rule copied the
   engine with `find engine lib -type f`, so an install from a main checkout
   carried lib's whole repository, 1,105 of its 1,488 files, and one from a

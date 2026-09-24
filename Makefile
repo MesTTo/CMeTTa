@@ -232,6 +232,8 @@ surface: $(LIB)
 # The door, for a name the prose means to use without a header counterpart:
 # write `<!-- names: <identifier> <why> -->` in the document itself. Declaring
 # it in place keeps the reason beside the name rather than in this file.
+# tests/readme_links.py then refuses a relative link in README.md, which the
+# site publishes from another directory, where no such link resolves.
 docs:
 	@python3 -c "import re,sys; \
 	  known=set(re.findall(r'\b(?:mt_[a-z_0-9]+|MT_[A-Z_0-9]+)\b', ''.join(open(h).read() for h in '$(HEADERS)'.split()))); \
@@ -241,6 +243,7 @@ docs:
 	   for d in ('README.md','llms.txt')]; \
 	  sys.exit('documented but in neither header: ' + ', '.join(f'{d}:{n}' for d,n in bad)) if bad else \
 	  print('docs: every mt_ name in README.md and llms.txt is in a header')"
+	@python3 tests/readme_links.py
 
 # The examples run too. An example that no longer compiles, or that compiles
 # and then fails, is documentation that lies. The README quotes these programs;
