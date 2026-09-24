@@ -5,6 +5,13 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- The test suite finds its fixture files from `MT_ENGINE_PATH` through one
+  `FIXTURE(name)` macro, so it passes wherever it is started. Three
+  `mt_register_prolog` file cases named `tests/fixtures/...` relative to the
+  working directory, which the engine resolves a relative source against, so
+  they passed under `make test` here and failed when the Python seat's
+  `test_the_c_binding_suite_passes` ran the suite from `extensions/python`.
+
 - Link README.md's files by URL, so its site page resolves them too. The
   site publishes README.md through website/extensions/cmetta/index.md's
   @include, one directory deeper, where the relative links to

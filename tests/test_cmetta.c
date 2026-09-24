@@ -51,6 +51,15 @@ static const char *current_case = "";
 #define CASE(name) current_case = (name)
 #endif
 
+/* A fixture's path, from the engine tree this suite was built against rather
+   than from the working directory. The engine resolves a relative source path
+   against the working directory, so the suite passed where make test runs it,
+   in this directory, and failed its three file registrations wherever else it
+   was started, which is how the Python seat's test_the_c_binding_suite_passes
+   runs it [measured 2026-09-24T23:12:13+10:00: "source_sink
+   'tests/fixtures/prolog_named.pl' does not exist" from extensions/python]. */
+#define FIXTURE(name) MT_ENGINE_PATH "/extensions/cmetta/tests/fixtures/" name
+
 /* ================================================================== *
  * Atoms, which need no engine
  * ================================================================== */
@@ -863,8 +872,7 @@ static void test_spaces_store_and_query(metta *m)
 static void test_catalog_and_file_load_are_live_runtime_doors(metta *m)
 { mt_space *catalog = mt_catalog(m);
   mt_answers *loaded;
-  const char *fixture = MT_ENGINE_PATH
-                        "/extensions/cmetta/tests/fixtures/load_test.metta";
+  const char *fixture = FIXTURE("load_test.metta");
 
   CASE("the catalog handle names and queries the live &metta space");
   CHECK(catalog != NULL);
@@ -2176,7 +2184,7 @@ static void test_prolog_registers_as_metta_functions(metta *m)
      file that is not there, renames of text, a source that declares nothing
      it could register, and a name no predicate stands behind. */
   struct { mt_prolog source; mt_atom *names; const char *says; } refused[] = {
-    { { MT_PROLOG_FILE, "tests/fixtures/no_such_source.pl" }, E("cmetta-prolog-absent"), "no_such_source" },
+    { { MT_PROLOG_FILE, FIXTURE("no_such_source.pl") }, E("cmetta-prolog-absent"), "no_such_source" },
     { { MT_PROLOG_TEXT, ":- module(cmetta_prolog_text, [f/2]).\nf(X, X).\n" },
       E(E("f", "cmetta-prolog-from-text")), "file" },
     { { MT_PROLOG_TEXT, "'cmetta-prolog-silent'(X, X).\n" }, NULL, "metta_extension" },
@@ -2184,7 +2192,7 @@ static void test_prolog_registers_as_metta_functions(metta *m)
   };
 
   CASE("a file's predicate registers under the name given and answers as a function");
-  check_registered(m, mt_register_prolog(m, (mt_prolog){ MT_PROLOG_FILE, "tests/fixtures/prolog_named.pl" },
+  check_registered(m, mt_register_prolog(m, (mt_prolog){ MT_PROLOG_FILE, FIXTURE("prolog_named.pl") },
                                          E("cmetta-prolog-seven")),
                    E("cmetta-prolog-seven"));
 
@@ -2200,7 +2208,7 @@ static void test_prolog_registers_as_metta_functions(metta *m)
   mt_list_free(answers);
 
   CASE("with no names, what the source exports is what registers");
-  check_registered(m, mt_register_prolog(m, (mt_prolog){ MT_PROLOG_FILE, "tests/fixtures/prolog_exports.pl" }, NULL),
+  check_registered(m, mt_register_prolog(m, (mt_prolog){ MT_PROLOG_FILE, FIXTURE("prolog_exports.pl") }, NULL),
                    E("cmetta-prolog-exported"));
 
   CASE("a source that only joins an extension registers no function");
@@ -2210,7 +2218,7 @@ static void test_prolog_registers_as_metta_functions(metta *m)
   mt_drop(got);
 
   CASE("a rename registers a module file's export under the new name");
-  check_registered(m, mt_register_prolog(m, (mt_prolog){ MT_PROLOG_FILE, "tests/fixtures/prolog_module.pl" },
+  check_registered(m, mt_register_prolog(m, (mt_prolog){ MT_PROLOG_FILE, FIXTURE("prolog_module.pl") },
                                          E(E("cmetta_prolog_export", "cmetta-prolog-renamed"))),
                    E("cmetta-prolog-renamed"));
 
