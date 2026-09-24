@@ -5449,7 +5449,7 @@ static bool atom_given(const mt_atom *atom, const char *door)
 /* A parametric space is one the engine declares. (new-space name) makes it
    the first time and answers it again, contents kept, every time after, so
    opening a handle on one declares it [tested: tests/test_cmetta.c,
-   test_a_parametric_space_is_a_handle_like_any_other; commit=WORKTREE]. */
+   test_a_parametric_space_is_a_handle_like_any_other; commit=237fcd3c8438241c9fc4c24b7e68567f75d68a9b]. */
 static mt_space *parametric_space(metta *runtime, const mt_atom *name)
 { mt_space *s;
   mt_atom *declared = mt_first(mt_self_eval(runtime, mt_expr("new-space", mt_keep(name))));

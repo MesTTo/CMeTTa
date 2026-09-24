@@ -766,7 +766,7 @@ MT_API MT_MUST_USE mt_space *mt_space_open(metta *runtime, const char *name);
    contents kept, after; every door taking a handle then reaches it as it
    reaches &kb, and mt_space_name() answers its name as text. TAKES name;
    NULL with MT_MISUSE for any other atom [tested: tests/test_cmetta.c,
-   test_a_parametric_space_is_a_handle_like_any_other; commit=WORKTREE]. */
+   test_a_parametric_space_is_a_handle_like_any_other; commit=237fcd3c8438241c9fc4c24b7e68567f75d68a9b]. */
 MT_API MT_MUST_USE mt_space *mt_space_of(metta *runtime, mt_atom *name);
 MT_API void mt_space_close(mt_space *space);
 /* Release the engine space and its compiled definitions. The C handle remains
