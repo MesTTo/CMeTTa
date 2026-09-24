@@ -5,6 +5,18 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Erase a dropped handle's record on the thread that drops it again, a thread
+  with no Prolog engine included. The lock-free list that held such records
+  until a thread with an engine arrived worked around SWI 10.1.14 signalling
+  atom collection through the calling thread's engine, which faulted on a
+  thread without one; the engine now requires a host carrying
+  `swi-gc-signal-engineless-thread` (superproject 79a48d315), on which
+  `make runtime-engineless-erase` erases 20,000 records on an engineless
+  thread and answers. The list, its drains in `frame_open` and `mt_close` and
+  its link in each handle go. `test_handles_dropped_without_an_engine` now
+  checks that the dropping thread erases every one of twice the engine's
+  `agc_margin` in handles itself, and passes 5 runs of 5.
+
 - Bound an evaluated goal by `max-stack-depth`, as a runnable form is bound.
   `mt_eval` and `mt_eval_under` ran their goal outside the evaluation fuel
   scope that every runnable form, and the Python seat's evaluation, runs in,

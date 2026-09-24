@@ -6,9 +6,12 @@
  * Assumes: the SWI headers and library the C seat builds against.
  * Guarantees: exits 0 on a host whose signalGCThread() tolerates a thread
  *   with no engine, and dies of SIGSEGV on one that does not [measured
- *   2026-09-24: SWI-Prolog 10.1.14, /home/user/Dev/swipl-patched, died 3 runs
- *   of 3; make runtime-engineless-erase]. cmetta itself no longer erases on
- *   such a thread: see g_unerased in cmetta.c.
+ *   2026-09-24, make runtime-engineless-erase: SWI-Prolog 10.1.14 without
+ *   the swi-gc-signal-engineless-thread patch died 3 runs of 3, and
+ *   swipl-patched.2, which carries it, erased 20,000 records and exited 0 3
+ *   runs of 3]. cmetta's handle_release erases on such a thread, so it
+ *   needs a host this exits 0 on, as the engine requires since superproject
+ *   79a48d315.
  * Owns resources: every record it makes is erased; cleanup must succeed.
  */
 #include <SWI-Prolog.h>

@@ -11,10 +11,10 @@
  *   and after four threads dropped 4,000 handles while the main thread closed
  *   the runtime [tested: test_threads.c, test_drop_handles_while_closing;
  *   commit=e14d01465d3e233d5cb5ccd1fc9c685c20c70000], and after a thread with
- *   no engine dropped twice the atom-GC margin in handles, erasing none of
- *   their records itself, and the main thread's next door erased them all
+ *   no engine dropped twice the atom-GC margin in handles, erasing every one
+ *   of their records itself, and the engine answered after it
  *   [tested: test_threads.c, test_handles_dropped_without_an_engine;
- *   commit=25def055d836058f71c3a2db2c54d56cadf6b18d].
+ *   commit=WORKTREE].
  * Owns resources: two pthreads and their joined lifetimes; one runtime closed
  *   after both workers have detached.
  * Guarded by: C atomics coordinate rendezvous; each worker owns its result.
@@ -166,10 +166,11 @@ static void *run_dropper(void *opaque)
 
 /* Handles dropped on a thread with no Prolog engine, twice the atom-GC
    margin of them, so the unregister that crosses the margin happens on that
-   thread. Erasing there faulted in SWI's signalGCThread(), which reads the
-   thread's engine [measured 2026-09-24: 3 runs of 3 at 30,000 handles]. The
-   records wait for a thread with an engine instead: the drops erase none,
-   and the main thread's next door erases every one. */
+   thread. Erasing there faulted in SWI 10.1.14's signalGCThread(), which read
+   the thread's engine [measured 2026-09-24: 3 runs of 3 at 30,000 handles];
+   the host the engine requires carries swi-gc-signal-engineless-thread, so
+   the dropping thread erases every record itself and the engine answers
+   after it. */
 extern unsigned mt_test_record_erases(void);
 extern int64_t mt_test_agc_margin(void);
 
@@ -199,18 +200,13 @@ static int test_handles_dropped_without_an_engine(metta *runtime)
        pthread_join(thread, NULL) != 0 )
     return 1;
   during = mt_test_record_erases() - before;
-  if ( during != 0 )
-  { fprintf(stderr, "a thread with no engine erased %u records itself\n", during);
+  if ( during != count )
+  { fprintf(stderr, "a thread with no engine erased %u of %zu records\n", during, count);
     failed++;
   }
   if ( mt_one_int(mt_run(runtime, "!(+ 20 22)")) != 42 )
   { fprintf(stderr, "the engine failed after the drops: %s\n",
             mt_errmsg() ? mt_errmsg() : "no message");
-    failed++;
-  }
-  if ( mt_test_record_erases() - before != count )
-  { fprintf(stderr, "the next door erased %u of %zu waiting records\n",
-            mt_test_record_erases() - before, count);
     failed++;
   }
   free(handles);

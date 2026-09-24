@@ -307,11 +307,13 @@ $(TEST_TMP)/swi-memory-probe: tests/swi_memory_probe.c .toolchain-stamp
 	@mkdir -p "$(TEST_TMP)"
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
 
-# The same rule for a host defect with no leak to count: SWI erasing records
-# on a thread with no Prolog engine faults once their atoms cross the atom-GC
-# margin. cmetta queues such records for a thread with an engine instead
-# (g_unerased), so only a patched host passes this target.
-# [measured 2026-09-24: make runtime-engineless-erase died of SIGSEGV 3 runs of 3]
+# The same rule for a host defect with no leak to count: SWI 10.1.14 erasing
+# records on a thread with no Prolog engine faults once their atoms cross the
+# atom-GC margin. cmetta's handle_release erases on such a thread, relying on
+# the swi-gc-signal-engineless-thread patch the engine requires of its host
+# since superproject 79a48d315, and this target is that patch's reproduction
+# [measured 2026-09-24: died of SIGSEGV 3 runs of 3 on 10.1.14 without the
+# patch; erased 20,000 records and exited 0 3 runs of 3 on swipl-patched.2].
 $(TEST_TMP)/swi-engineless-erase-probe: tests/swi_engineless_erase_probe.c .toolchain-stamp
 	@mkdir -p "$(TEST_TMP)"
 	$(CC) $(CFLAGS) -pthread -o $@ $< $(LDFLAGS) $(LDLIBS)
