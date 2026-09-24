@@ -945,7 +945,7 @@ MT_API bool mt_space_wipe(mt_space *space);
    tables lib_memo's memoize-exact stores, so a memoize-exact function misses
    on every call made through cursors and hits across mt_run_goal() calls, as
    the Python seat's eager evaluation hits [tested: tests/test_cmetta.c,
-   test_an_eager_goal_runs_in_the_runtimes_engine; commit=WORKTREE]. */
+   test_an_eager_goal_runs_in_the_runtimes_engine; commit=cfa188fc6da55b7f1f460eeb7bf2ede6e2cfac1d]. */
 #define mt_run_goal(target, goal) MT_ON((target), run_goal)((target), (goal))
 #define mt_effect_plan(target, goal) MT_ON((target), effect_plan)((target), (goal))
 #define mt_run(target, source)  MT_ON((target), run)((target), (source))

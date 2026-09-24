@@ -193,7 +193,7 @@ metta_c_load(File, Space, Seconds, Inferences, Groups) :-
 % So a memoize-exact function called through cursors misses on every call, and
 % called through this door hits as the run door's forms and the Python seat's
 % eager evaluation do [tested: tests/test_cmetta.c,
-% test_an_eager_goal_runs_in_the_runtimes_engine; commit=WORKTREE].
+% test_an_eager_goal_runs_in_the_runtimes_engine; commit=cfa188fc6da55b7f1f460eeb7bf2ede6e2cfac1d].
 metta_c_run_goal(Goal, Space, Seconds, Inferences, [Answers]) :-
     space_module(Space, Module),
     metta_c_bounded(
