@@ -733,8 +733,9 @@ prolog:error_message(cmetta_bad_space_name(Name)) -->
     [ 'a space a C library backs must be named with a leading ampersand, and \c
        ~w is not'-[Name] ].
 
-% The C vtable is the source of capabilities. Missing callbacks are refused by
-% the engine before dispatch, while a callback's error crosses as an exception.
+% The C vtable is the source of capabilities, and its rules flag the one no
+% callback implies. Missing callbacks are refused by the engine before
+% dispatch, while a callback's error crosses as an exception.
 % [tested: tests/test_providers.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
 :- multifile seam:foreign_capability/2.
 seam:foreign_capability(Space, Capability) :-

@@ -7540,7 +7540,8 @@ static mt_status provider_open_body(metta *runtime, void *data)
   mt_status status;
   const struct { const char *name; bool present; } capabilities[] = {
     {"add", provider.add != NULL}, {"remove", provider.remove != NULL},
-    {"match", true}, {"enumerate", true}, {"clear", provider.clear != NULL}
+    {"match", true}, {"enumerate", true}, {"clear", provider.clear != NULL},
+    {"rules", provider.rules}
   };
 
   if ( !space || !provider.match )

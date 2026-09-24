@@ -9,6 +9,9 @@
  * Guarantees: a compound stored through a provider comes back as the term it
  *   was, applying, sharing its variables and removing by value
  *   [tested: test_a_stored_compound_comes_back_whole; commit=256a3a6aa4248e89c7b007edacc6832d62eb4594].
+ * Guarantees: a provider that promises rules holds equations the engine
+ *   compiles, and one that does not refuses them
+ *   [tested: test_a_rules_provider_holds_a_program; commit=WORKTREE].
  * Open Obligations: None.
  */
 #include <cmetta.h>
@@ -278,6 +281,54 @@ static int test_a_stored_compound_comes_back_whole(void)
   return 0;
 }
 
+/* The rules promise, both ways: an equation added to a space that holds
+   rules is stored in C and compiled by the engine, answering in that space;
+   a space that makes no such promise refuses the equation rather than
+   storing one that could never fire. */
+static int test_a_rules_provider_holds_a_program(void)
+{ CASE("a provider that promises rules holds a program, and one that does not refuses it"); tracker allocation = {0};
+  mt_allocator previous = mt_allocator_set((mt_allocator){tracked_resize, &allocation});
+  metta *m = mt_open(NULL);
+  counters program_counts = {0}, data_counts = {0};
+  mt_provider p;
+  store *program_store, *data_store;
+  mt_space *program, *data;
+  mt_atom *rule;
+  CHECK(m);
+  p = provider(&program_counts, false); program_store = p.user;
+  p.rules = true;
+  CHECK(mt_provider_open(m, "&c-program", p));
+  p = provider(&data_counts, false); data_store = p.user;
+  CHECK(mt_provider_open(m, "&c-data", p));
+  CHECK((program = mt_space_open(m, "&c-program")) != NULL);
+  CHECK((data = mt_space_open(m, "&c-data")) != NULL);
+  rule = mt_expr("=", mt_expr("c-double", mt_var("x")), mt_expr("*", 2, mt_var("x")));
+
+  CHECK(mt_add(program, mt_keep(rule)));
+  CHECK(program_store->atoms.len == 1);
+  CHECK(mt_one_int(mt_eval(m, mt_expr("metta", mt_expr("c-double", 21), "%Undefined%",
+                                      mt_spaceref("&c-program")))) == 42);
+  CHECK(mt_one_int(mt_eval(program, mt_expr("c-double", 21))) == 42);
+
+  mt_clear();
+  CHECK(!mt_add(data, mt_keep(rule)));
+  CHECK(mt_error() == MT_ERROR && mt_errmsg() && strstr(mt_errmsg(), "rules") != NULL);
+  CHECK(data_store->atoms.len == 0);
+  mt_clear();
+
+  mt_drop(rule);
+  mt_space_close(program);
+  mt_space_close(data);
+  CHECK(mt_provider_close(m, "&c-program") && mt_provider_close(m, "&c-data"));
+  mt_close(m);
+  CHECK(program_counts.releases == 1 && data_counts.releases == 1);
+  CHECK(!allocation.blocks && !allocation.bytes);
+  mt_allocator_set(previous);
+  puts("providers: a rules provider holds a program the engine compiles, and a data provider refuses one");
+  return 0;
+}
+
 int main(void)
-{ return test_providers() || test_a_stored_compound_comes_back_whole();
+{ return test_providers() || test_a_stored_compound_comes_back_whole() ||
+         test_a_rules_provider_holds_a_program();
 }

@@ -1385,7 +1385,19 @@ MT_API bool mt_repr(metta *runtime, const char *type_name, mt_text_fn text,
    nested speculation. A failing completion still releases its local resources.
    The selected registration is retained through completion even if its name is
    closed and reused. External concurrency is the provider's responsibility.
-   [tested: tests/test_providers.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c] */
+   [tested: tests/test_providers.c; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c]
+
+   `rules` says the space holds EQUATIONS, which in MeTTa is the difference
+   between a data source and a place a program lives. It is a promise about
+   what the store holds, not a callback, so no callback can imply it: true,
+   and an equation added through add-atom is compiled by the engine, the same
+   clause a native one is, and answers in the space that holds it; false, and
+   adding one is refused, since it would never fire [source:
+   engine/spaces/lifecycle.pl, refuse_ruleless_equation/2;
+   commit=214188f1d5b5018a0061ea1bc72b104e69137b8f; tested:
+   tests/test_providers.c, test_a_rules_provider_holds_a_program;
+   commit=WORKTREE]. The Python seat's providers opt in the same way, by
+   answering can_run("rules"). */
 typedef struct mt_provider {
   void       *user;
   mt_status   (*add)(void *user, const mt_atom *atom);
@@ -1397,6 +1409,7 @@ typedef struct mt_provider {
   mt_status   (*commit)(void *user);
   mt_status   (*rollback)(void *user);
   mt_free_fn  release;
+  bool        rules;
 } mt_provider;
 
 /* Back a named space with a provider, and stop backing it. The name is a

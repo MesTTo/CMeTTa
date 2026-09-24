@@ -813,6 +813,12 @@ space, a variable it shares with the rest of its atom stays shared, and
 expression is a different atom. A store that writes atoms out as source cannot
 write a carried one, and `mt_write_dup` refuses it by name.
 
+A space holds a program as well as data when its provider sets `rules`. That is
+a promise about what the store holds, so no callback implies it: with it, an
+equation added through add-atom is compiled by the engine, the same clause a
+native one is, and answers in the space that holds it; without it, adding an
+equation is refused, since it would never fire.
+
 Supply `begin`, `commit` and `rollback` together when the store can participate
 in transactions. The engine captures the selected provider before beginning;
 withdrawal or reuse of its name cannot redirect completion. Query cursors also

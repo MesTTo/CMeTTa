@@ -5,6 +5,16 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Let a C provider promise that its space holds a program with
+  `mt_provider.rules`. A provider's capabilities came only from the
+  callbacks it filled in, and `rules` is a promise about what the store
+  holds, not a callback, so a C space could hold facts and never
+  equations. With `rules` set, an equation added through add-atom is
+  compiled by the engine and answers in the space that holds it. Without it,
+  adding one is refused, as before. The Python seat's providers opt in the
+  same way, by answering `can_run("rules")`.
+  `test_a_rules_provider_holds_a_program` covers both sides.
+
 - Register Prolog predicates as MeTTa functions with
   `mt_register_prolog(runtime, source, names)`, the C counterpart of the
   Python seat's `register_prolog` and the Node seat's `registerProlog`. All

@@ -268,6 +268,10 @@ list arrive carried as an MT_HANDLE holding the engine's term, so a stored
 partial application still applies when matched back, and remove and match find
 it by value; mt_write_dup refuses a carried handle.
 
+Set `rules` when the store holds equations: the engine compiles one added
+through add-atom and it answers in that space, while a provider without it
+refuses an equation, since it would never fire.
+
 Supply begin/commit/rollback together or omit all three. Completion retains
 the chosen provider across withdrawal and name reuse. Queries retain it
 through close. `mt_provider_open` takes user on every path;
