@@ -11,7 +11,7 @@
  *   [tested: test_a_stored_compound_comes_back_whole; commit=256a3a6aa4248e89c7b007edacc6832d62eb4594].
  * Guarantees: a provider that promises rules holds equations the engine
  *   compiles, and one that does not refuses them
- *   [tested: test_a_rules_provider_holds_a_program; commit=WORKTREE].
+ *   [tested: test_a_rules_provider_holds_a_program; commit=4cae9c81468cb9fc4a5831d0ec3b5905db276f04].
  * Open Obligations: None.
  */
 #include <cmetta.h>

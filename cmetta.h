@@ -1396,7 +1396,7 @@ MT_API bool mt_repr(metta *runtime, const char *type_name, mt_text_fn text,
    engine/spaces/lifecycle.pl, refuse_ruleless_equation/2;
    commit=214188f1d5b5018a0061ea1bc72b104e69137b8f; tested:
    tests/test_providers.c, test_a_rules_provider_holds_a_program;
-   commit=WORKTREE]. The Python seat's providers opt in the same way, by
+   commit=4cae9c81468cb9fc4a5831d0ec3b5905db276f04]. The Python seat's providers opt in the same way, by
    answering can_run("rules"). */
 typedef struct mt_provider {
   void       *user;
@@ -1515,7 +1515,7 @@ typedef struct mt_prolog {
    refusal, MT_ERROR, for a file that is not there, a source that declares
    nothing, a name no predicate stands behind or a builtin holds, and renames
    of text [tested: tests/test_cmetta.c,
-   test_prolog_registers_as_metta_functions; commit=WORKTREE]. */
+   test_prolog_registers_as_metta_functions; commit=f741cbee053ace18f12c978b37d352a0d52b100a]. */
 MT_API MT_MUST_USE mt_atom *mt_register_prolog(metta *runtime, mt_prolog source, mt_atom *names);
 
 /* ================================================================== *
