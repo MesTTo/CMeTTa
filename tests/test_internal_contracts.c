@@ -147,7 +147,7 @@ int main(void)
   expect(mt_limit(runtime, (mt_limits){0}),
          "a zero limit struct must clear every bound");
   expect(mt_test_stack_limit() == initial,
-         "clearing limits must restore SWI's original stack ceiling");
+         "clearing limits must restore the ceiling the runtime booted under");
 
   mt_close(runtime);
   if ( !failures ) puts("internal range, list, stats and limit contracts ok");

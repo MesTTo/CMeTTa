@@ -284,7 +284,11 @@ Use `mt_clear` before a checked region, then `mt_ok`, `mt_error` and
 when supplied. Callbacks can set a typed error with `mt_error_set`.
 
 `mt_limit` bounds evaluation and reports MT_LIMIT. The inference budget is
-cumulative for a lazy cursor; the wall bound applies to each pull.
+cumulative for a lazy cursor; the wall bound applies to each pull. The runtime
+boots under mt_config.stack_limit, else METTA_STACK_LIMIT (decimal digits,
+positive, or the boot refuses with MT_MISUSE), else MT_STACK_LIMIT_DEFAULT,
+the Python seat's 8,000,000,000 bytes from the generated settings.h; a
+`.stack_bytes` of 0 in mt_limit restores that boot ceiling.
 `mt_stats_now` and `mt_stats_since` measure a region.
 Other threads call `mt_thread_attach` and `mt_thread_detach`.
 Immutable atoms may be shared; cursors and callback state need caller

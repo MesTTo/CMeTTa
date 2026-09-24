@@ -97,13 +97,15 @@ FORCE:
 
 LIB       := libcmetta.so
 # cmetta.h includes vocabularies.h, which extensions/python/tools/vocabgen.py
-# generates from the engine's (vocabulary ...) rows; both are the public header.
-HEADERS   := cmetta.h vocabularies.h
+# generates from the engine's (vocabulary ...) rows, and settings.h, which
+# extensions/python/tools/boundsgen.py generates from the Setting declarations
+# that name an SWI flag; all three are the public header.
+HEADERS   := cmetta.h vocabularies.h settings.h
 STATIC_LIB := libcmetta.a
 FAULT_LIB := tests/libcmetta_fault.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower examples/language
 FAULT_TESTS := tests/test_alloc_failure tests/test_cursor_ids tests/test_reopen \
-               tests/test_internal_contracts tests/test_hash
+               tests/test_internal_contracts tests/test_hash tests/test_stack_ceiling
 THREAD_TESTS := tests/test_threads
 TESTS     := tests/test_cmetta tests/test_bad_boot tests/test_quoted_path \
              tests/test_qlf_boot tests/test_batch_add tests/test_unify \
@@ -255,6 +257,7 @@ test: $(TESTS) $(EXAMPLES) $(KIT) surface docs version hardening
 	@./tests/test_cursor_ids
 	@./tests/test_reopen
 	@./tests/test_internal_contracts
+	@./tests/test_stack_ceiling
 	@./tests/test_batch_add
 	@./tests/test_unify
 	@./tests/test_seam

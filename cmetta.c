@@ -4904,6 +4904,48 @@ static char *default_path(void)
   return mt_strdup(env && *env ? env : MT_ENGINE_PATH);
 }
 
+/* The stack ceiling a runtime boots under: the host's own, else
+   METTA_STACK_LIMIT, else the default the Python seat declares, which
+   settings.h carries so the two seats boot under one number. The environment
+   is refused in the Python seat's words: "must be a positive integer, got
+   '<value>'" for what is not an integer and "must be positive, got 0" for
+   zero [source: extensions/python/metta/_catalog/bounds.py, Setting.initial
+   and _positive_integer; commit=d4a365c16bdf1801f9839597e56ecfcc8c2b7a0c].
+   C reads decimal digits alone, so a sign, a blank, an underscore or a value
+   wider than size_t is refused where Python's int() reads some of them, and
+   an empty value is refused as Python refuses it.
+   Time: one pass over the value's characters. */
+static bool boot_stack_bytes(const mt_config *config, size_t *bytes)
+{ const char *raw = getenv(MT_STACK_LIMIT_ENVIRONMENT);
+  const char *p;
+  size_t value = 0;
+
+  if ( config->stack_limit )
+  { *bytes = config->stack_limit;
+    return true;
+  }
+  if ( !raw )
+  { *bytes = (size_t)MT_STACK_LIMIT_DEFAULT;
+    return true;
+  }
+  for (p = raw; *p >= '0' && *p <= '9'; p++)
+  { size_t digit = (size_t)(*p - '0');
+    if ( value > (SIZE_MAX - digit) / 10 ) break;
+    value = value * 10 + digit;
+  }
+  if ( p == raw || *p )
+  { err_set(MT_MISUSE, "%s must be a positive integer, got '%s'",
+            MT_STACK_LIMIT_ENVIRONMENT, raw);
+    return false;
+  }
+  if ( value == 0 )
+  { err_set(MT_MISUSE, "%s must be positive, got 0", MT_STACK_LIMIT_ENVIRONMENT);
+    return false;
+  }
+  *bytes = value;
+  return true;
+}
+
 metta *mt_open(const mt_config *config)
 { static char *argv[] = { (char *)"cmetta", (char *)"-q",
                           (char *)"--no-signals", NULL };
@@ -4911,7 +4953,7 @@ metta *mt_open(const mt_config *config)
   char *path;
   char *buf;
   size_t bufsz;
-  size_t initial_stack_bytes;
+  size_t stack_bytes, initial_stack_bytes;
   functor_t equal_functor, pair_functor;
 
   if ( !config ) config = &defaults;
@@ -4934,6 +4976,10 @@ metta *mt_open(const mt_config *config)
 
   path = config->path ? mt_strdup(config->path) : default_path();
   if ( !path ) return err_null(MT_NOMEM, "out of memory recording the path");
+  if ( !boot_stack_bytes(config, &stack_bytes) )
+  { mt_free(path);
+    return NULL;
+  }
 
   if ( !PL_is_initialised(NULL, NULL) && !PL_initialise(3, argv) )
   { mt_free(path);
@@ -4981,7 +5027,11 @@ metta *mt_open(const mt_config *config)
                       as_pl_function((mt_anyfn)pl_cmetta_tx_outcome), 0);
   PL_register_blob_type(&mt_object_blob);
 
-  if ( !prolog_size_flag("stack_limit", &initial_stack_bytes) )
+  /* What mt_limit restores is the ceiling the runtime boots under, read back
+     once SWI holds it rather than SWI's own default sampled before it
+     [tested: tests/test_stack_ceiling.c; commit=WORKTREE]. */
+  if ( !set_prolog_size_flag(MT_STACK_LIMIT_FLAG, stack_bytes) ||
+       !prolog_size_flag(MT_STACK_LIMIT_FLAG, &initial_stack_bytes) )
   { mt_free(path);
     return NULL;
   }
@@ -4997,13 +5047,6 @@ metta *mt_open(const mt_config *config)
   if ( !(buf = mt_alloc(bufsz)) )
   { mt_free(path);
     return err_null(MT_NOMEM, "out of memory building the boot goals");
-  }
-
-  if ( config->stack_limit )
-  { if ( !set_prolog_size_flag("stack_limit", config->stack_limit) )
-    { mt_free(path); mt_free(buf);
-      return NULL;
-    }
   }
 
   /* `extensions` opts the engine into reading extensions/ * /extension.pl,
@@ -6462,7 +6505,7 @@ void mt_answers_free(mt_answers *answers)
 
 bool mt_limit(metta *runtime, mt_limits limits)
 { if ( !handle_ready(runtime, "mt_limit") ) return false;
-  if ( !set_prolog_size_flag("stack_limit",
+  if ( !set_prolog_size_flag(MT_STACK_LIMIT_FLAG,
                              limits.stack_bytes ? limits.stack_bytes
                                                 : runtime->initial_stack_bytes) )
     return false;
@@ -7018,7 +7061,7 @@ bool mt_test_decode_growth_overflow_is_rejected(void)
 
 size_t mt_test_stack_limit(void)
 { size_t value = 0;
-  (void)prolog_size_flag("stack_limit", &value);
+  (void)prolog_size_flag(MT_STACK_LIMIT_FLAG, &value);
   return value;
 }
 #endif

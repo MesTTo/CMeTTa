@@ -5,6 +5,24 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Boot under the stack ceiling the Python seat declares, and keep a configured
+  one. `mt_open` used SWI's own default of 1 GiB whenever
+  `mt_config.stack_limit` was 0, where the engine's CLI passes 8g and the
+  Python seat boots under 8,000,000,000 bytes, so a program the other two run
+  overflowed here: `examples/ch18-performance/18-01-larger-workloads/
+  05-matespacefast.metta` stopped with a stack resource error in its
+  `collapse`, and passes under the new default. The ceiling is now
+  `mt_config.stack_limit`, else `METTA_STACK_LIMIT`, else
+  `MT_STACK_LIMIT_DEFAULT`, from `settings.h`, which
+  `extensions/python/tools/boundsgen.py` generates from the Setting
+  declarations that name an SWI flag and which `cmetta.h` includes. A
+  `METTA_STACK_LIMIT` that is not decimal digits, or is 0, refuses the boot
+  with `MT_MISUSE` in the Python seat's words. `mt_open` also sampled the
+  ceiling that `mt_limit` restores before applying the configured one, so
+  clearing a bound set SWI back to 1 GiB; it now restores the ceiling the
+  runtime booted under. `tests/test_stack_ceiling.c` boots once per case in
+  a child process.
+
 - Name an operation's effect class by the generated `enum mt_effect_class`
   alone. The hand-named `mt_effect` and its constants `MT_PURE`,
   `MT_LOOKUP`, `MT_NONDET`, `MT_WRITES` and `MT_IO` are gone, and with them
