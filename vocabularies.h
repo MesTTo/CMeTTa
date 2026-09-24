@@ -11,11 +11,14 @@
  *     with --write, never this file, and the vocab-sync lane fails on any
  *     drift [tested: test_the_vocabulary_module_is_generated,
  *     test_vocabulary_wrong_spelling_is_refused_independently;
- *     commit=WORKTREE]
+ *     commit=b88f5049744930e5bc04be5c556c69fa27e371ad]
  *   - each enum holds its row's members in the catalog's own order, so a
  *     member's value is its position in the row, which for mt_effect_class
  *     is its rank, and mt_<vocabulary>_names[] holds the engine's word for
- *     the member at that position
+ *     the member at that position, as the running engine's rows read
+ *     [tested: extensions/cmetta/tests/test_cmetta.c,
+ *     test_the_generated_vocabularies_are_the_engines;
+ *     commit=4d9802e2380b906f3919dfb77ad8ff7c3adc5c7f]
  *   - a C name is C's casing of the engine's words and never a new name: the
  *     enum's tag is mt_ and the words of the vocabulary's MeTTa type name in
  *     lower case joined by underscores, and a member is MT_ and the type's
@@ -27,6 +30,9 @@
  *     vocabulary's enum mt_limit and the door mt_limit are two names
  *   - mt_<vocabulary>_of(word, &member) answers whether word is a member and
  *     writes *member only when it is, so no word reads as a default member
+ *     [tested: extensions/cmetta/tests/test_cmetta.c,
+ *     test_the_generated_vocabularies_are_the_engines;
+ *     commit=4d9802e2380b906f3919dfb77ad8ff7c3adc5c7f]
  *   - a vocabulary the engine declares OPEN also admits a word registered
  *     through (add-atom &metta (vocabulary-member <vocabulary> <word>)): its
  *     enum holds the words the engine ships, and its lookup answers false for

@@ -1118,7 +1118,8 @@ typedef enum mt_effect {
 /* The engine's word for an effect class, its entry in
    mt_effect_class_names[], or NULL for a value no class has
    [tested: tests/test_cmetta.c,
-   test_the_generated_vocabularies_are_the_engines; commit=WORKTREE]. */
+   test_the_generated_vocabularies_are_the_engines;
+   commit=4d9802e2380b906f3919dfb77ad8ff7c3adc5c7f]. */
 MT_API const char *mt_effect_str(mt_effect effect);
 
 typedef struct mt_call mt_call;
