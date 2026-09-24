@@ -20,7 +20,7 @@
 #   [tested: extensions/cmetta/check.sh c-install; commit=1c40a5f96c308941b4c0669594acb06403109751].
 #   Nothing under $PREFIX is version-control metadata, and install-check
 #   refuses an install that carries any [tested: extensions/cmetta/check.sh
-#   c-install; commit=WORKTREE].
+#   c-install; commit=f76b44e798301c09fd924cb4fec32f4ae0854e39].
 # Decides: the engine tree is baked in as MT_ENGINE_PATH so a linked program
 #   boots with no environment set, and $METTA_PATH still overrides it at run
 #   time. A checkout that moves relinks at its next `make`, because the path is
