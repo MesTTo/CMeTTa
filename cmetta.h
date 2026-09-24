@@ -716,7 +716,8 @@ typedef struct mt_config {
                             or the boot refuses with MT_MISUSE, then
                             MT_STACK_LIMIT_DEFAULT, the Python seat's own
                             [tested: tests/test_stack_ceiling.c;
-                            commit=WORKTREE]                             */
+                            commit=4798190c3c8c60dce40d87ef41b47fc75c05e01b]
+                                                                         */
   bool verbose;          /* let the engine print each compiled form      */
 } mt_config;
 

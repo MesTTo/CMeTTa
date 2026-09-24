@@ -10,12 +10,12 @@
  *     settings table in DEVELOPING.md; edit the declaration and rerun the
  *     tool with --write, never this file, and the tool's check fails on any
  *     drift [tested: test_each_declaration_projection_refuses_an_independent_edit;
- *     commit=WORKTREE]
+ *     commit=76ee5c5ff673eeb48916f4a68309d8113415480c]
  *   - for a setting <name>, MT_<NAME>_FLAG is the SWI flag it sets,
  *     MT_<NAME>_ENVIRONMENT the environment variable whose value replaces its
  *     default, present when the declaration names one, and MT_<NAME>_DEFAULT
  *     the default in the flag's own unit [tested:
- *     test_setting_declaration_reaches_every_projection; commit=WORKTREE]
+ *     test_setting_declaration_reaches_every_projection; commit=76ee5c5ff673eeb48916f4a68309d8113415480c]
  * Open Obligations: None.
  */
 #ifndef CMETTA_SETTINGS_H

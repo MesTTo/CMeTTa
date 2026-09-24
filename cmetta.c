@@ -5029,7 +5029,7 @@ metta *mt_open(const mt_config *config)
 
   /* What mt_limit restores is the ceiling the runtime boots under, read back
      once SWI holds it rather than SWI's own default sampled before it
-     [tested: tests/test_stack_ceiling.c; commit=WORKTREE]. */
+     [tested: tests/test_stack_ceiling.c; commit=4798190c3c8c60dce40d87ef41b47fc75c05e01b]. */
   if ( !set_prolog_size_flag(MT_STACK_LIMIT_FLAG, stack_bytes) ||
        !prolog_size_flag(MT_STACK_LIMIT_FLAG, &initial_stack_bytes) )
   { mt_free(path);
