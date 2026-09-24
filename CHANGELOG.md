@@ -5,6 +5,20 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Evaluate a goal atom eagerly in the runtime's own engine with
+  `mt_run_goal(target, goal)`, the eager cell beside `mt_eval`'s lazy one:
+  the eval door's goal and fuel scope, run to its last answer and answered as
+  one group, bounded by `mt_limit` as one call the way `mt_run` runs text.
+  Each `mt_eval` cursor runs in an SWI engine of its own, and SWI keeps answer
+  tables private to the engine that computed them unless they are declared
+  shared, so a function under lib_memo's `memoize-exact` missed on every call
+  a C host made and left `(entries 0)` in its store, where the run door's
+  forms and the Python seat's eager evaluation hit. Through `mt_run_goal` the
+  second call hits and the store holds its entry.
+  `test_an_eager_goal_runs_in_the_runtimes_engine` holds the answers to the
+  cursor's, the store to one entry through eager goals and none through a
+  cursor, a bound to `MT_LIMIT`, and a missing goal to `MT_MISUSE`.
+
 - Boot under the stack ceiling the Python seat declares, and keep a configured
   one. `mt_open` used SWI's own default of 1 GiB whenever
   `mt_config.stack_limit` was 0, where the engine's CLI passes 8g and the

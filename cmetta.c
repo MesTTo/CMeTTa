@@ -2713,6 +2713,7 @@ typedef struct mt_row_entry {
   X(BRIDGE_REGISTER_OP,         "metta_c_register_op", 3, "user") \
   X(BRIDGE_REMOVE,              "metta_c_remove", 3, "user") \
   X(BRIDGE_RUN,                 "metta_c_run", 5, "user") \
+  X(BRIDGE_RUN_GOAL,            "metta_c_run_goal", 5, "user") \
   X(BRIDGE_SHOW,                "metta_c_show", 3, "user") \
   X(BRIDGE_SPACE_OPERAND,       "metta_c_space_operand", 1, "user") \
   X(BRIDGE_SPECULATE,           "metta_c_speculate", 1, "user") \
@@ -5800,13 +5801,29 @@ static mt_status collect_groups(term_t groups, mt_answers *out)
   return MT_OK;
 }
 
+/* The tail every eager door shares: call the bridge on the prepared frame,
+   whose fifth argument answers the groups, collect them, and hand back the
+   cursor or free it. Closes the frame. */
+static mt_status run_frame(bridge_id which, fid_t f, term_t av,
+                           mt_answers *answers, mt_answers **out)
+{ mt_status status = call_bridge(which, av);
+  if ( status == MT_OK ) status = collect_groups(av + 4, answers);
+  PL_discard_foreign_frame(f);
+
+  if ( status != MT_OK )
+  { mt_answers_free(answers);
+    return status;
+  }
+  *out = answers;
+  return MT_OK;
+}
+
 static mt_status run_or_load(metta *runtime, bridge_id which, int representation,
                                   const char *argument, const char *space,
                                   mt_answers **out)
 { fid_t f;
   term_t av;
   mt_answers *answers;
-  mt_status status;
   const char *pred = g_bridges[which].name;
 
   *out = NULL;   /* zeroed FIRST: a caller reusing one variable across calls
@@ -5829,17 +5846,46 @@ static mt_status run_or_load(metta *runtime, bridge_id which, int representation
     return mt_ok() ? err_set(MT_NOMEM, "out of memory holding the argument")
                    : mt_error();
   }
-  status = call_bridge(which, av);
-  if ( status == MT_OK ) status = collect_groups(av + 4, answers);
-  PL_discard_foreign_frame(f);
-
-  if ( status != MT_OK )
-  { mt_answers_free(answers);
-    return status;
-  }
-  *out = answers;
-  return MT_OK;
+  return run_frame(which, f, av, answers, out);
 }
+
+/* One goal run eagerly in the runtime's own engine: the eval door's goal, to
+   its last answer, bounded as one call like a run. The atom is BORROWED; the
+   door below takes it. */
+static mt_status run_goal(mt_space *space, const mt_atom *goal, mt_answers **out)
+{ fid_t f;
+  term_t av;
+  mt_answers *answers;
+  const char *pred = g_bridges[BRIDGE_RUN_GOAL].name;
+
+  *out = NULL;   /* see run_or_load: zeroed before anything can fail. */
+  if ( !(answers = answers_alloc(space->runtime)) ) return MT_NOMEM;
+  if ( !(f = frame_open(pred)) )
+  { mt_answers_free(answers);
+    return MT_NOMEM;
+  }
+  av = PL_new_term_refs(5);
+  if ( !av || !put_atom(goal, av) || !put_name(av + 1, space->name) ||
+       !PL_put_float(av + 2, space->runtime->limits.seconds) ||
+       !PL_put_int64(av + 3, (int64_t)space->runtime->limits.inferences) )
+  { PL_discard_foreign_frame(f);
+    mt_answers_free(answers);
+    return mt_ok() ? err_set(MT_MISUSE, "%s could not write its goal", pred)
+                   : mt_error();   /* put_atom already said why */
+  }
+  return run_frame(BRIDGE_RUN_GOAL, f, av, answers, out);
+}
+
+mt_answers *mt_space_run_goal(mt_space *space, mt_atom *goal)
+{ mt_answers *out = NULL;
+  if ( handle_ready(space, "mt_run_goal") && atom_given(goal, "mt_run_goal") )
+    run_goal(space, goal, &out);
+  mt_drop(goal);
+  return out;
+}
+
+mt_answers *mt_self_run_goal(metta *runtime, mt_atom *goal)
+{ return mt_space_run_goal(mt_self(runtime), goal); }
 
 mt_answers *mt_self_run(metta *runtime, const char *source)
 { mt_answers *out = NULL;

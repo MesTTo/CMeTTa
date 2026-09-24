@@ -181,6 +181,28 @@ metta_c_load(File, Space, Seconds, Inferences, Groups) :-
     metta_c_bounded(metta_host_load_file(FA, Space, Groups),
                     Seconds, Inferences).
 
+% One goal run to its last answer in the runtime's own engine, which is the
+% run door's reading of an atom. The goal, module and fuel scope are
+% metta_c_open_eval/4's, so the answers are the ones its cursor would pull,
+% computed before the first reaches C and answered as one group. The engine is
+% what makes this a door of its own: a cursor's goal runs in an SWI engine of
+% its own, and what an engine keeps privately stays with it, such as the answer
+% tables SWI keeps per engine unless they are declared shared
+% [source: lib/lib_memo/lib_memo_doc.md, "SWI answer tables are private to each
+% Prolog engine unless declared shared"; commit=90be572a9d67b4efd2c9829b256dba9687c16a29].
+% So a memoize-exact function called through cursors misses on every call, and
+% called through this door hits as the run door's forms and the Python seat's
+% eager evaluation do [tested: tests/test_cmetta.c,
+% test_an_eager_goal_runs_in_the_runtimes_engine; commit=WORKTREE].
+metta_c_run_goal(Goal, Space, Seconds, Inferences, [Answers]) :-
+    space_module(Space, Module),
+    metta_c_bounded(
+        findall(Answer,
+                metta_run_with_fuel(Out, Answer,
+                                    with_metta_module(Module, eval(Goal, Out))),
+                Answers),
+        Seconds, Inferences).
+
 %%%%%%%%%% Bounding a call %%%%%%%%%%
 %
 % A bound that stops a goal stops it MID-WAY, so writes it already made stand.

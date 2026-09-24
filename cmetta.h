@@ -861,6 +861,8 @@ MT_API bool mt_space_do(mt_space *space, const char *source);
    would rather not go through _Generic. Each TAKES its atom argument. */
 MT_API MT_MUST_USE mt_answers *mt_self_eval(metta *runtime, mt_atom *goal);
 MT_API MT_MUST_USE mt_answers *mt_space_eval(mt_space *space, mt_atom *goal);
+MT_API MT_MUST_USE mt_answers *mt_self_run_goal(metta *runtime, mt_atom *goal);
+MT_API MT_MUST_USE mt_answers *mt_space_run_goal(mt_space *space, mt_atom *goal);
 /* Inspect source effects without evaluating goal. TAKES goal and returns an
    owned (EffectPlan <joined-class> ((<operation> <class>) ...)) atom. The
    shared source planner includes compilation effects and conservatively
@@ -933,6 +935,18 @@ MT_API bool mt_space_wipe(mt_space *space);
    test_a_stack_depth_pragma_bounds_an_evaluated_goal;
    commit=34f6aa65db1bfa8b46c01fdf250c4dc335acdd0d]. */
 #define mt_eval(target, goal)   MT_ON((target), eval)((target), (goal))
+
+/* Evaluate one atom EAGERLY, in the runtime's own engine: the goal mt_eval()
+   would run, in the same fuel scope, to its last answer before the first
+   reaches C, answered as one group and bounded by mt_limit() as one call, the
+   way mt_run() runs a program's text. TAKES `goal`. The engine is the
+   difference that shows: each mt_eval() cursor runs in an SWI engine of its
+   own, and what an engine keeps privately stays with it, such as the answer
+   tables lib_memo's memoize-exact stores, so a memoize-exact function misses
+   on every call made through cursors and hits across mt_run_goal() calls, as
+   the Python seat's eager evaluation hits [tested: tests/test_cmetta.c,
+   test_an_eager_goal_runs_in_the_runtimes_engine; commit=WORKTREE]. */
+#define mt_run_goal(target, goal) MT_ON((target), run_goal)((target), (goal))
 #define mt_effect_plan(target, goal) MT_ON((target), effect_plan)((target), (goal))
 #define mt_run(target, source)  MT_ON((target), run)((target), (source))
 #define mt_load(target, path)   MT_ON((target), load)((target), (path))

@@ -97,7 +97,7 @@ remains a shared dependency.
 | Closed scopes | `mt_transaction`, `mt_speculate` |
 | Standing queries | `mt_subscribe`, `mt_unsubscribe` |
 | Native producers | `mt_iterator`, `mt_answers_from`, `mt_answer_iter`, `mt_stream`, `mt_stream_of`, `mt_step`, `mt_answers_status` |
-| Programs and answers | `mt_run`, `mt_load`, `mt_do`, `mt_next`, `mt_row_next`, `mt_bound`, `mt_answers_free`, `mt_each`, `mt_rows` |
+| Programs and answers | `mt_run`, `mt_run_goal`, `mt_load`, `mt_do`, `mt_next`, `mt_row_next`, `mt_bound`, `mt_answers_free`, `mt_each`, `mt_rows` |
 | Collected answers | `mt_one`, `mt_first`, `mt_one_int`, `mt_one_float`, `mt_one_truth`, `mt_one_name`, `mt_all`, `mt_list_free` |
 | Text | `mt_parse`, `mt_parsen`, `mt_show`, `mt_show_dup`, `mt_write_dup`, `mt_free` |
 | Errors | `mt_error`, `mt_errmsg`, `mt_remedy`, `mt_ground`, `mt_ok`, `mt_clear`, `mt_status_str` |
@@ -123,6 +123,7 @@ Like `tgmath.h`, `_Generic` selects the declared function for either a runtime's
 | `mt_count` | `mt_self_count` | `mt_space_count` |
 | `mt_wipe` | `mt_self_wipe` | `mt_space_wipe` |
 | `mt_run` | `mt_self_run` | `mt_space_run` |
+| `mt_run_goal` | `mt_self_run_goal` | `mt_space_run_goal` |
 | `mt_load` | `mt_self_load` | `mt_space_load` |
 | `mt_do` | `mt_self_do` | `mt_space_do` |
 | `mt_query` | `mt_self_query` | `mt_space_query` |
@@ -335,6 +336,20 @@ if ( !mt_add_all(kb, values) ) fprintf(stderr, "%s\n", mt_errmsg());
 `{NULL, 0}` is a valid empty batch; a refused member releases the whole list and leaves the space unchanged.
 
 `mt_run` eagerly executes the program with each row's `group` identifying its `!` form, while `mt_do` runs for effect and discards answers.
+
+`mt_run_goal` is the same eager run for a goal built as an atom: `mt_eval`'s goal
+and fuel scope, run to its last answer in the runtime's own engine and answered
+as one group. The engine is what shows. Each `mt_eval` cursor runs in an SWI
+engine of its own, and what an engine keeps privately stays with it, such as the
+answer tables lib_memo's `memoize-exact` stores, so a `memoize-exact` function
+misses on every call made through cursors and hits across `mt_run_goal` calls,
+as the Python seat's eager evaluation hits.
+
+```c
+mt_answers_free(mt_run_goal(m, E("memoize-exact", "sq")));
+mt_answers_free(mt_run_goal(m, E("sq", 9)));         /* a miss, stored */
+int64_t again = mt_one_int(mt_run_goal(m, E("sq", 9)));  /* 81, a hit */
+```
 
 ```c
 mt_do(m, "(= (double $x) (* 2 $x))");

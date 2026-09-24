@@ -126,10 +126,13 @@ converts the atom. mt_drop uses no allocation and no recursive calls.
 `mt_space_drop` retires the engine space and declarations without freeing the
 C handle. Obtain an anonymous space through the engine's new-space operation.
 
-The generic verbs `mt_run`, `mt_load`, `mt_do`, `mt_eval`, `mt_match`,
+The generic verbs `mt_run`, `mt_run_goal`, `mt_load`, `mt_do`, `mt_eval`, `mt_match`,
 `mt_atoms`, `mt_add`, `mt_add_all`, `mt_del`, `mt_count` and `mt_wipe`
 accept a runtime or a space. Source runs in the receiver's module. mt_run
 and mt_load are eager; `mt_do` discards their answers. `mt_forms` only parses.
+`mt_run_goal` runs a goal atom eagerly in the runtime's own engine, where
+mt_eval's cursor runs it in an engine of its own, so engine-private state
+such as memoize-exact's answer tables lasts between mt_run_goal calls.
 mt_del removes one unifying occurrence and refuses a bare variable; MeTTa's
 remove-atom drains a pattern. mt_add_all takes its list array and atoms.
 

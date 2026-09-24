@@ -1932,6 +1932,59 @@ static void test_a_refusal_carries_the_engines_remedy_and_ground(metta *m)
   mt_clear();
 }
 
+static void test_an_eager_goal_runs_in_the_runtimes_engine(metta *m)
+{ mt_list lazy;
+  mt_atom *store, *want;
+  mt_limits bounded = {0};
+  size_t n = 0;
+  bool same = true;
+
+  CASE("an eager goal answers what its cursor answers, as one group");
+  lazy = mt_all(mt_eval(m, E("superpose", E(1, 2, 3))));
+  mt_rows (row, mt_run_goal(m, E("superpose", E(1, 2, 3))))
+  { same = same && n < lazy.len && mt_eq(row->atom, lazy.items[n]) && row->group == 0;
+    n++;
+  }
+  CHECK(mt_ok() && same && n == 3 && lazy.len == 3);
+  mt_list_free(lazy);
+
+  CASE("what the runtime's engine keeps privately lasts between eager goals");
+  /* lib_memo's memoize-exact stores each answer bag in an SWI table private
+     to the engine that computed it, so its store tells the two engines
+     apart: two eager calls leave one entry the next eager goal reads, and a
+     cursor, whose engine is its own, reads none. */
+  CHECK(mt_one_truth(mt_eval(m, E("import!", "&self", E("library", "lib_memo")))));
+  CHECK(mt_lower(m, (cmetta-exact-square $x), (* $x $x)));
+  CHECK(mt_one_truth(mt_eval(m, E("memoize-exact", "cmetta-exact-square"))));
+  CHECK(mt_one_int(mt_run_goal(m, E("cmetta-exact-square", 9))) == 81);
+  CHECK(mt_one_int(mt_run_goal(m, E("cmetta-exact-square", 9))) == 81);
+  store = mt_first(mt_run_goal(m, E("get-memoize-stats", "cmetta-exact-square")));
+  want = E(E("entries", 1), E("answers", 1));
+  CHECK(store && mt_alpha_eq(store, want));
+  mt_drop(store);
+  mt_drop(want);
+  store = mt_first(mt_eval(m, E("get-memoize-stats", "cmetta-exact-square")));
+  want = E(E("entries", 0), E("answers", 0));
+  CHECK(store && mt_alpha_eq(store, want));
+  mt_drop(store);
+  mt_drop(want);
+
+  CASE("a bound stops an eager goal as one call");
+  bounded.inferences = 20000;
+  CHECK(mt_limit(m, bounded));
+  mt_clear();
+  CHECK(mt_run_goal(m, E("from", 0)) == NULL);
+  CHECK(mt_error() == MT_LIMIT);
+  CHECK(mt_limit(m, (mt_limits){0}));
+
+  CASE("a goal a failed constructor never made is refused by name");
+  mt_clear();
+  CHECK(mt_run_goal(m, NULL) == NULL);
+  CHECK(mt_error() == MT_MISUSE);
+  CHECK(mt_errmsg() && strstr(mt_errmsg(), "mt_run_goal") != NULL);
+  mt_clear();
+}
+
 static void test_a_bound_stops_a_runaway_and_says_so(metta *m)
 { mt_limits bounded = {0}, none = {0};
   int pulled = 0;
@@ -2379,6 +2432,7 @@ int main(void)
   test_solve_runs_let_backwards_and_reads_bindings_by_name(m);
   test_a_refusal_carries_the_engines_remedy_and_ground(m);
   test_a_bound_stops_a_runaway_and_says_so(m);
+  test_an_eager_goal_runs_in_the_runtimes_engine(m);
   test_the_counters_measure_engine_work(m);
   test_verbosity_reaches_the_engines_own_door(m);
   test_reopening_is_the_same_runtime(m);
