@@ -487,7 +487,7 @@ MT_API mt_atom *mt_same_c(const mt_atom *atom);
    mt_arrayv is the same walk over a converter of the caller's own, which
    reads the value at `value` and answers its atom.
    [tested: tests/test_cmetta.c, test_an_array_becomes_an_expression;
-   commit=WORKTREE] */
+   commit=4bb12d3157f2469eb46b00c95bb69ee891abcaf2] */
 #define mt_array(count, ...)                                              \
     mt_arrayv((count), (__VA_ARGS__), sizeof *(__VA_ARGS__),              \
               MT_ELEMENT(*(__VA_ARGS__)))
