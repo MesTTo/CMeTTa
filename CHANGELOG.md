@@ -5,6 +5,17 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Every C evaluation, `metta_c_run_goal/5`, `metta_c_open_eval/4` and
+  `metta_c_annotated/5`, goes through the engine's one host evaluation door,
+  `metta_host_evaluate/5`, with MeTTa's pruning of `Empty` kept as one explicit
+  goal after it, so `mt_eval` answers as before. `bridge.pl` calls neither
+  `eval/2` nor `metta_run_with_fuel/3` any more, and `metta_c_bounded/3` is
+  declared a meta-predicate so the engine's static walk sees the goal it
+  bounds. A cursor step retires about 13.8% more instructions (cursor-step)
+  for the door's work inside the held engine the cursor pulls from, and an
+  evaluation that raises costs its caller two inferences less (error-ball),
+  since the space's module is looked up inside that engine now.
+
 - `mt_register_prolog`'s refusals are the engine's `registration` kind,
   `MT_REFUSAL_KIND_REGISTRATION`, which `vocabularies.h` places before
   `MT_REFUSAL_KIND_ENGINE`, so the latter's value moves up by one. A source

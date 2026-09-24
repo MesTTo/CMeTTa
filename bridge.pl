@@ -195,13 +195,19 @@ metta_c_load(File, Space, Seconds, Inferences, Groups) :-
 % eager evaluation do [tested: tests/test_cmetta.c,
 % test_an_eager_goal_runs_in_the_runtimes_engine; commit=cfa188fc6da55b7f1f460eeb7bf2ede6e2cfac1d].
 metta_c_run_goal(Goal, Space, Seconds, Inferences, [Answers]) :-
-    space_module(Space, Module),
-    metta_c_bounded(
-        findall(Answer,
-                metta_run_with_fuel(Out, Answer,
-                                    with_metta_module(Module, eval(Goal, Out))),
-                Answers),
-        Seconds, Inferences).
+    metta_c_bounded(findall(Answer, metta_c_evaluated(Space, Goal, Answer), Answers),
+                    Seconds, Inferences).
+
+%What this seat's evaluation answers: the engine's host evaluation door, which
+%every seat shares and which runs Goal inside the fuel scope [source
+%2026-09-25T05:56:02+10:00: engine/translator/runtime.pl, metta_host_evaluate/5], with the
+%symbol Empty pruned as MeTTa prunes it inside a program. The door answers
+%Empty as data for the seats whose doors do; this seat's eval has always
+%answered as a runnable form does [tested 2026-09-25T05:56:04+10:00: tests/test_matchers.c,
+%tests/test_native_parity.c, test_native_atoms_match_engine_terms].
+metta_c_evaluated(Space, Goal, Answer) :-
+    metta_host_evaluate(Space, true, Goal, Answer, _),
+    Answer \== 'Empty'.
 
 %%%%%%%%%% Bounding a call %%%%%%%%%%
 %
@@ -212,6 +218,15 @@ metta_c_run_goal(Goal, Space, Seconds, Inferences, [Answers]) :-
 %
 % Zero means unbounded on both, which is the C side's spelling for "no bound"
 % and saves a sentinel.
+%
+% Declared a meta-predicate because it is one: the goal is called, behind the
+% two wrappers. SWI's code walk infers a meta-predicate only from a clause that
+% calls its argument, and this one hands it to metta_c_timed/3 as data, so
+% without the declaration the static host-binding walk saw nothing inside the
+% goal a door bounds, an evaluation included [source 2026-09-25T05:48:17+10:00:
+% https://github.com/SWI-Prolog/swipl-devel/blob/69775434c8226897626b226aefcc8266499f1e2e/library/prolog_codewalk.pl#L173-L179,
+% infer_meta_predicates].
+:- meta_predicate metta_c_bounded(0, +, +).
 metta_c_bounded(Goal, Seconds, Inferences) :-
     metta_c_timed(Goal, Seconds, Timed),
     metta_c_counted(Timed, Inferences).
@@ -323,8 +338,8 @@ metta_c_answer_parts(Term, Term, [], Text) :-
 % The wall bound stays per pull, so time between pulls, while the host is doing
 % something else, cannot count against it.
 %
-% A goal runs in the evaluation fuel scope every runnable form runs in, and the
-% Python seat's evaluation too (metta_py_produce/5 with its default fuel), so
+% A goal is evaluated through metta_c_evaluated/3, the engine's door, inside
+% the fuel scope every runnable form and every seat's evaluation runs in, so
 % (pragma! max-stack-depth N) bounds it branch by branch and a branch that runs
 % out answers (Error <call> StackOverflow) after the finished ones. Without the
 % scope nothing charged the balance and the goal recursed until the host stack
@@ -334,10 +349,8 @@ metta_c_answer_parts(Term, Term, [], Text) :-
 % test_a_stack_depth_pragma_bounds_an_evaluated_goal;
 % commit=34f6aa65db1bfa8b46c01fdf250c4dc335acdd0d].
 metta_c_open_eval(Goal, Space, Inferences, Id) :-
-    space_module(Space, Module),
-    metta_host_inference_budget(
-        metta_run_with_fuel(Out, Answer, with_metta_module(Module, eval(Goal, Out))),
-        Inferences, Bounded),
+    metta_host_inference_budget(metta_c_evaluated(Space, Goal, Answer),
+                                Inferences, Bounded),
     metta_host_hold(Answer, Bounded, Engine),
     metta_c_new_cursor(Engine, Id).
 
@@ -367,14 +380,14 @@ metta_c_open_under([Algebra, Goal], Space, Inferences, Id) :-
     metta_host_hold([Out, K], Bounded, Engine),
     metta_c_new_cursor(Engine, Id).
 
-% The fuel scope is metta_c_open_eval/4's, opened inside the algebra's context,
+% The evaluation is metta_c_open_eval/4's, opened inside the algebra's context,
 % so a branch that runs out answers its error with an annotation as every other
 % answer does, which is the shape the Python seat's under path answers.
 metta_c_annotated(Space, Algebra, Goal, Out, K) :-
     ( metta_algebra_one(Space, One)
     -> metta_with_trailed('$metta_answer_k', One,
-                         (metta_run_with_fuel(Value, Out, eval(Goal, Value)),
-                          metta_annotation(Space, K)))
+                         ( metta_c_evaluated(Space, Goal, Out),
+                           metta_annotation(Space, K) ))
     ; throw(error(existence_error(algebra, Algebra),
                   context(mt_eval_under,
                           'declare an (algebra ...) row in &metta before selecting it')))
