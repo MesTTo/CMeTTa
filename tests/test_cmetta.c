@@ -115,10 +115,6 @@ static void test_public_scalar_readers_cover_their_whole_domain(void)
     "ok", "row", "done", "no answer", "engine error", "out of memory",
     "misuse", "unsupported value", "stopped by a bound"
   };
-  static const char *effects[] = {
-    "pureStructural", "readOnlyLookup", "nondeterministicReadOnly",
-    "writesState", "oracleIO"
-  };
   mt_atom *text = mt_textn(counted, sizeof(counted));
   mt_atom *yes = B(true), *no = B(false), *wrong = S("true");
   size_t i;
@@ -133,13 +129,10 @@ static void test_public_scalar_readers_cover_their_whole_domain(void)
   CHECK(mt_error() == MT_MISUSE);
   mt_clear();
 
-  CASE("every public status and effect has one stable name");
+  CASE("every public status has one stable name");
   for (i = 0; i < sizeof(statuses) / sizeof(statuses[0]); i++)
     CHECK(strcmp(mt_status_str((mt_status)i), statuses[i]) == 0);
   CHECK(strcmp(mt_status_str((mt_status)99), "unknown status") == 0);
-  for (i = 0; i < sizeof(effects) / sizeof(effects[0]); i++)
-    CHECK(strcmp(mt_effect_str((mt_effect)i), effects[i]) == 0);
-  CHECK(mt_effect_str((mt_effect)99) == NULL);
   CHECK(strcmp(mt_version(), MT_VERSION) == 0);
 
   mt_drop(text);
@@ -999,7 +992,7 @@ static mt_status op_never_called(mt_call *call, void *user)
 static void test_a_taken_name_is_refused_rather_than_clobbered(metta *m)
 { CASE("publishing over a name another tier owns is refused, with the owner named");
   mt_clear();
-  CHECK(mt_def(m, (mt_op){ .name = "is", .arity = 1, .effect = MT_PURE,
+  CHECK(mt_def(m, (mt_op){ .name = "is", .arity = 1, .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL,
                            .fn = op_never_called }) == false);
   CHECK(!mt_ok());
   CHECK(mt_errmsg() && strstr(mt_errmsg(), "is/2") != NULL);
@@ -1102,7 +1095,7 @@ static mt_status op_fail_silently_after_new_error(mt_call *call, void *user)
 static void test_an_answerless_operation_uses_only_its_own_error(metta *m)
 { CASE("an answerless operation does not report a stale errno-shaped failure");
   CHECK(mt_def(m, (mt_op){ .name = "answer-nothing", .arity = 0,
-                           .effect = MT_PURE, .fn = op_answer_nothing }));
+                           .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL, .fn = op_answer_nothing }));
   mt_drop(mt_bigint("stale-before-operation"));
   CHECK(mt_run(m, "!(answer-nothing)") == NULL);
   CHECK(mt_errmsg() && strstr(mt_errmsg(), "answered nothing") != NULL);
@@ -1110,7 +1103,7 @@ static void test_an_answerless_operation_uses_only_its_own_error(metta *m)
 
   CASE("a new callback failure is used even when its status matches the stale one");
   CHECK(mt_def(m, (mt_op){ .name = "answer-new-error", .arity = 0,
-                           .effect = MT_PURE,
+                           .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL,
                            .fn = op_fail_silently_after_new_error }));
   mt_drop(mt_bigint("another-stale-error"));
   CHECK(mt_run(m, "!(answer-new-error)") == NULL);
@@ -1126,12 +1119,12 @@ static void test_a_c_function_is_callable_from_metta(metta *m)
 
   CASE("a published C function answers a MeTTa call");
   CHECK(mt_def(m, (mt_op){ .name = "cdouble", .arity = 1,
-                                 .effect = MT_PURE, .fn = op_double }));
+                                 .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL, .fn = op_double }));
   CHECK(mt_one_int(mt_run(m, "!(cdouble 21)")) == 42);
 
   CASE("a published name preserves underscores and remains distinct from hyphens");
   CHECK(mt_def(m, (mt_op){ .name = "tag_it", .arity = 1,
-                                 .effect = MT_PURE, .fn = op_tag_it,
+                                 .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL, .fn = op_tag_it,
                                  .user = (void *)"tagged" }));
   { mt_atom *got = mt_one(mt_run(m, "!(tag_it 7)"));
     CHECK(got && mt_kind_of(got) == MT_EXPR);
@@ -1159,7 +1152,7 @@ static void test_a_c_function_is_callable_from_metta(metta *m)
   CASE("an operation must name one of the five effect classes");
   mt_clear();
   CHECK(!mt_def(m, (mt_op){ .name = "bogus", .arity = 1,
-                                  .effect = (mt_effect)99, .fn = op_double }));
+                                  .effect = (enum mt_effect_class)99, .fn = op_double }));
   CHECK(mt_error() == MT_MISUSE);
 
   CASE("a withdrawn name is data again");
@@ -1170,7 +1163,7 @@ static void test_a_c_function_is_callable_from_metta(metta *m)
 
   CASE("a live callback can recover the runtime that invoked it");
   CHECK(mt_def(m, (mt_op){ .name = "callback-runtime", .arity = 0,
-                           .effect = MT_PURE, .fn = op_report_runtime,
+                           .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL, .fn = op_report_runtime,
                            .user = &probe }));
   CHECK(mt_one_truth(mt_run(m, "!(callback-runtime)")));
   CHECK(probe.saw_runtime);
@@ -1178,7 +1171,7 @@ static void test_a_c_function_is_callable_from_metta(metta *m)
 
   CASE("a callback cannot answer one application twice");
   CHECK(mt_def(m, (mt_op){ .name = "answer-twice", .arity = 0,
-                           .effect = MT_PURE, .fn = op_answer_twice,
+                           .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL, .fn = op_answer_twice,
                            .user = &probe }));
   mt_clear();
   CHECK(mt_run(m, "!(answer-twice)") == NULL);
@@ -1277,7 +1270,7 @@ static void test_a_c_value_crosses_by_reference(metta *m)
 
   CASE("a live C value crosses MeTTa and comes back the same object");
   CHECK(mt_def(m, (mt_op){ .name = "bump", .arity = 1,
-                                 .effect = MT_WRITES, .fn = op_bump }));
+                                 .effect = MT_EFFECT_CLASS_WRITES_STATE, .fn = op_bump }));
   handle = mt_object(&c, "counter", NULL);
   CHECK(handle != NULL);
   CHECK(mt_kind_of(handle) == MT_OBJECT);
@@ -2274,8 +2267,7 @@ static void test_a_stack_depth_pragma_bounds_an_evaluated_goal(metta *m)
    words in the same order, and &metta holds no such row the header lacks.
    Read against the engine rather than the generator, so the header and its
    generator cannot drift together. Each word finds its own position, a word
-   no member has finds nothing and leaves the member unwritten, and
-   mt_effect_str answers the effect-class table's word. */
+   no member has finds nothing and leaves the member unwritten. */
 static void test_the_generated_vocabularies_are_the_engines(metta *m)
 { mt_space *catalog = mt_catalog(m);
 
@@ -2324,8 +2316,6 @@ static void test_the_generated_vocabularies_are_the_engines(metta *m)
     effect = MT_EFFECT_CLASS_ORACLE_IO;
     CHECK(!mt_effect_class_of("writes-state", &effect) && effect == MT_EFFECT_CLASS_ORACLE_IO);
     CHECK(!mt_effect_class_of(NULL, &effect) && effect == MT_EFFECT_CLASS_ORACLE_IO);
-    CHECK(strcmp(mt_effect_str(MT_WRITES), mt_effect_class_names[MT_EFFECT_CLASS_WRITES_STATE]) == 0);
-    CHECK(mt_effect_str((mt_effect)MT_VOCABULARY_COUNT(mt_effect_class_names)) == NULL);
   }
 }
 

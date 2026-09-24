@@ -1101,26 +1101,23 @@ MT_API void mt_list_free(mt_list list);
  * Publishing C functions to MeTTa
  * ================================================================== */
 
-/* The five ranked effect classes, the effect-class vocabulary's members in
-   its order, so MT_PURE is MT_EFFECT_CLASS_PURE_STRUCTURAL and MT_IO is
-   MT_EFFECT_CLASS_ORACLE_IO, which cmetta.c asserts when it compiles. Naming
-   one is required, not advisory: the engine reasons about caching,
-   reordering and transactions from it, and a wrong answer here is a wrong
-   program. */
-typedef enum mt_effect {
-  MT_PURE,      /* same answer always, reads nothing, writes nothing */
-  MT_LOOKUP,    /* reads state, writes none                          */
-  MT_NONDET,    /* reads, and may answer differently                 */
-  MT_WRITES,    /* changes something                                 */
-  MT_IO         /* reaches the world                                 */
-} mt_effect;
+/* A published function names its effect class, a member of enum
+   mt_effect_class, the effect-class vocabulary vocabularies.h generates, in
+   the vocabulary's rank order:
 
-/* The engine's word for an effect class, its entry in
-   mt_effect_class_names[], or NULL for a value no class has
-   [tested: tests/test_cmetta.c,
-   test_the_generated_vocabularies_are_the_engines;
-   commit=4d9802e2380b906f3919dfb77ad8ff7c3adc5c7f]. */
-MT_API const char *mt_effect_str(mt_effect effect);
+       MT_EFFECT_CLASS_PURE_STRUCTURAL             same answer always, reads
+                                                   nothing, writes nothing
+       MT_EFFECT_CLASS_READ_ONLY_LOOKUP            reads state, writes none
+       MT_EFFECT_CLASS_NONDETERMINISTIC_READ_ONLY  reads, and may answer
+                                                   differently
+       MT_EFFECT_CLASS_WRITES_STATE                changes something
+       MT_EFFECT_CLASS_ORACLE_IO                   reaches the world
+
+   mt_effect_class_names[] holds the engine's word for each. Naming one is
+   required, not advisory: the engine reasons about caching, reordering and
+   transactions from it, and a wrong answer here is a wrong program; mt_def
+   refuses a value no class has with MT_MISUSE [tested: tests/test_cmetta.c,
+   test_the_generated_vocabularies_are_the_engines; commit=WORKTREE]. */
 
 typedef struct mt_call mt_call;
 
@@ -1132,11 +1129,12 @@ typedef mt_status (*mt_fn)(mt_call *call, void *user);
    what it is passing, which is C's answer to keyword arguments:
 
        mt_def(m, (mt_op){ .name = "hypot", .arity = 2,
-                                .effect = MT_PURE, .fn = op_hypot }); */
+                          .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL,
+                          .fn = op_hypot }); */
 typedef struct mt_op {
   const char  *name;    /* exact engine name; no identifier conversion */
   size_t       arity;
-  mt_effect effect;
+  enum mt_effect_class effect;  /* its effect class, required */
   mt_fn     fn;
   void        *user;    /* handed back to fn on every application         */
 } mt_op;

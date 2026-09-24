@@ -160,10 +160,13 @@ MT_ROW with an owned atom, MT_DONE with NULL, or an error. close runs once.
 Register `mt_op {.name, .arity, .effect, .fn, .user}` through `mt_def`.
 The callback reads `mt_arg`, returns `mt_answer` for one atom,
 `mt_answer_iter` for a producer, or `mt_fail` with a reason. Producer
-arguments stay alive until close. Declare MT_NONDET or a stronger effect for
-a producer. The effect vocabulary also includes MT_PURE, MT_LOOKUP, MT_WRITES
-and MT_IO; `mt_effect_str` gives the engine spelling, read from
-mt_effect_class_names.
+arguments stay alive until close. .effect is a member of enum
+mt_effect_class, the effect-class vocabulary in rank order:
+MT_EFFECT_CLASS_PURE_STRUCTURAL, MT_EFFECT_CLASS_READ_ONLY_LOOKUP,
+MT_EFFECT_CLASS_NONDETERMINISTIC_READ_ONLY, MT_EFFECT_CLASS_WRITES_STATE and
+MT_EFFECT_CLASS_ORACLE_IO. Declare MT_EFFECT_CLASS_NONDETERMINISTIC_READ_ONLY
+or a stronger class for a producer. mt_effect_class_names gives each class's
+engine word.
 
 Every (vocabulary ...) row in &metta reaches C through vocabularies.h, which
 cmetta.h includes and extensions/python/tools/vocabgen.py generates: an enum

@@ -56,7 +56,7 @@ int main(void)
 
   /* Called: the engine crosses into C, and had to be told the effect class. */
   mt_def(m, (mt_op){ .name = "triple", .arity = 1,
-                     .effect = MT_PURE, .fn = op_triple });
+                     .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL, .fn = op_triple });
   printf("called   (triple 7) = %lld\n",
          (long long)mt_one_int(mt_run(m, "!(triple 7)")));
 

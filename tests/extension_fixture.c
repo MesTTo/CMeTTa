@@ -9,7 +9,7 @@ static mt_status answer(mt_call *call, void *user)
 { (void)user; return mt_answer(call, mt_num(73)); }
 
 bool mt_extension_init(metta *runtime)
-{ if ( !mt_def(runtime, (mt_op){"extension-fixture", 0, MT_PURE, answer, NULL}) ||
+{ if ( !mt_def(runtime, (mt_op){"extension-fixture", 0, MT_EFFECT_CLASS_PURE_STRUCTURAL, answer, NULL}) ||
        !mt_do(runtime, "(= (extension-fixture-equation) 73)") ||
        !mt_library(runtime, "c_fixture", "./tests/fixtures") ) return false;
 #ifdef CMETTA_FIXTURE_REFUSE

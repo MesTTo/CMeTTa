@@ -408,23 +408,6 @@ const char *mt_kind_str(mt_kind kind)
   return "unknown kind";
 }
 
-/* mt_effect names the effect-class vocabulary's members in the catalog's
-   order, so each class's word is the generated table's entry at its value.
-   A catalog that reorders the row or adds a class stops this file compiling
-   rather than making every published operation claim the wrong effect. */
-_Static_assert((int)MT_PURE == (int)MT_EFFECT_CLASS_PURE_STRUCTURAL &&
-               (int)MT_LOOKUP == (int)MT_EFFECT_CLASS_READ_ONLY_LOOKUP &&
-               (int)MT_NONDET == (int)MT_EFFECT_CLASS_NONDETERMINISTIC_READ_ONLY &&
-               (int)MT_WRITES == (int)MT_EFFECT_CLASS_WRITES_STATE &&
-               (int)MT_IO == (int)MT_EFFECT_CLASS_ORACLE_IO &&
-               MT_VOCABULARY_COUNT(mt_effect_class_names) == (size_t)MT_IO + 1,
-               "mt_effect names the effect-class vocabulary's members in its order");
-
-const char *mt_effect_str(mt_effect effect)
-{ return (unsigned)effect < MT_VOCABULARY_COUNT(mt_effect_class_names)
-         ? mt_effect_class_names[effect] : NULL;
-}
-
 /* A foreign frame, or 0 with the reason recorded. SWI answers 0 when the
    stacks cannot hold another frame and when atom garbage collection is
    running in this thread, which a blob release callback reaches, and a 0
@@ -7891,7 +7874,9 @@ static bool define_operation(metta *runtime, mt_op op)
   size_t arity = op.arity;
   mt_fn fn = op.fn;
   void *user = op.user;
-  const char *kind = mt_effect_str(op.effect);
+  /* The engine's word for the class, or NULL for a value no class has. */
+  const char *kind = (unsigned)op.effect < MT_VOCABULARY_COUNT(mt_effect_class_names)
+                     ? mt_effect_class_names[op.effect] : NULL;
   mt_op_entry_t *slot;
 
   if ( !handle_ready(runtime, "mt_def") ) return false;

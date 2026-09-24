@@ -67,7 +67,7 @@ static int old_value = 1, new_value = 2;
 
 static mt_status replace(metta *m, void *unused)
 { (void)unused;
-  CHECK(mt_def(m, (mt_op){"tx-op", 0, MT_PURE, value, &new_value}));
+  CHECK(mt_def(m, (mt_op){"tx-op", 0, MT_EFFECT_CLASS_PURE_STRUCTURAL, value, &new_value}));
   CHECK(mt_register(m, (mt_seam_row){.point="tx-record", .name="entry",
                      .value=&new_value, .release=release_new}));
   CHECK(mt_one_int(mt_eval(m, mt_exprv(1, (mt_atom *[]){mt_sym("tx-op")}))) == 2);
@@ -115,7 +115,7 @@ static void test_engine_scopes_cannot_abandon_c_registrations(void)
   mt_clear();
   CHECK(mt_point_declare(m, (mt_point){"tx-record", MT_DECLARATION, "value", "owned test value"}));
   before = mt_seam_count(m, "tx-record");
-  CHECK(mt_def(m, (mt_op){"raw-registration", 0, MT_WRITES, raw_registration, NULL}));
+  CHECK(mt_def(m, (mt_op){"raw-registration", 0, MT_EFFECT_CLASS_WRITES_STATE, raw_registration, NULL}));
   mt_status status = raw_scope(m, NULL);
   CHECK(raw_calls == 1);
   CHECK(status >= MT_ERROR);
@@ -173,7 +173,7 @@ static int test_transactions(void)
   CHECK(mt_point_declare(m, (mt_point){"tx-record", MT_DECLARATION, "value", "owned test value"}));
   CHECK(mt_register(m, (mt_seam_row){.point="tx-record", .name="entry",
                     .value=&old_value, .release=release_old}));
-  CHECK(mt_def(m, (mt_op){"tx-op", 0, MT_PURE, value, &old_value}));
+  CHECK(mt_def(m, (mt_op){"tx-op", 0, MT_EFFECT_CLASS_PURE_STRUCTURAL, value, &old_value}));
   CHECK(mt_transaction(m, replace, NULL) == MT_FAIL);
   CHECK(new_releases == 1 && !old_releases);
   CHECK(mt_seam_at(m, "tx-record", 0)->value == &old_value);

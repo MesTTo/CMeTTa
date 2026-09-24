@@ -133,16 +133,16 @@ static const char *render_text(void *value, void *user)
 
 static void test_source_effect_plans(metta *m)
 {
-  const mt_effect classes[] = {MT_PURE, MT_LOOKUP, MT_NONDET, MT_WRITES, MT_IO};
+  const enum mt_effect_class classes[] = {MT_EFFECT_CLASS_PURE_STRUCTURAL, MT_EFFECT_CLASS_READ_ONLY_LOOKUP, MT_EFFECT_CLASS_NONDETERMINISTIC_READ_ONLY, MT_EFFECT_CLASS_WRITES_STATE, MT_EFFECT_CLASS_ORACLE_IO};
   const char *names[] = {"plan-pure", "plan-read", "plan-many", "plan-write", "plan-io"};
   for (size_t i = 0; i < sizeof(classes)/sizeof(*classes); ++i)
   {
     assert(mt_def(m, (mt_op){.name=names[i], .arity=1, .effect=classes[i], .fn=identity}));
     mt_atom *plan = mt_effect_plan(m, mt_expr(names[i], 7));
     assert(plan && strcmp(mt_name(mt_at(plan, 0)), "EffectPlan") == 0);
-    if (strcmp(mt_name(mt_at(plan, 1)), mt_effect_str(classes[i])) != 0)
+    if (strcmp(mt_name(mt_at(plan, 1)), mt_effect_class_names[classes[i]]) != 0)
       fprintf(stderr, "effect plan for %s: %s\n", names[i], mt_show(plan));
-    assert(strcmp(mt_name(mt_at(plan, 1)), mt_effect_str(classes[i])) == 0);
+    assert(strcmp(mt_name(mt_at(plan, 1)), mt_effect_class_names[classes[i]]) == 0);
     assert(mt_len(mt_at(plan, 2)) == 1);
     mt_drop(plan);
   }
@@ -153,7 +153,7 @@ static void test_source_effect_plans(metta *m)
   plan = mt_effect_plan(m, mt_parse("(plan-pure (plan-io 7))"));
   assert(plan && strcmp(mt_name(mt_at(plan, 1)), "oracleIO") == 0);
   assert(mt_len(mt_at(plan, 2)) == 2); mt_drop(plan);
-  assert(mt_def(m, (mt_op){.name="plan-pure", .arity=2, .effect=MT_WRITES, .fn=identity}));
+  assert(mt_def(m, (mt_op){.name="plan-pure", .arity=2, .effect=MT_EFFECT_CLASS_WRITES_STATE, .fn=identity}));
   plan = mt_effect_plan(m, mt_expr("plan-pure", 7));
   assert(plan && strcmp(mt_name(mt_at(plan, 1)), "writesState") == 0); mt_drop(plan);
   for (size_t i = 0; i < sizeof(classes)/sizeof(*classes); ++i) assert(mt_undef(m, names[i]));
@@ -176,7 +176,7 @@ static void test_unicode_terms_and_names(metta *m)
   forms = mt_forms("λ \"😀\"");
   assert(forms.len == 2 && strcmp(mt_name(forms.items[0]), "λ") == 0);
   assert(strcmp(mt_name(forms.items[1]), "😀") == 0); mt_list_free(forms);
-  assert(mt_def(m, (mt_op){.name="λ-echo", .arity=1, .effect=MT_PURE, .fn=identity}));
+  assert(mt_def(m, (mt_op){.name="λ-echo", .arity=1, .effect=MT_EFFECT_CLASS_PURE_STRUCTURAL, .fn=identity}));
   atom = mt_one(mt_run(m, "!(λ-echo \"λ 😀\")"));
   assert(atom && strcmp(mt_name(atom), borrowed) == 0); mt_drop(atom);
   assert(mt_undef(m, "λ-echo"));

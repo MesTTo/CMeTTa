@@ -89,8 +89,8 @@ static void test_engine_iterators_keep_arguments_until_close(void)
   mt_atom *function;
   const mt_atom *atom;
   assert(m);
-  assert(mt_def(m, (mt_op){"c-range", 1, MT_NONDET, generator, &closed}));
-  assert(mt_def(m, (mt_op){"c-failure", 0, MT_NONDET, failing_generator, &closed}));
+  assert(mt_def(m, (mt_op){"c-range", 1, MT_EFFECT_CLASS_NONDETERMINISTIC_READ_ONLY, generator, &closed}));
+  assert(mt_def(m, (mt_op){"c-failure", 0, MT_EFFECT_CLASS_NONDETERMINISTIC_READ_ONLY, failing_generator, &closed}));
   list = mt_all(mt_eval(m, mt_expr("c-range", 4)));
   assert(list.len == 4 && closed == 1);
   for (size_t i = 0; i < list.len; i++) assert(mt_int(list.items[i]) == (int64_t)i);

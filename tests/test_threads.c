@@ -257,7 +257,7 @@ int main(void)
   }
   if ( !mt_def(test.runtime,
                (mt_op){ .name = "thread-fail", .arity = 1,
-                        .effect = MT_PURE, .fn = thread_failure,
+                        .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL, .fn = thread_failure,
                         .user = &test }) )
   { fprintf(stderr, "thread operation publish failed: %s\n", mt_errmsg());
     mt_close(test.runtime);

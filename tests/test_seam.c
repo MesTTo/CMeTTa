@@ -155,7 +155,7 @@ static void test_publishing_writes_an_op_row_and_a_refusal_writes_none(metta *m)
 { size_t before = mt_seam_count(m, "op");
 
   expect(mt_def(m, (mt_op){ .name = "seam_probe", .arity = 0,
-                            .effect = MT_PURE,
+                            .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL,
                             .fn = NULL }) == false,
          "a published function needs a function");
   mt_clear();

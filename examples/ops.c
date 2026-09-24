@@ -83,11 +83,11 @@ int main(void)
      the engine reasons about caching and reordering from it. Designated
      initializers mean the call site says which field is which. */
   if ( !mt_def(m, (mt_op){ .name = "hypot", .arity = 2,
-                           .effect = MT_PURE, .fn = op_hypot }) ||
+                           .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL, .fn = op_hypot }) ||
        !mt_def(m, (mt_op){ .name = "word_count", .arity = 1,
-                           .effect = MT_PURE, .fn = op_word_count }) ||
+                           .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL, .fn = op_word_count }) ||
        !mt_def(m, (mt_op){ .name = "deposit", .arity = 2,
-                           .effect = MT_WRITES, .fn = op_deposit }) ) goto done;
+                           .effect = MT_EFFECT_CLASS_WRITES_STATE, .fn = op_deposit }) ) goto done;
 
   hypotenuse = mt_one_float(mt_run(m, "!(hypot 3.0 4.0)"));
   words = mt_one_int(mt_run(m, "!(word_count \"the quick brown fox\")"));

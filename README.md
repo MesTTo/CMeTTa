@@ -101,7 +101,7 @@ remains a shared dependency.
 | Collected answers | `mt_one`, `mt_first`, `mt_one_int`, `mt_one_float`, `mt_one_truth`, `mt_one_name`, `mt_all`, `mt_list_free` |
 | Text | `mt_parse`, `mt_parsen`, `mt_show`, `mt_show_dup`, `mt_write_dup`, `mt_free` |
 | Errors | `mt_error`, `mt_errmsg`, `mt_remedy`, `mt_ground`, `mt_ok`, `mt_clear`, `mt_status_str` |
-| C callbacks | `mt_def`, `mt_undef`, `mt_arity`, `mt_arg`, `mt_of`, `mt_answer`, `mt_fail`, `mt_effect_str` |
+| C callbacks | `mt_def`, `mt_undef`, `mt_arity`, `mt_arg`, `mt_of`, `mt_answer`, `mt_fail` |
 | Closed value sets, generated in `vocabularies.h` | an `enum` per `(vocabulary ...)` row, such as `enum mt_effect_class`, with its `mt_effect_class_names` table and `mt_effect_class_of` lookup; `mt_vocabularies`, `mt_vocabulary_index`, `MT_VOCABULARY_COUNT` |
 | C objects | `mt_value`, `mt_type`, `mt_object_free` |
 | Lowering | `mt_lower`, `mt_lower_raw`, `MT_METTA`, `MT_METTA_RAW` |
@@ -540,10 +540,14 @@ static mt_status op_hypot(mt_call *call, void *user)
 }
 
 mt_def(m, (mt_op){ .name = "hypot", .arity = 2,
-                   .effect = MT_PURE, .fn = op_hypot });
+                   .effect = MT_EFFECT_CLASS_PURE_STRUCTURAL,
+                   .fn = op_hypot });
 ```
 
-`(hypot 3.0 4.0)` answers `5.0`.
+`(hypot 3.0 4.0)` answers `5.0`. The effect class is a member of
+`enum mt_effect_class`, the engine's effect-class vocabulary in rank order,
+from `MT_EFFECT_CLASS_PURE_STRUCTURAL` to `MT_EFFECT_CLASS_ORACLE_IO`, and
+`mt_def` refuses a value no class has.
 
 Names cross exactly: `word_count` and `word-count` remain different names. The `mt_` convention names this API; it never rewrites a published language name.
 
@@ -566,8 +570,9 @@ This prints `best-first is member 2`: a member's value is its position in the
 row, and its name table holds the engine's word. A word no member has answers
 `false` and leaves `policy` alone. Each vocabulary is an `enum` tag rather than
 a typedef, so `enum mt_limit` and the door `mt_limit` are two names.
-`mt_vocabularies` lists every vocabulary under the engine's own name, and
-`mt_effect_str` answers `mt_effect_class_names[effect]`.
+`mt_vocabularies` lists every vocabulary under the engine's own name, and a
+published function's `.effect` is a member of `enum mt_effect_class`, whose
+engine word is `mt_effect_class_names[effect]`.
 
 ## C values
 
