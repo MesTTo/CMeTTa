@@ -2269,6 +2269,66 @@ static void test_a_stack_depth_pragma_bounds_an_evaluated_goal(metta *m)
   mt_drop(pragma);
 }
 
+/* The generated vocabulary header is the running engine's own: every entry
+   of mt_vocabularies[] is one (vocabulary ...) row in &metta with the same
+   words in the same order, and &metta holds no such row the header lacks.
+   Read against the engine rather than the generator, so the header and its
+   generator cannot drift together. Each word finds its own position, a word
+   no member has finds nothing and leaves the member unwritten, and
+   mt_effect_str answers the effect-class table's word. */
+static void test_the_generated_vocabularies_are_the_engines(metta *m)
+{ mt_space *catalog = mt_catalog(m);
+
+  CASE("every generated vocabulary is the engine's own row, in its order");
+  for (size_t v = 0; v < MT_VOCABULARY_COUNT(mt_vocabularies); v++)
+  { const mt_vocabulary *vocab = &mt_vocabularies[v];
+    mt_atom **pattern = calloc(vocab->count + 2, sizeof *pattern);
+    mt_atom *row;
+    char name[24];
+
+    CHECK(pattern != NULL);
+    if ( !pattern )
+      continue;
+    pattern[0] = S("vocabulary");
+    pattern[1] = S(vocab->name);
+    for (size_t i = 0; i < vocab->count; i++)
+    { snprintf(name, sizeof name, "w%zu", i);
+      pattern[i + 2] = V(name);
+    }
+    row = mt_first(mt_match(catalog, mt_exprv(vocab->count + 2, pattern)));
+    free(pattern);
+    CHECK(row != NULL);
+    for (size_t i = 0; row && i < vocab->count; i++)
+    { const char *word = mt_name(mt_at(row, i + 2));
+      size_t at = vocab->count;
+      CHECK(word && strcmp(word, vocab->words[i]) == 0);
+      CHECK(mt_vocabulary_index(vocab->words, vocab->count, vocab->words[i], &at) && at == i);
+    }
+    mt_drop(row);
+  }
+  { mt_list all = mt_all(mt_atoms(catalog));
+    size_t rows = 0;
+    for (size_t i = 0; i < all.len; i++)
+    { const mt_atom *a = all.items[i];
+      rows += mt_kind_of(a) == MT_EXPR && mt_len(a) >= 2 &&
+              mt_kind_of(mt_at(a, 0)) == MT_SYMBOL &&
+              strcmp(mt_name(mt_at(a, 0)), "vocabulary") == 0;
+    }
+    CHECK(rows == MT_VOCABULARY_COUNT(mt_vocabularies));
+    mt_list_free(all);
+  }
+
+  CASE("a word finds its member, and any other word finds none");
+  { enum mt_effect_class effect = MT_EFFECT_CLASS_ORACLE_IO;
+    CHECK(mt_effect_class_of("writesState", &effect) && effect == MT_EFFECT_CLASS_WRITES_STATE);
+    effect = MT_EFFECT_CLASS_ORACLE_IO;
+    CHECK(!mt_effect_class_of("writes-state", &effect) && effect == MT_EFFECT_CLASS_ORACLE_IO);
+    CHECK(!mt_effect_class_of(NULL, &effect) && effect == MT_EFFECT_CLASS_ORACLE_IO);
+    CHECK(strcmp(mt_effect_str(MT_WRITES), mt_effect_class_names[MT_EFFECT_CLASS_WRITES_STATE]) == 0);
+    CHECK(mt_effect_str((mt_effect)MT_VOCABULARY_COUNT(mt_effect_class_names)) == NULL);
+  }
+}
+
 int main(void)
 { metta *m;
 
@@ -2340,6 +2400,7 @@ int main(void)
   test_composed_spaces_read_live_sources(m);
   test_algebras_are_scoped_engine_data(m);
   test_a_stack_depth_pragma_bounds_an_evaluated_goal(m);
+  test_the_generated_vocabularies_are_the_engines(m);
 #ifdef MT_HAS_AUTO
   test_scope_cleanup_releases_on_every_exit(m);
 #endif

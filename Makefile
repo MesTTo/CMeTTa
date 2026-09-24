@@ -96,6 +96,9 @@ toolchain = $(CC) $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 FORCE:
 
 LIB       := libcmetta.so
+# cmetta.h includes vocabularies.h, which extensions/python/tools/vocabgen.py
+# generates from the engine's (vocabulary ...) rows; both are the public header.
+HEADERS   := cmetta.h vocabularies.h
 STATIC_LIB := libcmetta.a
 FAULT_LIB := tests/libcmetta_fault.so
 EXAMPLES  := examples/hello examples/ops examples/stream examples/lower examples/language
@@ -153,7 +156,7 @@ all: $(LIB) $(STATIC_LIB) examples $(KIT) $(BENCH)
 
 # Archive consumers need the same implementation and transitive SWI dependency.
 # [tested: make install-check; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5]
-cmetta.o: cmetta.c cmetta.h .toolchain-stamp
+cmetta.o: cmetta.c $(HEADERS) .toolchain-stamp
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(STATIC_LIB): cmetta.o
@@ -161,10 +164,10 @@ $(STATIC_LIB): cmetta.o
 
 # Every other program here links one of these two libraries, so it follows
 # them when the toolchain stamp moves.
-$(LIB): cmetta.c cmetta.h .toolchain-stamp
+$(LIB): cmetta.c $(HEADERS) .toolchain-stamp
 	$(CC) $(CFLAGS) -shared -o $@ cmetta.c $(LDFLAGS) $(LDLIBS)
 
-$(FAULT_LIB): cmetta.c cmetta.h .toolchain-stamp
+$(FAULT_LIB): cmetta.c $(HEADERS) .toolchain-stamp
 	$(CC) $(CFLAGS) -DMT_TEST_FAULTS -shared -o $@ cmetta.c \
 	    $(LDFLAGS) $(LDLIBS)
 
@@ -212,7 +215,7 @@ surface: $(LIB)
 	  sys.exit('declared but not defined: '+', '.join(miss)) if miss else \
 	  print(f'surface: {len(d)} declarations, all defined')"
 
-# Every mt_/MT_ name the prose uses must EXIST in the header. The docs are the
+# Every mt_/MT_ name the prose uses must EXIST in a public header. The docs are the
 # only consumer of this surface that no compiler reads, so a door that is
 # renamed or retired leaves them describing an API nobody can call: the struct
 # rewrite retired mt_each_cursor, mt_answer_text and mt_group and left all
@@ -226,13 +229,13 @@ surface: $(LIB)
 # it in place keeps the reason beside the name rather than in this file.
 docs:
 	@python3 -c "import re,sys; \
-	  known=set(re.findall(r'\b(?:mt_[a-z_0-9]+|MT_[A-Z_0-9]+)\b', open('cmetta.h').read())); \
+	  known=set(re.findall(r'\b(?:mt_[a-z_0-9]+|MT_[A-Z_0-9]+)\b', ''.join(open(h).read() for h in '$(HEADERS)'.split()))); \
 	  bad=[]; \
 	  [bad.extend((d,n) for n in sorted(set(re.findall(r'\b(?:mt_[a-z_0-9]+|MT_[A-Z_0-9]+)\b', open(d).read())) \
 	    - known - set(re.findall(r'<!--\s*names:\s*(\S+)', open(d).read())))) \
 	   for d in ('README.md','llms.txt')]; \
-	  sys.exit('documented but not in cmetta.h: ' + ', '.join(f'{d}:{n}' for d,n in bad)) if bad else \
-	  print('docs: every mt_ name in README.md and llms.txt is in the header')"
+	  sys.exit('documented but in neither header: ' + ', '.join(f'{d}:{n}' for d,n in bad)) if bad else \
+	  print('docs: every mt_ name in README.md and llms.txt is in a header')"
 
 # The examples run too. An example that no longer compiles, or that compiles
 # and then fails, is documentation that lies. The README quotes these programs;
@@ -360,12 +363,12 @@ runtime-memory: $(TEST_TMP)/swi-memory-probe
 # both times. .enginedir-stamp is the stamp rule near the top of this file
 # applied to `enginedir`; the installed library also compiles and links with
 # the ordinary toolchain, so it follows .toolchain-stamp as well.
-$(SOFILE): cmetta.c cmetta.h .enginedir-stamp .toolchain-stamp
+$(SOFILE): cmetta.c $(HEADERS) .enginedir-stamp .toolchain-stamp
 	$(CC) $(filter-out -DMT_ENGINE_PATH=%,$(CFLAGS)) \
 	    -DMT_ENGINE_PATH='"$(enginedir)"' -shared -Wl,-soname,$(SONAME) \
 	    -o $@ cmetta.c $(LDFLAGS) $(LDLIBS)
 
-build/install/cmetta.o: cmetta.c cmetta.h .enginedir-stamp .toolchain-stamp
+build/install/cmetta.o: cmetta.c $(HEADERS) .enginedir-stamp .toolchain-stamp
 	@mkdir -p $(@D)
 	$(CC) $(filter-out -DMT_ENGINE_PATH=%,$(CFLAGS)) \
 	    -DMT_ENGINE_PATH='"$(enginedir)"' -c -o $@ $<
@@ -405,7 +408,7 @@ install: $(SOFILE) build/install/$(STATIC_LIB) cmetta.pc version
 	install -m 644 build/install/$(STATIC_LIB) $(DESTDIR)$(libdir)/$(STATIC_LIB)
 	ln -sf $(SOFILE) $(DESTDIR)$(libdir)/$(SONAME)
 	ln -sf $(SONAME) $(DESTDIR)$(libdir)/$(LIB)
-	install -m 644 cmetta.h $(DESTDIR)$(includedir)/cmetta.h
+	install -m 644 $(HEADERS) $(DESTDIR)$(includedir)/
 	install -m 644 cmetta.pc $(DESTDIR)$(pkgconfigdir)/cmetta.pc
 	cd "$(ENGINE_PATH)" && find engine lib -type f \
 	    ! -name '*.qlf' ! -name '.qlf-stamp' ! -name '*.o' \
@@ -420,7 +423,7 @@ install: $(SOFILE) build/install/$(STATIC_LIB) cmetta.pc version
 uninstall:
 	rm -f $(DESTDIR)$(libdir)/$(SOFILE) $(DESTDIR)$(libdir)/$(SONAME) \
 	      $(DESTDIR)$(libdir)/$(STATIC_LIB) \
-	      $(DESTDIR)$(libdir)/$(LIB) $(DESTDIR)$(includedir)/cmetta.h \
+	      $(DESTDIR)$(libdir)/$(LIB) $(addprefix $(DESTDIR)$(includedir)/,$(HEADERS)) \
 	      $(DESTDIR)$(pkgconfigdir)/cmetta.pc
 	rm -rf $(DESTDIR)$(enginedir)
 

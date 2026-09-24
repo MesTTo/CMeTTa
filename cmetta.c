@@ -408,15 +408,21 @@ const char *mt_kind_str(mt_kind kind)
   return "unknown kind";
 }
 
+/* mt_effect names the effect-class vocabulary's members in the catalog's
+   order, so each class's word is the generated table's entry at its value.
+   A catalog that reorders the row or adds a class stops this file compiling
+   rather than making every published operation claim the wrong effect. */
+_Static_assert((int)MT_PURE == (int)MT_EFFECT_CLASS_PURE_STRUCTURAL &&
+               (int)MT_LOOKUP == (int)MT_EFFECT_CLASS_READ_ONLY_LOOKUP &&
+               (int)MT_NONDET == (int)MT_EFFECT_CLASS_NONDETERMINISTIC_READ_ONLY &&
+               (int)MT_WRITES == (int)MT_EFFECT_CLASS_WRITES_STATE &&
+               (int)MT_IO == (int)MT_EFFECT_CLASS_ORACLE_IO &&
+               MT_VOCABULARY_COUNT(mt_effect_class_names) == (size_t)MT_IO + 1,
+               "mt_effect names the effect-class vocabulary's members in its order");
+
 const char *mt_effect_str(mt_effect effect)
-{ switch ( effect )
-  { case MT_PURE:            return "pureStructural";
-    case MT_LOOKUP:           return "readOnlyLookup";
-    case MT_NONDET: return "nondeterministicReadOnly";
-    case MT_WRITES:               return "writesState";
-    case MT_IO:                  return "oracleIO";
-  }
-  return NULL;
+{ return (unsigned)effect < MT_VOCABULARY_COUNT(mt_effect_class_names)
+         ? mt_effect_class_names[effect] : NULL;
 }
 
 /* A foreign frame, or 0 with the reason recorded. SWI answers 0 when the

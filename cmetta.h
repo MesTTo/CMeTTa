@@ -162,6 +162,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* The engine's closed value sets as C enums, one per (vocabulary ...) row in
+   &metta, generated from those rows by extensions/python/tools/vocabgen.py. */
+#include "vocabularies.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -1097,9 +1101,12 @@ MT_API void mt_list_free(mt_list list);
  * Publishing C functions to MeTTa
  * ================================================================== */
 
-/* The five ranked effect classes. Naming one is required, not advisory: the
-   engine reasons about caching, reordering and transactions from it, and a
-   wrong answer here is a wrong program. */
+/* The five ranked effect classes, the effect-class vocabulary's members in
+   its order, so MT_PURE is MT_EFFECT_CLASS_PURE_STRUCTURAL and MT_IO is
+   MT_EFFECT_CLASS_ORACLE_IO, which cmetta.c asserts when it compiles. Naming
+   one is required, not advisory: the engine reasons about caching,
+   reordering and transactions from it, and a wrong answer here is a wrong
+   program. */
 typedef enum mt_effect {
   MT_PURE,      /* same answer always, reads nothing, writes nothing */
   MT_LOOKUP,    /* reads state, writes none                          */
@@ -1108,6 +1115,10 @@ typedef enum mt_effect {
   MT_IO         /* reaches the world                                 */
 } mt_effect;
 
+/* The engine's word for an effect class, its entry in
+   mt_effect_class_names[], or NULL for a value no class has
+   [tested: tests/test_cmetta.c,
+   test_the_generated_vocabularies_are_the_engines; commit=WORKTREE]. */
 MT_API const char *mt_effect_str(mt_effect effect);
 
 typedef struct mt_call mt_call;

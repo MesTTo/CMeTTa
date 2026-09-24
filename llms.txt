@@ -162,7 +162,15 @@ The callback reads `mt_arg`, returns `mt_answer` for one atom,
 `mt_answer_iter` for a producer, or `mt_fail` with a reason. Producer
 arguments stay alive until close. Declare MT_NONDET or a stronger effect for
 a producer. The effect vocabulary also includes MT_PURE, MT_LOOKUP, MT_WRITES
-and MT_IO; `mt_effect_str` gives the engine spelling.
+and MT_IO; `mt_effect_str` gives the engine spelling, read from
+mt_effect_class_names.
+
+Every (vocabulary ...) row in &metta reaches C through vocabularies.h, which
+cmetta.h includes and extensions/python/tools/vocabgen.py generates: an enum
+tag per row, members in row order spelled MT_, the type's words and the
+word's in upper case (MT_EFFECT_CLASS_WRITES_STATE), a names table
+(mt_effect_class_names) and a lookup (mt_effect_class_of) that answers false
+and writes nothing for a non-member. mt_vocabularies lists them all.
 
 `mt_object(pointer, type_name, release)` carries one opaque identity. Its exact
 type_name also reaches the engine's get-type and typed dispatch; NULL supplies
