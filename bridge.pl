@@ -309,7 +309,8 @@ metta_c_answer_parts(Term, Term, [], Text) :-
 % gave out: (bounded-factorial 5) under a depth of 20 answered 120 and then
 % raised a 1Gb stack overflow where the run door answers the error
 % [tested: tests/test_cmetta.c,
-% test_a_stack_depth_pragma_bounds_an_evaluated_goal; commit=WORKTREE].
+% test_a_stack_depth_pragma_bounds_an_evaluated_goal;
+% commit=34f6aa65db1bfa8b46c01fdf250c4dc335acdd0d].
 metta_c_open_eval(Goal, Space, Inferences, Id) :-
     space_module(Space, Module),
     metta_host_inference_budget(

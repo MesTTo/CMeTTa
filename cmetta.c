@@ -40,7 +40,7 @@
  *   - a handle dropped on a thread with no Prolog engine has its record
  *     erased on that thread, which the patched host allows [tested:
  *     tests/test_threads.c, test_handles_dropped_without_an_engine;
- *     commit=WORKTREE]
+ *     commit=bcf14b883844c4b7e9b00179bcc19186c73ba7dc]
  *   - mt_compare orders numbers of every width exactly, as the engine's
  *     msort does, allocating only for a BigInt or BigRational
  *     [tested: tests/test_cmetta.c, test_the_standard_order_is_the_engines;
@@ -3250,7 +3250,7 @@ static MT_ATOMIC unsigned g_test_record_erases;
    host since superproject 79a48d315, signals it without one
    [tested: tests/test_threads.c, test_handles_dropped_without_an_engine;
    tests/swi_engineless_erase_probe.c, make runtime-engineless-erase;
-   commit=WORKTREE]. */
+   commit=bcf14b883844c4b7e9b00179bcc19186c73ba7dc]. */
 static void handle_release(void *owner)
 { handle_ref *h = owner;
   size_t i;

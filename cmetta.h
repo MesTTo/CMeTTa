@@ -141,8 +141,8 @@
  *   requires allows: its swi-gc-signal-engineless-thread patch signals atom
  *   collection without the dropping thread's engine [tested:
  *   tests/test_threads.c, test_handles_dropped_without_an_engine;
- *   commit=WORKTREE]. Registration tables are
- *   not guarded: register and withdraw while evaluation workers are
+ *   commit=bcf14b883844c4b7e9b00179bcc19186c73ba7dc]. Registration tables
+ *   are not guarded: register and withdraw while evaluation workers are
  *   quiescent. A custom allocator must support the threads that allocate and
  *   release its blocks.
  *
@@ -914,7 +914,8 @@ MT_API bool mt_space_wipe(mt_space *space);
    (pragma! max-stack-depth N) bounds it, and a branch that runs out answers
    (Error <call> StackOverflow) after the finished ones; mt_eval_under runs it
    the same way, inside the algebra's context [tested: tests/test_cmetta.c,
-   test_a_stack_depth_pragma_bounds_an_evaluated_goal; commit=WORKTREE]. */
+   test_a_stack_depth_pragma_bounds_an_evaluated_goal;
+   commit=34f6aa65db1bfa8b46c01fdf250c4dc335acdd0d]. */
 #define mt_eval(target, goal)   MT_ON((target), eval)((target), (goal))
 #define mt_effect_plan(target, goal) MT_ON((target), effect_plan)((target), (goal))
 #define mt_run(target, source)  MT_ON((target), run)((target), (source))
