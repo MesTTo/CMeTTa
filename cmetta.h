@@ -910,7 +910,12 @@ MT_API bool mt_space_wipe(mt_space *space);
     mt_space *:  mt_space_##verb)
 
 /* Evaluate one atom LAZILY: each step computes at most one answer, and
-   abandoning the cursor leaves the rest uncomputed. TAKES `goal`. */
+   abandoning the cursor leaves the rest uncomputed. TAKES `goal`. The goal
+   runs in the evaluation fuel scope a runnable form runs in, so
+   (pragma! max-stack-depth N) bounds it, and a branch that runs out answers
+   (Error <call> StackOverflow) after the finished ones; mt_eval_under runs it
+   the same way, inside the algebra's context [tested: tests/test_cmetta.c,
+   test_a_stack_depth_pragma_bounds_an_evaluated_goal; commit=WORKTREE]. */
 #define mt_eval(target, goal)   MT_ON((target), eval)((target), (goal))
 #define mt_effect_plan(target, goal) MT_ON((target), effect_plan)((target), (goal))
 #define mt_run(target, source)  MT_ON((target), run)((target), (source))

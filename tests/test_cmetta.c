@@ -2233,6 +2233,42 @@ static void test_algebras_are_scoped_engine_data(metta *m)
   }
 }
 
+/* max-stack-depth bounds an evaluated goal as it bounds a runnable form. The
+   two equations overlap at 0, so the recursive one runs on past it; under a
+   depth of 20 the finite branch answers 120 and the exhausted one answers its
+   StackOverflow error after it. Without the fuel scope mt_eval answered 120
+   and then raised a 1Gb host stack overflow [measured 2026-09-24:
+   CMeTTa-Examples ch14-seeing-your-program/01-time_and_pragmas]. The pragma
+   is engine-wide, so the case clears it again. */
+static void test_a_stack_depth_pragma_bounds_an_evaluated_goal(metta *m)
+{ mt_atom *pragma = mt_one(mt_eval(m, E("pragma!", "max-stack-depth", 20)));
+
+  CASE("max-stack-depth bounds mt_eval as it bounds a runnable form");
+  CHECK(pragma && mt_kind_of(pragma) == MT_EXPR && mt_len(pragma) == 0);
+  mt_drop(pragma);
+  CHECK(mt_add(m, E("=", E("c-depth-factorial", 0), 1)));
+  CHECK(mt_add(m, E("=", E("c-depth-factorial", V("n")),
+                    E("*", V("n"), E("c-depth-factorial", E("-", V("n"), 1))))));
+  { mt_list rows = mt_all(mt_eval(m, E("c-depth-factorial", 5)));
+    mt_atom *overflow = E("Error", -3, "StackOverflow");
+    CHECK(mt_ok() && rows.len == 2);
+    CHECK(rows.len == 2 && mt_int(rows.items[0]) == 120 && mt_eq(rows.items[1], overflow));
+    mt_drop(overflow); mt_list_free(rows);
+  }
+
+  CASE("and mt_eval_under, each answer with its annotation");
+  { mt_list rows = mt_all(mt_eval_under(m, S("bool"), E("c-depth-factorial", 5)));
+    mt_atom *overflow = E("Error", -3, "StackOverflow");
+    CHECK(mt_ok() && rows.len == 2);
+    CHECK(rows.len == 2 && mt_len(rows.items[0]) == 2 && mt_int(mt_at(rows.items[0], 0)) == 120 &&
+          mt_len(rows.items[1]) == 2 && mt_eq(mt_at(rows.items[1], 0), overflow));
+    mt_drop(overflow); mt_list_free(rows);
+  }
+  pragma = mt_one(mt_eval(m, E("pragma!", "max-stack-depth", "none")));
+  CHECK(pragma != NULL);
+  mt_drop(pragma);
+}
+
 int main(void)
 { metta *m;
 
@@ -2303,6 +2339,7 @@ int main(void)
   test_native_object_types_reach_engine_dispatch(m);
   test_composed_spaces_read_live_sources(m);
   test_algebras_are_scoped_engine_data(m);
+  test_a_stack_depth_pragma_bounds_an_evaluated_goal(m);
 #ifdef MT_HAS_AUTO
   test_scope_cleanup_releases_on_every_exit(m);
 #endif

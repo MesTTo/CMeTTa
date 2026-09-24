@@ -5,6 +5,18 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Bound an evaluated goal by `max-stack-depth`, as a runnable form is bound.
+  `mt_eval` and `mt_eval_under` ran their goal outside the evaluation fuel
+  scope that every runnable form, and the Python seat's evaluation, runs in,
+  so nothing charged the balance: under `(pragma! max-stack-depth 20)` a
+  factorial whose base and recursive equations overlap at 0 answered 120 and
+  then raised a 1Gb host stack overflow, where `mt_run` of the same program
+  answers 120 and `(Error -3 StackOverflow)`. Both doors now open the scope,
+  and `mt_eval_under` opens it inside the algebra's context, so the error
+  answer carries an annotation as every other answer does.
+  `test_a_stack_depth_pragma_bounds_an_evaluated_goal` checks both doors; it
+  fails 4 checks with the host overflow without the scope.
+
 - Erase a handle's engine record only on a thread that has a Prolog engine. A
   handle dropped on a plain C thread erased its record there, and erasing
   unregisters the record's atoms; the unregister that crossed SWI's atom-GC

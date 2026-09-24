@@ -300,11 +300,22 @@ metta_c_answer_parts(Term, Term, [], Text) :-
 %
 % The wall bound stays per pull, so time between pulls, while the host is doing
 % something else, cannot count against it.
+%
+% A goal runs in the evaluation fuel scope every runnable form runs in, and the
+% Python seat's evaluation too (metta_py_produce/5 with its default fuel), so
+% (pragma! max-stack-depth N) bounds it branch by branch and a branch that runs
+% out answers (Error <call> StackOverflow) after the finished ones. Without the
+% scope nothing charged the balance and the goal recursed until the host stack
+% gave out: (bounded-factorial 5) under a depth of 20 answered 120 and then
+% raised a 1Gb stack overflow where the run door answers the error
+% [tested: tests/test_cmetta.c,
+% test_a_stack_depth_pragma_bounds_an_evaluated_goal; commit=WORKTREE].
 metta_c_open_eval(Goal, Space, Inferences, Id) :-
     space_module(Space, Module),
-    metta_host_inference_budget(with_metta_module(Module, eval(Goal, Out)),
-                                Inferences, Bounded),
-    metta_host_hold(Out, Bounded, Engine),
+    metta_host_inference_budget(
+        metta_run_with_fuel(Out, Answer, with_metta_module(Module, eval(Goal, Out))),
+        Inferences, Bounded),
+    metta_host_hold(Answer, Bounded, Engine),
     metta_c_new_cursor(Engine, Id).
 
 % The engine owns source masks, operation traversal and effect composition.
@@ -333,10 +344,14 @@ metta_c_open_under([Algebra, Goal], Space, Inferences, Id) :-
     metta_host_hold([Out, K], Bounded, Engine),
     metta_c_new_cursor(Engine, Id).
 
+% The fuel scope is metta_c_open_eval/4's, opened inside the algebra's context,
+% so a branch that runs out answers its error with an annotation as every other
+% answer does, which is the shape the Python seat's under path answers.
 metta_c_annotated(Space, Algebra, Goal, Out, K) :-
     ( metta_algebra_one(Space, One)
     -> metta_with_trailed('$metta_answer_k', One,
-                         (eval(Goal, Out), metta_annotation(Space, K)))
+                         (metta_run_with_fuel(Value, Out, eval(Goal, Value)),
+                          metta_annotation(Space, K)))
     ; throw(error(existence_error(algebra, Algebra),
                   context(mt_eval_under,
                           'declare an (algebra ...) row in &metta before selecting it')))
