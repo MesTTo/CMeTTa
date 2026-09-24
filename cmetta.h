@@ -1113,11 +1113,15 @@ MT_API void mt_list_free(mt_list list);
        MT_EFFECT_CLASS_WRITES_STATE                changes something
        MT_EFFECT_CLASS_ORACLE_IO                   reaches the world
 
-   mt_effect_class_names[] holds the engine's word for each. Naming one is
-   required, not advisory: the engine reasons about caching, reordering and
+   mt_effect_class_names[] holds the engine's word for each
+   [tested: tests/test_cmetta.c,
+   test_the_generated_vocabularies_are_the_engines;
+   commit=3f4d713eb0aee74484f8ba90cf083ffceada62d7]. Naming one is required,
+   not advisory: the engine reasons about caching, reordering and
    transactions from it, and a wrong answer here is a wrong program; mt_def
    refuses a value no class has with MT_MISUSE [tested: tests/test_cmetta.c,
-   test_the_generated_vocabularies_are_the_engines; commit=WORKTREE]. */
+   test_a_c_function_is_callable_from_metta;
+   commit=3f4d713eb0aee74484f8ba90cf083ffceada62d7]. */
 
 typedef struct mt_call mt_call;
 
