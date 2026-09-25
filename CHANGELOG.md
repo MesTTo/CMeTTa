@@ -5,6 +5,14 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- Name the release in one place, `MT_VERSION` in `cmetta.h`. The installed
+  consumer compared `MT_VERSION` with the literal `"1.0.0"`, so every release
+  had to edit a test. It now checks that the library answers the version its
+  installed header names, and `make install-check` compares that header and
+  `cmetta.pc` with the version the checkout builds. `make docs` refuses a
+  soname in README.md or llms.txt other than the one the Makefile builds,
+  which a release that moves the major version would otherwise leave behind.
+
 - Every C evaluation, `metta_c_run_goal/5`, `metta_c_open_eval/4` and
   `metta_c_annotated/5`, goes through the engine's one host evaluation door,
   `metta_host_evaluate/5`, with MeTTa's pruning of `Empty` kept as one explicit

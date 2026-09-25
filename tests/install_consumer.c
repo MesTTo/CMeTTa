@@ -6,10 +6,13 @@
  *   $METTA_PATH: the whole claim being checked is that an installed library
  *   finds the installed engine on its own, because `make install` bakes the
  *   installed engine's directory into it.
- * Guarantees: checks version 1's borrowed atoms, exact unsigned values, native
+ * Guarantees: checks borrowed atoms, exact unsigned values, native
  *   cursors and forms through the installed header and shared object, prints
  *   5, and on Linux confirms CPython is absent from the process
  *   [tested: make install-check; commit=d353402e1d5db2345d5864fb3dfbf64bd39b180c].
+ *   The installed library answers the version its installed header names,
+ *   and names no version itself, so a release needs no edit here
+ *   [tested 2026-09-25T19:27:30+10:00: make install-check].
  * Owns resources: releases atoms, collections, cursors and runtime explicitly.
  * Fails when: the engine tree was not installed beside the library, which is
  *   the failure this exists to catch and the reason it prints mt_errmsg().
@@ -51,7 +54,10 @@ int main(void)
   { printf("boot failed: %s\n", mt_errmsg() ? mt_errmsg() : "(no message)");
     return 1;
   }
-  assert(strcmp(mt_version(), MT_VERSION) == 0 && strcmp(MT_VERSION, "1.0.0") == 0);
+  /* The library and the header installed beside it name one release. Which
+     release that is, is the checkout's knowledge rather than this program's,
+     so make install-check compares the installed header with it. */
+  assert(strcmp(mt_version(), MT_VERSION) == 0);
   atom = mt_atom_of(UINT64_MAX);
   assert(atom && strcmp(mt_name(atom), "18446744073709551615") == 0); mt_drop(atom);
   atom = mt_text_ref(text, strlen(text), NULL, NULL);

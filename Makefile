@@ -33,6 +33,10 @@
 #   commit=b339084bb5625996fc88a31608d48ad31c575d1f].
 # Guarantees: installed archive consumers receive the private SWI linker flags
 #   [tested: make install-check; commit=91eef0753a3d55913cee42a2d385bbbf008f0be5].
+#   `make docs` refuses a soname README.md or llms.txt names other than SONAME,
+#   and `make install-check` an install whose header or cmetta.pc names a
+#   version other than VERSION, so a release edits only cmetta.h, those two
+#   documents and CHANGELOG.md [tested 2026-09-25T19:27:30+10:00: make docs, make install-check].
 # Open Obligations: None.
 
 SWIPL       ?= swipl
@@ -136,11 +140,13 @@ pkgconfigdir ?= $(libdir)/pkgconfig
 # at a checkout.
 enginedir    ?= $(datadir)/metta
 
-# The soname carries the MAJOR version alone, so a consumer linked against
-# libcmetta.so.1 keeps working across compatible releases and stops linking
-# when the surface breaks. Two files and two symlinks is the layout every
-# ELF toolchain expects. VERSION is derived from the public header and
-# `make version` checks the loaded library against it.
+# The soname carries the MAJOR version alone, libcmetta.so.<major>, so a
+# consumer linked against it keeps working across compatible releases and
+# stops linking when the surface breaks. Two files and two symlinks is the
+# layout every ELF toolchain expects. VERSION is derived from the public header,
+# `make version` checks the loaded library against it, `make install-check`
+# checks the installed header and cmetta.pc, and `make docs` holds every
+# soname README.md and llms.txt name to SONAME.
 VERSION   := $(shell sed -n 's/^\#define MT_VERSION "\([^"]*\)"/\1/p' cmetta.h)
 SOVERSION := $(firstword $(subst ., ,$(VERSION)))
 SOFILE    := libcmetta.so.$(VERSION)
@@ -243,6 +249,13 @@ docs:
 	   for d in ('README.md','llms.txt')]; \
 	  sys.exit('documented but in neither header: ' + ', '.join(f'{d}:{n}' for d,n in bad)) if bad else \
 	  print('docs: every mt_ name in README.md and llms.txt is in a header')"
+	@stale=$$(grep -o 'libcmetta\.so\.[0-9][0-9]*' README.md llms.txt | \
+	    grep -v -x -F -e 'README.md:$(SONAME)' -e 'llms.txt:$(SONAME)'); \
+	if [ -n "$$stale" ]; then \
+	    echo "docs: README.md or llms.txt names a soname other than $(SONAME), which this Makefile builds:" >&2; \
+	    echo "$$stale" >&2; exit 1; \
+	fi; \
+	echo "docs: every soname README.md and llms.txt name is $(SONAME)"
 	@python3 tests/readme_links.py
 
 # The examples run too. An example that no longer compiles, or that compiles
@@ -464,6 +477,12 @@ install-check:
 	fi
 	@echo "install-check: the install carries no version-control metadata"
 	@test "$$(PKG_CONFIG_PATH=$(CURDIR)/build/install-check/lib/pkgconfig pkg-config --variable=prefix cmetta)" = "$(CURDIR)/build/install-check"
+	@installed=$$(PKG_CONFIG_PATH=$(CURDIR)/build/install-check/lib/pkgconfig pkg-config --modversion cmetta); \
+	if [ "$$installed" != "$(VERSION)" ] || \
+	   ! grep -qx '#define MT_VERSION "$(VERSION)"' build/install-check/include/cmetta.h; then \
+	    echo "install-check: this checkout builds $(VERSION), and the install names $$installed" >&2; exit 1; \
+	fi
+	@echo "install-check: the installed header and cmetta.pc name $(VERSION)"
 	@cd build/install-check && \
 	    export PKG_CONFIG_PATH=$(CURDIR)/build/install-check/lib/pkgconfig && \
 	    flags=$$(pkg-config --cflags --libs cmetta) && \
