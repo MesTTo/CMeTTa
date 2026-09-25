@@ -155,7 +155,7 @@
 #ifndef MT_H
 #define MT_H
 
-#define MT_VERSION "1.0.0"
+#define MT_VERSION "2.0.0"
 
 #include <stdarg.h>
 #include <stdbool.h>

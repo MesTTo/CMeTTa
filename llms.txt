@@ -12,7 +12,7 @@ and a C11 compiler are required. Tests stage a private engine fixture under
 ai-tmp. Set METTA_PATH to the engine tree when using an isolated checkout.
 
 `make install PREFIX=/your/prefix` installs the header, engine and
-libcmetta.so.1. Obtain consumer flags with `pkg-config --cflags --libs cmetta`.
+libcmetta.so.2. Obtain consumer flags with `pkg-config --cflags --libs cmetta`.
 `make install-check` builds and runs a consumer of that installed interface.
 
 ## A program

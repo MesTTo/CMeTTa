@@ -5,6 +5,8 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+## 2.0.0
+
 - `llms.txt` names `mt_row`'s fields as `cmetta.h` declares them, `atom`,
   `text`, `group` and `of`, where it said `cursor`.
 
@@ -409,6 +411,9 @@ Open Obligations: None. -->
 - Fix the callbacks example calling `word-count` after publishing `word_count`.
   Check all callback results and the expected refusal so incorrect output fails
   the existing example gate.
+
+- Change the installed ABI to 2, so consumers and extensions rebuild against it:
+  the library installs as `libcmetta.so.2`.
 
 ## 1.0.0
 
