@@ -146,7 +146,8 @@ next step. `mt_next` is its pointer form; `mt_answers_status` preserves the
 terminal status. `mt_each` closes on break or exhaustion. Use explicit
 `mt_answers_free` for return/goto paths, or the compiler's `MT_AUTO_ASK`.
 
-`mt_rows` exposes `mt_row` with atom, text, group and cursor. Group identifies
+`mt_rows` exposes `mt_row` with `atom`, `text`, `group` and `of`, the cursor
+it came from. Group identifies
 the source directive. `mt_bound(row, "x")` borrows a match binding.
 Multiplicity is preserved; result order within a group is not promised.
 Answer variables keep their identity: one engine variable is one name, its

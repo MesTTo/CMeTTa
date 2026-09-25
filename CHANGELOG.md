@@ -5,6 +5,9 @@ Open Obligations: None. -->
 
 ## Unreleased
 
+- `llms.txt` names `mt_row`'s fields as `cmetta.h` declares them, `atom`,
+  `text`, `group` and `of`, where it said `cursor`.
+
 - Name the release in one place, `MT_VERSION` in `cmetta.h`. The installed
   consumer compared `MT_VERSION` with the literal `"1.0.0"`, so every release
   had to edit a test. It now checks that the library answers the version its
